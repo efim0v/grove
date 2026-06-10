@@ -191,4 +191,76 @@ final class ClaudeServiceTests: XCTestCase {
 
         XCTAssertEqual(service.sessions(for: cwd, account: account).map(\.id), [newId, oldId])
     }
+
+    // MARK: - parse cache
+
+    /// Cache-invalidation: after a file is rewritten with new content AND a newer mtime,
+    /// sessions() must re-parse and return the updated title rather than a stale cached result.
+    func testCacheInvalidatedWhenMtimeChanges() throws {
+        let cwd = "/work/cache_test_invalidation"
+        let dir = try makeProjectsDir(for: cwd)
+        let id = "0a1b2c3d-0008-4000-8000-000000000008"
+        let fileName = "\(id).jsonl"
+
+        // Initial write — prime the cache.
+        let url = try writeJSONL(
+            transcriptLines(cwd: cwd, sessionId: id, branch: "feat/cache",
+                            userText: "initial message", aiTitle: "Original Title"),
+            to: dir, name: fileName)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)],
+            ofItemAtPath: url.path)
+
+        let firstResult = service.sessions(for: cwd, account: account)
+        XCTAssertEqual(firstResult.first?.title, "Original Title", "pre-condition: first parse gives original title")
+
+        // Overwrite with new content and a strictly later mtime — cache should be invalidated.
+        try writeJSONL(
+            transcriptLines(cwd: cwd, sessionId: id, branch: "feat/cache",
+                            userText: "updated message", aiTitle: "Updated Title"),
+            to: dir, name: fileName)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_800_000_000)],
+            ofItemAtPath: url.path)
+
+        let secondResult = service.sessions(for: cwd, account: account)
+        XCTAssertEqual(secondResult.first?.title, "Updated Title",
+                       "cache must be invalidated when mtime changes — new title should be returned")
+    }
+
+    /// Cache-hit: after a file is rewritten with new content but the SAME mtime is restored,
+    /// sessions() must return the previously-cached (old) result, proving the cache is consulted.
+    func testCacheHitWhenMtimeIsUnchanged() throws {
+        let cwd = "/work/cache_test_hit"
+        let dir = try makeProjectsDir(for: cwd)
+        let id = "0a1b2c3d-0009-4000-8000-000000000009"
+        let fileName = "\(id).jsonl"
+        let fixedMtime = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // Initial write — prime the cache with the original title.
+        let url = try writeJSONL(
+            transcriptLines(cwd: cwd, sessionId: id, branch: "feat/cache-hit",
+                            userText: "original message", aiTitle: "Cached Title"),
+            to: dir, name: fileName)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixedMtime],
+            ofItemAtPath: url.path)
+
+        let firstResult = service.sessions(for: cwd, account: account)
+        XCTAssertEqual(firstResult.first?.title, "Cached Title", "pre-condition: first parse gives cached title")
+
+        // Overwrite with different content, but restore the EXACT same mtime.
+        // The cache key (path + mtime) is unchanged, so cachedParse must return the stored result.
+        try writeJSONL(
+            transcriptLines(cwd: cwd, sessionId: id, branch: "feat/cache-hit",
+                            userText: "rewritten message", aiTitle: "Stale Title Should Not Appear"),
+            to: dir, name: fileName)
+        try FileManager.default.setAttributes(
+            [.modificationDate: fixedMtime],
+            ofItemAtPath: url.path)
+
+        let secondResult = service.sessions(for: cwd, account: account)
+        XCTAssertEqual(secondResult.first?.title, "Cached Title",
+                       "cache must be hit when mtime is unchanged — stale on-disk content must be ignored")
+    }
 }
