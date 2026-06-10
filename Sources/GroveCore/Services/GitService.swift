@@ -309,3 +309,18 @@ extension GitService {
         return Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
+
+// MARK: - Commit graph
+
+extension GitService {
+    public func commitGraph(repoPath: String, limit: Int = 300, skip: Int = 0) async throws -> [CommitNode] {
+        let result = try await runner.runOK("git", [
+            "-C", repoPath,
+            "log", "--all", "--topo-order",
+            "-n", String(limit),
+            "--skip", String(skip),
+            "--format=%H%x09%P%x09%an%x09%cI%x09%D%x09%s",
+        ])
+        return layoutLanes(parseCommitLog(result.stdout))
+    }
+}
