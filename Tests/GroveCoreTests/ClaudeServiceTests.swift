@@ -280,6 +280,9 @@ final class ClaudeServiceTests: XCTestCase {
             .write(to: dir.appendingPathComponent("61234.json"), atomically: true, encoding: .utf8)
         try "{ not valid json at all"
             .write(to: dir.appendingPathComponent("70001.json"), atomically: true, encoding: .utf8)
+        // pid > Int32.max — must be skipped before validator is called (regression for Int32(exactly:) fix)
+        try #"{"pid":99999999999,"sessionId":"0a1b2c3d-0099-4000-8000-000000000099","cwd":"/work/overflow","status":"busy","startedAt":"2026-06-10T09:58:11.000Z","procStart":"Wed Jun 10 09:58:10 2026"}"#
+            .write(to: dir.appendingPathComponent("99999999999.json"), atomically: true, encoding: .utf8)
 
         var checkedPids: [Int32] = []
         service.processValidator = { pid in
