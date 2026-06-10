@@ -251,4 +251,158 @@ public struct WorkspaceService {
                                loose: loose,
                                errors: errors)
     }
+
+    // MARK: - Creation
+
+    public func createWorkspace(project: ProjectConfig, name: String, branch: String,
+                                repos: [RepoInfo], forkFrom parent: FeatureWorkspace?) async -> CreationReport {
+        var logLines: [String] = []
+        var artifacts: [CreatedArtifact] = []
+        let fm = FileManager.default
+
+        // 1. Validate the name BEFORE touching the filesystem or git.
+        guard name.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil else {
+            return CreationReport(artifacts: [], logLines: ["invalid workspace name: \(name)"],
+                                  failure: GroveError.invalidWorkspaceName(name).description)
+        }
+
+        let root = workspacesRoot(for: project)
+        let umbrella = (root as NSString).appendingPathComponent(name)
+
+        // 2. The umbrella must not already host a workspace (checked BEFORE any git op).
+        //    A directory entry inside the umbrella means an existing workspace -> refuse.
+        //    A stray plain FILE does not constitute a workspace; git itself will refuse
+        //    to overwrite it when adding the worktree for that repo.
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: umbrella, isDirectory: &isDir) {
+            if !isDir.boolValue {
+                return CreationReport(artifacts: [], logLines: ["a file exists at \(umbrella)"],
+                                      failure: GroveError.workspaceExists(umbrella).description)
+            }
+            let entries = (try? fm.contentsOfDirectory(atPath: umbrella)) ?? []
+            for entry in entries {
+                var entryIsDir: ObjCBool = false
+                let entryPath = (umbrella as NSString).appendingPathComponent(entry)
+                if fm.fileExists(atPath: entryPath, isDirectory: &entryIsDir), entryIsDir.boolValue {
+                    return CreationReport(artifacts: [], logLines: ["umbrella already contains \(entry)/"],
+                                          failure: GroveError.workspaceExists(umbrella).description)
+                }
+            }
+        } else {
+            do {
+                try fm.createDirectory(atPath: umbrella, withIntermediateDirectories: true)
+            } catch {
+                return CreationReport(artifacts: [], logLines: [],
+                                      failure: "cannot create \(umbrella): \(error.localizedDescription)")
+            }
+        }
+        logLines.append("umbrella: \(umbrella)")
+
+        // 3. Sequentially add one worktree per repo; stop on the first failure.
+        for repo in repos {
+            let base = await git.baseBranch(repo: repo, override: project.baseBranchOverrides[repo.dirName])
+            var startPoint = base
+            if let parent,
+               let parentState = parent.repos.first(where: { $0.repo.path == repo.path }),
+               let parentBranch = parentState.entry.branch {
+                startPoint = parentBranch
+            }
+            let worktreePath = (umbrella as NSString).appendingPathComponent(repo.dirName)
+            let exists = await git.branchExists(repoPath: repo.path, branch)
+            let createBranch = !exists
+            do {
+                try await git.addWorktree(repoPath: repo.path, branch: branch, startPoint: startPoint,
+                                          at: worktreePath, createBranch: createBranch)
+                artifacts.append(CreatedArtifact(repoPath: repo.path, worktreePath: worktreePath,
+                                                 branch: branch, branchWasCreated: createBranch))
+                logLines.append("[\(repo.dirName)] worktree \(worktreePath) on \(branch) from \(startPoint)")
+            } catch {
+                logLines.append("[\(repo.dirName)] worktree add failed: \(error)")
+                // `git worktree add -b` creates the branch BEFORE validating the
+                // target path, so a failed add can leave the new branch behind.
+                // Best-effort delete so the failed repo contributes no artifacts.
+                if createBranch, await git.branchExists(repoPath: repo.path, branch) {
+                    if (try? await git.deleteBranch(repoPath: repo.path, branch)) != nil {
+                        logLines.append("[\(repo.dirName)] removed stray branch \(branch)")
+                    }
+                }
+                return CreationReport(artifacts: artifacts, logLines: logLines,
+                                      failure: "worktree add failed in \(repo.dirName): \(error)")
+            }
+        }
+
+        // 4. Post-create hooks, concurrently; failures are logged, never fatal.
+        let hooks = project.postCreateHooks
+        let hookJobs: [(dirName: String, command: String, cwd: String)] = artifacts.compactMap { artifact in
+            let dirName = (artifact.worktreePath as NSString).lastPathComponent
+            guard let command = hooks[dirName] else { return nil }
+            return (dirName, command, artifact.worktreePath)
+        }
+        if !hookJobs.isEmpty {
+            let hookLines = await withTaskGroup(of: [String].self) { group -> [String] in
+                for job in hookJobs {
+                    group.addTask {
+                        let runner = ProcessRunner()
+                        var lines = ["[\(job.dirName)] hook: \(job.command)"]
+                        do {
+                            let result = try await runner.run("/bin/zsh", ["-lc", job.command],
+                                                              cwd: job.cwd, env: nil, timeout: 300)
+                            let out = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let err = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !out.isEmpty { lines.append("[\(job.dirName)] \(out)") }
+                            if !err.isEmpty { lines.append("[\(job.dirName)] \(err)") }
+                            if result.exitCode != 0 {
+                                lines.append("[\(job.dirName)] hook failed with exit \(result.exitCode)")
+                            } else {
+                                lines.append("[\(job.dirName)] hook ok")
+                            }
+                        } catch {
+                            lines.append("[\(job.dirName)] hook error: \(error)")
+                        }
+                        return lines
+                    }
+                }
+                var collected: [String] = []
+                for await lines in group { collected.append(contentsOf: lines) }
+                return collected
+            }
+            logLines.append(contentsOf: hookLines)
+        }
+
+        return CreationReport(artifacts: artifacts, logLines: logLines, failure: nil)
+    }
+
+    // MARK: - Rollback (only ever touches artifacts of the current creation run)
+
+    public func rollback(_ artifacts: [CreatedArtifact]) async -> [String] {
+        var log: [String] = []
+        for artifact in artifacts.reversed() {
+            do {
+                try await git.removeWorktree(repoPath: artifact.repoPath, at: artifact.worktreePath, force: true)
+                log.append("removed worktree \(artifact.worktreePath)")
+            } catch {
+                log.append("failed to remove worktree \(artifact.worktreePath): \(error)")
+            }
+            if artifact.branchWasCreated {
+                do {
+                    try await git.deleteBranch(repoPath: artifact.repoPath, artifact.branch)
+                    log.append("deleted branch \(artifact.branch) in \(artifact.repoPath)")
+                } catch {
+                    log.append("failed to delete branch \(artifact.branch): \(error)")
+                }
+            }
+        }
+        let fm = FileManager.default
+        let umbrellas = Set(artifacts.map { ($0.worktreePath as NSString).deletingLastPathComponent })
+        for umbrella in umbrellas.sorted() {
+            let entries = ((try? fm.contentsOfDirectory(atPath: umbrella)) ?? []).filter { $0 != ".DS_Store" }
+            if entries.isEmpty {
+                try? fm.removeItem(atPath: umbrella)
+                log.append("removed empty umbrella \(umbrella)")
+            } else {
+                log.append("kept umbrella \(umbrella) (not empty)")
+            }
+        }
+        return log
+    }
 }
