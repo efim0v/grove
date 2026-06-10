@@ -186,3 +186,98 @@ public struct GitService: Sendable {
         _ = try await runner.runOK("git", ["-C", repoPath, "branch", "-D", branch])
     }
 }
+
+// MARK: - Worktree meta model
+
+public struct WorktreeMeta: Sendable, Equatable {
+    public let baseBranch: String
+    public let forkPoint: String?
+    public let forkDate: Date?
+    public let ahead: Int
+    public let behind: Int
+    public let dirtyCount: Int
+    public let lastCommitDate: Date?
+    public let lastCommitSubject: String?
+}
+
+// MARK: - Git ISO8601 date parsing (shared by meta and the commit graph)
+
+let isoDatePlain: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime]
+    return f
+}()
+
+let isoDateWithFractional: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+/// Parses `%cI` output; tries both formatter variants (with/without fractional seconds).
+func gitISODate(_ raw: String) -> Date? {
+    let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.isEmpty { return nil }
+    return isoDatePlain.date(from: s) ?? isoDateWithFractional.date(from: s)
+}
+
+// MARK: - Worktree meta
+
+extension GitService {
+    /// Fork point, ahead/behind, dirty count and last-commit info for a worktree
+    /// relative to `base`. Never throws: every probe degrades to zeros/nils.
+    public func meta(repoPath: String, worktree: WorktreeEntry, relativeTo base: String) async -> WorktreeMeta {
+        let rev = worktree.branch ?? worktree.head
+
+        var forkPoint: String?
+        var forkDate: Date?
+        var ahead = 0
+        var behind = 0
+        var dirtyCount = 0
+        var lastCommitDate: Date?
+        var lastCommitSubject: String?
+
+        if let result = try? await runner.runOK("git", ["-C", repoPath, "merge-base", base, rev]) {
+            let mb = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !mb.isEmpty {
+                forkPoint = mb
+                if let dated = try? await runner.runOK("git", ["-C", repoPath, "log", "-1", "--format=%cI", mb]) {
+                    forkDate = gitISODate(dated.stdout)
+                }
+            }
+        }
+
+        if let result = try? await runner.runOK("git", ["-C", repoPath, "rev-list", "--left-right", "--count", "\(base)...\(rev)"]) {
+            // Output: "<commits only in base>\t<commits only in rev>" -> behind / ahead.
+            let counts = result.stdout.split(whereSeparator: { $0 == "\t" || $0 == " " || $0 == "\n" })
+            if counts.count >= 2 {
+                behind = Int(counts[0]) ?? 0
+                ahead = Int(counts[1]) ?? 0
+            }
+        }
+
+        if let result = try? await runner.runOK("git", ["-C", worktree.path, "status", "--porcelain"]) {
+            dirtyCount = result.stdout.split(separator: "\n").count
+        }
+
+        if let result = try? await runner.runOK("git", ["-C", repoPath, "log", "-1", "--format=%cI%x09%s", rev]) {
+            let line = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            let pieces = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            if pieces.count == 2 {
+                lastCommitDate = gitISODate(String(pieces[0]))
+                lastCommitSubject = String(pieces[1])
+            }
+        }
+
+        return WorktreeMeta(
+            baseBranch: base,
+            forkPoint: forkPoint,
+            forkDate: forkDate,
+            ahead: ahead,
+            behind: behind,
+            dirtyCount: dirtyCount,
+            lastCommitDate: lastCommitDate,
+            lastCommitSubject: lastCommitSubject
+        )
+    }
+}
