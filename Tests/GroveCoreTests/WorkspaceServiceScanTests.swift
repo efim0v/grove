@@ -174,4 +174,130 @@ final class WorkspaceServiceScanTests: XCTestCase {
                        [CmuxWorkspace(id: "cmux-1", title: "alpha", currentDirectory: umbrella + "/r1")])
         XCTAssertEqual(beta.cmuxWorkspaces, [])
     }
+
+    // MARK: - degrade contract: scan never throws, failures accumulate in snapshot.errors
+
+    func testScanRecordsCmuxFailureAsErrorAndStillReturnsWorkspaces() async throws {
+        let base = try Fixture.tempDir("scan-cmux-fail").resolvingSymlinksInPath()
+        let projectDir = base.appendingPathComponent("project")
+        let wsRoot = base.appendingPathComponent("workspaces")
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: wsRoot, withIntermediateDirectories: true)
+
+        let r1 = try Fixture.makeRepo(in: projectDir, name: "r1")
+        try Fixture.addWorktree(repo: r1, branch: "feat/alpha", from: "main",
+                                at: wsRoot.appendingPathComponent("alpha").appendingPathComponent("r1"))
+
+        // cmux exits non-zero -> runOK throws GroveError.processFailed inside listWorkspaces.
+        let mock = MockRunner(results: [ProcessResult(exitCode: 1, stdout: "", stderr: "cmux exploded")])
+        let cmuxService = CmuxService(runner: mock, cmuxPath: "/opt/fake/cmux")
+
+        var project = ProjectConfig(name: "scanproj", path: projectDir.path)
+        project.workspacesRoot = wsRoot.path
+        var config = GroveConfig.defaultConfig
+        config.projects = [project]
+        config.accounts = []
+        let service = WorkspaceService(git: GitService(), claude: ClaudeService(),
+                                       cmux: cmuxService, config: config)
+
+        let snapshot = await service.scan(project: project)
+
+        // The failure is recorded, never thrown ...
+        XCTAssertEqual(snapshot.errors.count, 1)
+        XCTAssertTrue(snapshot.errors.first?.hasPrefix("cmux:") ?? false,
+                      "cmux failure must be recorded as a 'cmux:' snapshot error, got: \(snapshot.errors)")
+        // ... and the rest of the snapshot is still fully assembled.
+        XCTAssertEqual(snapshot.repos.map(\.dirName), ["r1"])
+        XCTAssertEqual(snapshot.workspaces.map(\.name), ["alpha"])
+        XCTAssertEqual(snapshot.workspaces.first?.cmuxWorkspaces, [])
+    }
+
+    func testScanRecordsWorktreeListFailureAsError() async throws {
+        let base = try Fixture.tempDir("scan-wt-fail").resolvingSymlinksInPath()
+        let projectDir = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        _ = try Fixture.makeRepo(in: projectDir, name: "r1")
+
+        // Repo discovery is filesystem-based, so r1 is still found; the FIRST
+        // runner call is `git worktree list --porcelain`, which fails here ->
+        // worktrees(repo:) throws -> scan degrades to errors.append.
+        let gitMock = MockRunner(results: [ProcessResult(exitCode: 1, stdout: "", stderr: "boom")])
+        let cmuxMock = MockRunner(results: [ProcessResult(exitCode: 0, stdout: "[]", stderr: "")])
+
+        var project = ProjectConfig(name: "scanproj", path: projectDir.path)
+        project.workspacesRoot = base.appendingPathComponent("workspaces").path
+        var config = GroveConfig.defaultConfig
+        config.projects = [project]
+        config.accounts = []
+        let service = WorkspaceService(git: GitService(runner: gitMock), claude: ClaudeService(),
+                                       cmux: CmuxService(runner: cmuxMock, cmuxPath: "/opt/fake/cmux"),
+                                       config: config)
+
+        let snapshot = await service.scan(project: project)
+
+        XCTAssertEqual(snapshot.repos.map(\.dirName), ["r1"])
+        XCTAssertEqual(snapshot.errors.count, 1)
+        XCTAssertTrue(snapshot.errors.first?.hasPrefix("worktrees r1:") ?? false,
+                      "worktree listing failure must be recorded as a 'worktrees r1:' snapshot error, got: \(snapshot.errors)")
+        XCTAssertEqual(snapshot.workspaces.count, 0)
+        XCTAssertEqual(snapshot.loose.count, 0)
+    }
+
+    // MARK: - live processes: listed once per scan, filtered per path
+
+    func testScanListsLiveProcessesOncePerScanAndAttachesByCwd() async throws {
+        let base = try Fixture.tempDir("scan-live").resolvingSymlinksInPath()
+        let fm = FileManager.default
+        let projectDir = base.appendingPathComponent("project")
+        let wsRoot = base.appendingPathComponent("workspaces")
+        let claudeDir = base.appendingPathComponent("claude-account")
+        try fm.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: wsRoot, withIntermediateDirectories: true)
+
+        // One workspace AND one loose worktree: two distinct attach sites, so a
+        // per-site re-listing regression would double the validator call count.
+        let r1 = try Fixture.makeRepo(in: projectDir, name: "r1")
+        let alphaR1 = wsRoot.appendingPathComponent("alpha").appendingPathComponent("r1")
+        try Fixture.addWorktree(repo: r1, branch: "feat/alpha", from: "main", at: alphaR1)
+        try Fixture.addWorktree(repo: r1, branch: "gamma", from: "main",
+                                at: r1.appendingPathComponent(".worktrees").appendingPathComponent("gamma"))
+
+        // One live-process record whose cwd lies inside the alpha umbrella.
+        let sessionsDir = claudeDir.appendingPathComponent("sessions")
+        try fm.createDirectory(at: sessionsDir, withIntermediateDirectories: true)
+        try #"{"pid":4242,"sessionId":"live-1","cwd":"\#(alphaR1.path)","status":"busy"}"#
+            .write(to: sessionsDir.appendingPathComponent("4242.json"), atomically: true, encoding: .utf8)
+
+        let claude = ClaudeService()
+        var validatorCalls = 0
+        claude.processValidator = { _ in
+            validatorCalls += 1
+            return true
+        }
+
+        let cmuxMock = MockRunner(results: [ProcessResult(exitCode: 0, stdout: "[]", stderr: "")])
+        var project = ProjectConfig(name: "scanproj", path: projectDir.path)
+        project.workspacesRoot = wsRoot.path
+        var config = GroveConfig.defaultConfig
+        config.projects = [project]
+        config.accounts = [AccountConfig(name: "default", configDir: claudeDir.path)]
+        let service = WorkspaceService(git: GitService(), claude: claude,
+                                       cmux: CmuxService(runner: cmuxMock, cmuxPath: "/opt/fake/cmux"),
+                                       config: config)
+
+        let snapshot = await service.scan(project: project)
+
+        XCTAssertEqual(snapshot.errors, [])
+        XCTAssertEqual(validatorCalls, 1,
+                       "liveProcesses is path-independent and must be listed exactly once per scan, " +
+                       "not re-listed per workspace/loose worktree")
+
+        // The single snapshot is filtered per path: attached to alpha, not to gamma.
+        let alpha = try XCTUnwrap(snapshot.workspaces.first(where: { $0.name == "alpha" }))
+        XCTAssertEqual(alpha.liveProcesses,
+                       [LiveProcess(pid: 4242, sessionId: "live-1", cwd: alphaR1.path,
+                                    status: "busy", accountName: "default")])
+        let gamma = try XCTUnwrap(snapshot.loose.first)
+        XCTAssertEqual(gamma.liveProcesses, [])
+    }
 }

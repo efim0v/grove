@@ -183,6 +183,12 @@ public struct WorkspaceService {
             errors.append("cmux: \(error)")
         }
 
+        // Live Claude processes are path-INdependent (each call re-lists the
+        // sessions directory and probes every pid), so list them exactly once
+        // and filter per path below — one consistent snapshot for the whole
+        // scan. sessions(for:) IS cwd-keyed and stays per-path.
+        let allLiveProcesses = config.accounts.flatMap { claude.liveProcesses(account: $0) }
+
         // Assemble feature workspaces (meta relative to parent branch when stacked).
         var workspaces: [FeatureWorkspace] = []
         for name in names {
@@ -204,9 +210,10 @@ public struct WorkspaceService {
             let sessions = config.accounts
                 .flatMap { claude.sessions(for: umbrella, account: $0) }
                 .sorted { $0.lastActivity > $1.lastActivity }
-            let live = config.accounts
-                .flatMap { claude.liveProcesses(account: $0) }
-                .filter { canonical($0.cwd) == umbrella || canonical($0.cwd).hasPrefix(umbrella + "/") }
+            let live = allLiveProcesses.filter {
+                let cwd = canonical($0.cwd)
+                return cwd == umbrella || cwd.hasPrefix(umbrella + "/")
+            }
             let matched = cmuxList.filter {
                 let dir = canonical($0.currentDirectory)
                 return dir == umbrella || dir.hasPrefix(umbrella + "/")
@@ -229,9 +236,7 @@ public struct WorkspaceService {
             let sessions = config.accounts
                 .flatMap { claude.sessions(for: cwd, account: $0) }
                 .sorted { $0.lastActivity > $1.lastActivity }
-            let live = config.accounts
-                .flatMap { claude.liveProcesses(account: $0) }
-                .filter { canonical($0.cwd) == cwd }
+            let live = allLiveProcesses.filter { canonical($0.cwd) == cwd }
             // cmux matching for loose worktrees: exact directory equality (spec §2:
             // all Claude/cmux actions are available for loose worktrees too).
             let matched = cmuxList.filter { canonical($0.currentDirectory) == cwd }
