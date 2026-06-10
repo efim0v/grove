@@ -226,11 +226,11 @@ public final class ClaudeService {
                 let data = fm.contents(atPath: path),
                 let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                 let pidValue = object["pid"] as? Int,
+                let pid = Int32(exactly: pidValue),
                 let sessionId = object["sessionId"] as? String,
                 let cwd = object["cwd"] as? String,
                 let status = object["status"] as? String
             else { continue }
-            let pid = Int32(pidValue)
             guard processValidator(pid) else { continue }
             result.append(LiveProcess(pid: pid, sessionId: sessionId, cwd: cwd,
                                       status: status, accountName: account.name))
