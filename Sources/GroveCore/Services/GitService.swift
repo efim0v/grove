@@ -294,3 +294,18 @@ extension GitService {
         )
     }
 }
+
+// MARK: - Stacking depth helper (used by WorkspaceService.scan)
+
+extension GitService {
+    /// Commit distance from `base` to `tip`: `git rev-list --count <base>..<tip>`.
+    /// Ranks stacking-parent candidates (deeper merge-base wins).
+    /// Returns nil when git fails (unknown ref, not a repo, timeout).
+    func revListCount(repoPath: String, from base: String, to tip: String) async -> Int? {
+        guard let result = try? await runner.run(
+            "git", ["-C", repoPath, "rev-list", "--count", "\(base)..\(tip)"],
+            cwd: nil, env: nil, timeout: 10
+        ), result.exitCode == 0 else { return nil }
+        return Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+}

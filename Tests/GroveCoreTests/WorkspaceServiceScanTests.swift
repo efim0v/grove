@@ -1,0 +1,177 @@
+import XCTest
+@testable import GroveCore
+
+final class WorkspaceServiceScanTests: XCTestCase {
+
+    // MARK: - workspacesRoot template resolution
+
+    func testWorkspacesRootUsesTemplateSubstitution() {
+        let project = ProjectConfig(name: "myproj", path: "/tmp/myproj")
+        var config = GroveConfig.defaultConfig
+        config.workspacesRootTemplate = "~/Workspaces/{project}"
+        config.projects = [project]
+        config.accounts = []
+        let service = WorkspaceService(git: GitService(), claude: ClaudeService(),
+                                       cmux: CmuxService(), config: config)
+        XCTAssertEqual(service.workspacesRoot(for: project), expandTilde("~/Workspaces/myproj"))
+    }
+
+    func testWorkspacesRootOverrideWins() {
+        var project = ProjectConfig(name: "myproj", path: "/tmp/myproj")
+        project.workspacesRoot = "~/CustomRoot/special"
+        var config = GroveConfig.defaultConfig
+        config.workspacesRootTemplate = "~/Workspaces/{project}"
+        config.projects = [project]
+        config.accounts = []
+        let service = WorkspaceService(git: GitService(), claude: ClaudeService(),
+                                       cmux: CmuxService(), config: config)
+        XCTAssertEqual(service.workspacesRoot(for: project), expandTilde("~/CustomRoot/special"))
+    }
+
+    // MARK: - depth basis for parent ranking: rev-list --count base..mergeBase
+
+    func testRevListCountMeasuresDepthFromBase() async throws {
+        let base = try Fixture.tempDir("revlist").resolvingSymlinksInPath()
+        let repo = try Fixture.makeRepo(in: base, name: "r")
+        let wt = base.appendingPathComponent("wt")
+        try Fixture.addWorktree(repo: repo, branch: "feat/a", from: "main", at: wt)
+        try Fixture.commit(repo: wt, file: "a.txt", content: "a", message: "a1")
+        try Fixture.commit(repo: wt, file: "b.txt", content: "b", message: "a2")
+
+        let git = GitService()
+        let mbOpt = await git.mergeBase(repoPath: repo.path, "feat/a", "feat/a")
+        let mb = try XCTUnwrap(mbOpt)                      // tip of feat/a
+        let depthA = await git.revListCount(repoPath: repo.path, from: "main", to: mb)
+        XCTAssertEqual(depthA, 2)
+        let depthBase = await git.revListCount(repoPath: repo.path, from: "main", to: "main")
+        XCTAssertEqual(depthBase, 0)
+    }
+
+    // MARK: - full scan fixture
+
+    func testScanClassifiesGroupsAndStacks() async throws {
+        // One resolved temp base; every fixture path derives from it so that
+        // string comparisons line up with scan's canonical form.
+        let base = try Fixture.tempDir("scan").resolvingSymlinksInPath()
+        let fm = FileManager.default
+        let projectDir = base.appendingPathComponent("project")
+        let wsRoot = base.appendingPathComponent("workspaces")
+        let claudeDir = base.appendingPathComponent("claude-account")
+        try fm.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: wsRoot, withIntermediateDirectories: true)
+
+        // -- repos r1, r2 inside the project
+        let r1 = try Fixture.makeRepo(in: projectDir, name: "r1")
+        let r2 = try Fixture.makeRepo(in: projectDir, name: "r2")
+
+        // -- workspace alpha: worktrees of r1 + r2 on feat/alpha, forked from main
+        let alphaUmbrella = wsRoot.appendingPathComponent("alpha")
+        try Fixture.addWorktree(repo: r1, branch: "feat/alpha", from: "main",
+                                at: alphaUmbrella.appendingPathComponent("r1"))
+        try Fixture.addWorktree(repo: r2, branch: "feat/alpha", from: "main",
+                                at: alphaUmbrella.appendingPathComponent("r2"))
+
+        // one commit on alpha in r1 BEFORE forking beta -> fork-point depth becomes 1
+        try Fixture.commit(repo: alphaUmbrella.appendingPathComponent("r1"),
+                           file: "alpha.txt", content: "alpha work", message: "alpha: work")
+
+        // -- workspace beta: forked FROM feat/alpha, r1 only, two own commits
+        let betaUmbrella = wsRoot.appendingPathComponent("beta")
+        try Fixture.addWorktree(repo: r1, branch: "feat/beta", from: "feat/alpha",
+                                at: betaUmbrella.appendingPathComponent("r1"))
+        try Fixture.commit(repo: betaUmbrella.appendingPathComponent("r1"),
+                           file: "beta1.txt", content: "b1", message: "beta: one")
+        try Fixture.commit(repo: betaUmbrella.appendingPathComponent("r1"),
+                           file: "beta2.txt", content: "b2", message: "beta: two")
+
+        // -- loose worktree gamma under r1/.worktrees/gamma (outside workspaces root)
+        try Fixture.addWorktree(repo: r1, branch: "gamma", from: "main",
+                                at: r1.appendingPathComponent(".worktrees").appendingPathComponent("gamma"))
+
+        // -- claude session fixture: one jsonl whose cwd is the alpha umbrella
+        let umbrella = alphaUmbrella.path
+        let sessionDir = claudeDir
+            .appendingPathComponent("projects")
+            .appendingPathComponent(ClaudeService.mangle(umbrella))
+        try fm.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let jsonl = """
+        {"type":"user","sessionId":"x","cwd":"\(umbrella)","gitBranch":"feat/alpha","message":{"role":"user","content":"Start alpha work"}}
+        {"type":"ai-title","aiTitle":"Alpha feature"}
+        """
+        try jsonl.write(to: sessionDir.appendingPathComponent("x.jsonl"),
+                        atomically: true, encoding: .utf8)
+
+        // -- cmux: MockRunner-backed service returning one workspace inside the alpha umbrella
+        let cmuxJSON = """
+        [{"id":"cmux-1","title":"alpha","current_directory":"\(umbrella)/r1"}]
+        """
+        let mock = MockRunner(results: [ProcessResult(exitCode: 0, stdout: cmuxJSON, stderr: "")])
+        let cmuxService = CmuxService(runner: mock, cmuxPath: "/opt/fake/cmux")
+
+        // -- config + service (REAL GitService, REAL ClaudeService)
+        var project = ProjectConfig(name: "scanproj", path: projectDir.path)
+        project.workspacesRoot = wsRoot.path
+        var config = GroveConfig.defaultConfig
+        config.projects = [project]
+        config.accounts = [AccountConfig(name: "default", configDir: claudeDir.path)]
+        let service = WorkspaceService(git: GitService(), claude: ClaudeService(),
+                                       cmux: cmuxService, config: config)
+
+        let snapshot = await service.scan(project: project)
+
+        // -- repos discovered, no errors anywhere
+        XCTAssertEqual(Set(snapshot.repos.map(\.dirName)), ["r1", "r2"])
+        XCTAssertEqual(snapshot.errors, [])
+
+        // -- workspaces grouped by umbrella subdir name
+        XCTAssertEqual(snapshot.workspaces.map(\.name).sorted(), ["alpha", "beta"])
+        guard let alpha = snapshot.workspaces.first(where: { $0.name == "alpha" }),
+              let beta = snapshot.workspaces.first(where: { $0.name == "beta" }) else {
+            XCTFail("missing alpha/beta workspaces")
+            return
+        }
+        XCTAssertEqual(alpha.umbrellaPath, umbrella)
+        XCTAssertEqual(Set(alpha.repos.map(\.repo.dirName)), ["r1", "r2"])
+        XCTAssertEqual(beta.repos.map(\.repo.dirName), ["r1"])
+
+        // -- stacking: alpha is a root, beta is stacked on alpha
+        XCTAssertNil(alpha.parentName)
+        XCTAssertEqual(beta.parentName, "alpha")
+
+        // -- beta meta is relative to feat/alpha, NOT main
+        let betaR1 = try XCTUnwrap(beta.repos.first)
+        let betaMeta = try XCTUnwrap(betaR1.meta)
+        XCTAssertEqual(betaMeta.baseBranch, "feat/alpha")
+        XCTAssertEqual(betaMeta.ahead, 2)        // beta-only commits; would be 3 against main
+        XCTAssertEqual(betaMeta.behind, 0)
+        let alphaR1 = try XCTUnwrap(alpha.repos.first(where: { $0.repo.dirName == "r1" }))
+        XCTAssertEqual(betaMeta.forkPoint, alphaR1.entry.head)
+
+        // -- alpha meta is relative to main
+        let alphaMeta = try XCTUnwrap(alphaR1.meta)
+        XCTAssertEqual(alphaMeta.baseBranch, "main")
+        XCTAssertEqual(alphaMeta.ahead, 1)
+
+        // -- loose worktree gamma
+        XCTAssertEqual(snapshot.loose.count, 1)
+        let gamma = try XCTUnwrap(snapshot.loose.first)
+        XCTAssertEqual(gamma.repo.dirName, "r1")
+        XCTAssertEqual(gamma.entry.branch, "gamma")
+        XCTAssertTrue(gamma.entry.path.hasSuffix("/.worktrees/gamma"))
+        XCTAssertEqual(gamma.sessions, [])
+        XCTAssertEqual(gamma.cmuxWorkspaces, [])
+
+        // -- sessions attached to alpha only
+        XCTAssertEqual(alpha.sessions.count, 1)
+        XCTAssertEqual(alpha.sessions.first?.cwd, umbrella)
+        XCTAssertEqual(alpha.sessions.first?.id, "x")
+        XCTAssertEqual(alpha.sessions.first?.accountName, "default")
+        XCTAssertEqual(alpha.liveProcesses, [])
+        XCTAssertEqual(beta.sessions, [])
+
+        // -- cmux matched to alpha only (current_directory inside the umbrella)
+        XCTAssertEqual(alpha.cmuxWorkspaces,
+                       [CmuxWorkspace(id: "cmux-1", title: "alpha", currentDirectory: umbrella + "/r1")])
+        XCTAssertEqual(beta.cmuxWorkspaces, [])
+    }
+}
