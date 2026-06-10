@@ -11,6 +11,21 @@ public struct RepoInfo: Sendable, Hashable {
     }
 }
 
+/// One entry of `git worktree list --porcelain`.
+public struct WorktreeEntry: Sendable, Equatable {
+    public let path: String
+    public let branch: String?       // nil when detached
+    public let head: String
+    public let isMain: Bool
+
+    public init(path: String, branch: String?, head: String, isMain: Bool) {
+        self.path = path
+        self.branch = branch
+        self.head = head
+        self.isMain = isMain
+    }
+}
+
 public struct GitService: Sendable {
     let runner: any CommandRunning
 
@@ -63,5 +78,111 @@ public struct GitService: Sendable {
         var isDirectory: ObjCBool = false
         let gitPath = dir.appendingPathComponent(".git").path
         return fm.fileExists(atPath: gitPath, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    // MARK: - Worktree listing
+
+    public func worktrees(repo: RepoInfo) async throws -> [WorktreeEntry] {
+        let result = try await runner.runOK("git", ["-C", repo.path, "worktree", "list", "--porcelain"])
+        return Self.parseWorktreePorcelain(result.stdout)
+    }
+
+    /// Porcelain format: blank-line-separated stanzas of
+    /// `worktree <path>` / `HEAD <sha>` / (`branch refs/heads/<name>` | `detached`).
+    /// `bare`, `locked`, `prunable` lines are ignored. The main worktree is listed first.
+    static func parseWorktreePorcelain(_ output: String) -> [WorktreeEntry] {
+        var entries: [WorktreeEntry] = []
+        var path: String?
+        var head: String?
+        var branch: String?
+
+        func flush() {
+            if let path, let head {
+                entries.append(WorktreeEntry(path: path, branch: branch, head: head, isMain: entries.isEmpty))
+            }
+            path = nil
+            head = nil
+            branch = nil
+        }
+
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            if line.isEmpty {
+                flush()
+            } else if line.hasPrefix("worktree ") {
+                path = String(line.dropFirst("worktree ".count))
+            } else if line.hasPrefix("HEAD ") {
+                head = String(line.dropFirst("HEAD ".count))
+            } else if line.hasPrefix("branch ") {
+                var name = String(line.dropFirst("branch ".count))
+                if name.hasPrefix("refs/heads/") {
+                    name = String(name.dropFirst("refs/heads/".count))
+                }
+                branch = name
+            }
+            // "detached", "bare", "locked", "prunable": no extra data needed.
+        }
+        flush()
+        return entries
+    }
+
+    // MARK: - Branches
+
+    public func baseBranch(repo: RepoInfo, override: String?) async -> String {
+        if let override {
+            return override
+        }
+        if let result = try? await runner.run(
+            "git", ["-C", repo.path, "symbolic-ref", "refs/remotes/origin/HEAD"],
+            cwd: nil, env: nil, timeout: 10
+        ), result.exitCode == 0 {
+            let ref = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            let prefix = "refs/remotes/origin/"
+            if ref.hasPrefix(prefix), ref.count > prefix.count {
+                return String(ref.dropFirst(prefix.count))
+            }
+        }
+        for candidate in ["main", "master", "dev"] {
+            if await branchExists(repoPath: repo.path, candidate) {
+                return candidate
+            }
+        }
+        return "main"
+    }
+
+    public func branchExists(repoPath: String, _ branch: String) async -> Bool {
+        guard let result = try? await runner.run(
+            "git", ["-C", repoPath, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"],
+            cwd: nil, env: nil, timeout: 10
+        ) else { return false }
+        return result.exitCode == 0
+    }
+
+    // MARK: - Worktree mutations
+
+    public func addWorktree(repoPath: String, branch: String, startPoint: String, at path: String, createBranch: Bool) async throws {
+        var args = ["-C", repoPath, "worktree", "add"]
+        if createBranch {
+            args += ["-b", branch, path, startPoint]
+        } else {
+            // Branch already exists: check it out into the new worktree (no -b);
+            // startPoint is not used. git itself rejects a branch that is already
+            // checked out in another worktree -> runOK throws GroveError.processFailed.
+            args += [path, branch]
+        }
+        _ = try await runner.runOK("git", args)
+    }
+
+    public func removeWorktree(repoPath: String, at path: String, force: Bool) async throws {
+        var args = ["-C", repoPath, "worktree", "remove"]
+        if force {
+            args.append("--force")
+        }
+        args.append(path)
+        _ = try await runner.runOK("git", args)
+    }
+
+    public func deleteBranch(repoPath: String, _ branch: String) async throws {
+        _ = try await runner.runOK("git", ["-C", repoPath, "branch", "-D", branch])
     }
 }
