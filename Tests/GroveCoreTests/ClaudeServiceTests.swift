@@ -263,4 +263,77 @@ final class ClaudeServiceTests: XCTestCase {
         XCTAssertEqual(secondResult.first?.title, "Cached Title",
                        "cache must be hit when mtime is unchanged — stale on-disk content must be ignored")
     }
+
+    // MARK: - liveProcesses
+
+    private func makeSessionsDir() throws -> URL {
+        let dir = configDir.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    func testLiveProcessesKeepsOnlyValidatedPidsAndSkipsMalformedJson() throws {
+        let dir = try makeSessionsDir()
+        try #"{"pid":54321,"sessionId":"0a1b2c3d-0001-4000-8000-000000000001","cwd":"/work/demo_app","status":"busy","startedAt":"2026-06-10T09:58:11.000Z","procStart":"Wed Jun 10 09:58:10 2026"}"#
+            .write(to: dir.appendingPathComponent("54321.json"), atomically: true, encoding: .utf8)
+        try #"{"pid":61234,"sessionId":"0a1b2c3d-0002-4000-8000-000000000002","cwd":"/work/other_app","status":"idle","startedAt":"2026-06-09T18:12:00.000Z","procStart":"Tue Jun  9 18:11:58 2026"}"#
+            .write(to: dir.appendingPathComponent("61234.json"), atomically: true, encoding: .utf8)
+        try "{ not valid json at all"
+            .write(to: dir.appendingPathComponent("70001.json"), atomically: true, encoding: .utf8)
+
+        var checkedPids: [Int32] = []
+        service.processValidator = { pid in
+            checkedPids.append(pid)
+            return pid == 54321        // 54321 alive, 61234 dead
+        }
+
+        let live = service.liveProcesses(account: account)
+        XCTAssertEqual(live.count, 1)
+        let process = try XCTUnwrap(live.first)
+        XCTAssertEqual(process.pid, 54321)
+        XCTAssertEqual(process.sessionId, "0a1b2c3d-0001-4000-8000-000000000001")
+        XCTAssertEqual(process.cwd, "/work/demo_app")
+        XCTAssertEqual(process.status, "busy")
+        XCTAssertEqual(process.accountName, "work")
+        XCTAssertEqual(checkedPids.sorted(), [54321, 61234],
+                       "malformed json must be skipped before pid validation")
+    }
+
+    func testLiveProcessesEmptyWhenSessionsDirMissing() {
+        service.processValidator = { _ in
+            XCTFail("validator must not be called when sessions dir is absent")
+            return true
+        }
+        XCTAssertEqual(service.liveProcesses(account: account), [])
+    }
+
+    // MARK: - launchCommand
+
+    func testLaunchCommandDefaultAccountIsPlainClaude() {
+        let def = AccountConfig(name: "default", configDir: "~/.claude")
+        XCTAssertEqual(ClaudeService.launchCommand(account: def), "claude")
+    }
+
+    func testLaunchCommandCustomDirPrefixesQuotedConfigDir() {
+        let custom = AccountConfig(name: "work", configDir: "/Users/dev/.claude-accounts/work")
+        XCTAssertEqual(ClaudeService.launchCommand(account: custom),
+                       "CLAUDE_CONFIG_DIR='/Users/dev/.claude-accounts/work' claude")
+    }
+
+    func testLaunchCommandAppendsQuotedResumeId() {
+        let custom = AccountConfig(name: "work", configDir: "/Users/dev/.claude-accounts/work")
+        XCTAssertEqual(
+            ClaudeService.launchCommand(account: custom, resume: "0a1b2c3d-0001-4000-8000-000000000001"),
+            "CLAUDE_CONFIG_DIR='/Users/dev/.claude-accounts/work' claude --resume '0a1b2c3d-0001-4000-8000-000000000001'")
+        let def = AccountConfig(name: "default", configDir: "~/.claude")
+        XCTAssertEqual(
+            ClaudeService.launchCommand(account: def, resume: "0a1b2c3d-0001-4000-8000-000000000001"),
+            "claude --resume '0a1b2c3d-0001-4000-8000-000000000001'")
+    }
+
+    func testLaunchCommandQuotesSingleQuoteInConfigDir() {
+        let odd = AccountConfig(name: "odd", configDir: "/tmp/it's here/claude")
+        XCTAssertEqual(ClaudeService.launchCommand(account: odd),
+                       "CLAUDE_CONFIG_DIR='/tmp/it'\\''s here/claude' claude")
+    }
 }

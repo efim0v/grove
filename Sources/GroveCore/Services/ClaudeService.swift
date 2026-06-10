@@ -31,6 +31,22 @@ public struct ClaudeSession: Sendable, Equatable {
     }
 }
 
+public struct LiveProcess: Sendable, Equatable {
+    public let pid: Int32
+    public let sessionId: String
+    public let cwd: String
+    public let status: String
+    public let accountName: String
+
+    public init(pid: Int32, sessionId: String, cwd: String, status: String, accountName: String) {
+        self.pid = pid
+        self.sessionId = sessionId
+        self.cwd = cwd
+        self.status = status
+        self.accountName = accountName
+    }
+}
+
 /// Reads Claude Code account identity, session transcripts and (Task 9) live processes
 /// from a `CLAUDE_CONFIG_DIR`. A class (not a struct) so it can keep an mtime-keyed
 /// parse cache: a jsonl file is re-parsed only when its modification date changes.
@@ -188,5 +204,72 @@ public final class ClaudeService {
             if !texts.isEmpty { return texts.joined(separator: " ") }
         }
         return nil
+    }
+
+    // MARK: - Live processes
+
+    /// Injectable for tests. Default: pid is alive AND its command line mentions "claude"
+    /// (sessions/<pid>.json files can go stale after crashes; pids get reused).
+    internal var processValidator: (Int32) -> Bool = ClaudeService.defaultProcessValidator
+
+    /// Live Claude processes of `account`: `<configDir>/sessions/<pid>.json` records
+    /// whose pid passes `processValidator`. Malformed JSON files are skipped.
+    /// Sorted by pid ascending for deterministic output.
+    public func liveProcesses(account: AccountConfig) -> [LiveProcess] {
+        let fm = FileManager.default
+        let dir = expandTilde(account.configDir) + "/sessions"
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
+        var result: [LiveProcess] = []
+        for name in names where name.hasSuffix(".json") {
+            let path = dir + "/" + name
+            guard
+                let data = fm.contents(atPath: path),
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                let pidValue = object["pid"] as? Int,
+                let sessionId = object["sessionId"] as? String,
+                let cwd = object["cwd"] as? String,
+                let status = object["status"] as? String
+            else { continue }
+            let pid = Int32(pidValue)
+            guard processValidator(pid) else { continue }
+            result.append(LiveProcess(pid: pid, sessionId: sessionId, cwd: cwd,
+                                      status: status, accountName: account.name))
+        }
+        return result.sorted { $0.pid < $1.pid }
+    }
+
+    internal static func defaultProcessValidator(_ pid: Int32) -> Bool {
+        guard kill(pid, 0) == 0 else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-o", "command=", "-p", String(pid)]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return false }
+        let command = String(data: data, encoding: .utf8) ?? ""
+        return command.contains("claude")
+    }
+
+    // MARK: - Launch commands
+
+    /// Shell command string for cmux `--command`. Default account (expanded configDir
+    /// == $HOME/.claude) needs no env prefix; custom accounts get CLAUDE_CONFIG_DIR.
+    /// Both the config dir and the resume session id are single-quote shell-quoted.
+    public static func launchCommand(account: AccountConfig, resume sessionId: String? = nil) -> String {
+        let dir = expandTilde(account.configDir)
+        let isDefaultAccount = dir == NSHomeDirectory() + "/.claude"
+        var command = isDefaultAccount ? "claude" : "CLAUDE_CONFIG_DIR=\(shellQuote(dir)) claude"
+        if let sessionId {
+            command += " --resume \(shellQuote(sessionId))"
+        }
+        return command
     }
 }
