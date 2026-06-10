@@ -130,13 +130,15 @@ func cmdSessions(_ rest: [String]) async -> Int32 {
         eprint("usage: grove sessions <cwd> [--json]")
         return 2
     }
-    let cwd = absolutePath(parsed.positionals[0])
+    // Canonicalize the same way WorkspaceService.scan does, so /var vs
+    // /private/var spellings of the same directory still match live processes.
+    let cwd = canonicalPath(absolutePath(parsed.positionals[0]))
     let claude = ClaudeService()
     var sessions: [ClaudeSession] = []
     var live: [LiveProcess] = []
     for account in GroveConfig.defaultConfig.accounts {
         sessions.append(contentsOf: claude.sessions(for: cwd, account: account))
-        live.append(contentsOf: claude.liveProcesses(account: account).filter { $0.cwd == cwd })
+        live.append(contentsOf: claude.liveProcesses(account: account).filter { canonicalPath($0.cwd) == cwd })
     }
     sessions.sort { $0.lastActivity > $1.lastActivity }
     if parsed.flags.contains("--json") {

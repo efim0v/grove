@@ -10,3 +10,11 @@ public func expandTilde(_ path: String) -> String {
 public func shellQuote(_ s: String) -> String {
     "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
+
+/// Foundation-canonical form of a path so comparisons survive macOS
+/// /var -> /private/var symlinks: git and live processes report realpaths
+/// (/private/var/...), resolvingSymlinksInPath() maps both forms to the
+/// /var/... spelling.
+public func canonicalPath(_ path: String) -> String {
+    URL(fileURLWithPath: expandTilde(path)).resolvingSymlinksInPath().path
+}

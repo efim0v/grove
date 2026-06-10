@@ -84,10 +84,9 @@ public struct WorkspaceService {
     }
 
     /// Foundation-canonical form of a path so comparisons survive macOS
-    /// /var -> /private/var symlinks: git reports realpaths (/private/var/...),
-    /// resolvingSymlinksInPath() maps both forms to the /var/... spelling.
+    /// /var -> /private/var symlinks (see canonicalPath in Paths.swift).
     private func canonical(_ path: String) -> String {
-        URL(fileURLWithPath: expandTilde(path)).resolvingSymlinksInPath().path
+        canonicalPath(path)
     }
 
     /// Result of listing one repo's worktrees inside the scan task group.
