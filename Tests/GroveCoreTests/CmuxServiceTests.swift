@@ -95,24 +95,40 @@ final class CmuxServiceTests: XCTestCase {
 
     // MARK: newWorkspace
 
-    func testNewWorkspaceBuildsExactArgs() async throws {
-        let mock = MockRunner(results: [ok("")])
+    func testNewWorkspaceBuildsExactArgsAndOpensAppWhenFocused() async throws {
+        let mock = MockRunner(results: [ok(""), ok("")])
         let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
         try await cmux.newWorkspace(name: "alpha", cwd: "/tmp/ws/alpha", command: "claude", focus: true)
-        XCTAssertEqual(mock.invocations.count, 1)
+        XCTAssertEqual(mock.invocations.count, 2)
         XCTAssertEqual(mock.invocations[0].executable, "/opt/cmux/bin/cmux")
         XCTAssertEqual(mock.invocations[0].args,
                        ["new-workspace", "--name", "alpha", "--cwd", "/tmp/ws/alpha",
                         "--command", "claude", "--focus", "true"])
+        // cmux constrains focus-stealing: "--focus true" must be followed by app activation.
+        XCTAssertEqual(mock.invocations[1].executable, "/usr/bin/open")
+        XCTAssertEqual(mock.invocations[1].args, ["-b", "com.cmuxterm.app"])
     }
 
     func testNewWorkspaceOmitsCommandWhenNil() async throws {
-        let mock = MockRunner(results: [ok("")])
+        let mock = MockRunner(results: [ok(""), ok("")])
         let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
         try await cmux.newWorkspace(name: "alpha", cwd: "/tmp/ws/alpha", command: nil, focus: true)
-        XCTAssertEqual(mock.invocations.count, 1)
+        XCTAssertEqual(mock.invocations.count, 2)
         XCTAssertEqual(mock.invocations[0].args,
                        ["new-workspace", "--name", "alpha", "--cwd", "/tmp/ws/alpha", "--focus", "true"])
+        XCTAssertEqual(mock.invocations[1].executable, "/usr/bin/open")
+        XCTAssertEqual(mock.invocations[1].args, ["-b", "com.cmuxterm.app"])
+    }
+
+    func testNewWorkspaceDoesNotOpenAppWhenNotFocused() async throws {
+        let mock = MockRunner(results: [ok("")])
+        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        try await cmux.newWorkspace(name: "alpha", cwd: "/tmp/ws/alpha", command: "claude", focus: false)
+        XCTAssertEqual(mock.invocations.count, 1)
+        XCTAssertEqual(mock.invocations[0].executable, "/opt/cmux/bin/cmux")
+        XCTAssertEqual(mock.invocations[0].args,
+                       ["new-workspace", "--name", "alpha", "--cwd", "/tmp/ws/alpha",
+                        "--command", "claude", "--focus", "false"])
     }
 
     // MARK: selectWorkspace

@@ -87,16 +87,23 @@ public struct CmuxService: Sendable {
         return dtos.map { CmuxWorkspace(id: $0.id, title: $0.title ?? "", currentDirectory: $0.currentDirectory) }
     }
 
+    /// cmux constrains focus-stealing, so "--focus true" alone does not bring
+    /// the app forward; an explicit `open -b` activation is required after it.
+    private func activateApp() async throws {
+        _ = try await runner.runOK("/usr/bin/open", ["-b", Self.bundleID], cwd: nil, env: nil, timeout: 10)
+    }
+
     public func newWorkspace(name: String, cwd: String, command: String?, focus: Bool) async throws {
         var args = ["new-workspace", "--name", name, "--cwd", cwd]
         if let command { args += ["--command", command] }
         args += ["--focus", focus ? "true" : "false"]
         _ = try await runner.runOK(executable, args, cwd: nil, env: nil, timeout: 10)
+        if focus { try await activateApp() }
     }
 
     public func selectWorkspace(_ idOrRef: String) async throws {
         _ = try await runner.runOK(executable, ["select-workspace", "--workspace", idOrRef], cwd: nil, env: nil, timeout: 10)
-        _ = try await runner.runOK("/usr/bin/open", ["-b", Self.bundleID], cwd: nil, env: nil, timeout: 10)
+        try await activateApp()
     }
 
     /// Claude session id -> cmux workspace id, from cmux's hook registry
