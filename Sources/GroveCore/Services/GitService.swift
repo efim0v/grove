@@ -187,6 +187,19 @@ public struct GitService: Sendable {
     }
 }
 
+// MARK: - Stacking primitives
+
+extension GitService {
+    /// `git merge-base a b`; nil when either ref is unknown or histories are unrelated.
+    public func mergeBase(repoPath: String, _ a: String, _ b: String) async -> String? {
+        guard let result = try? await runner.runOK("git", ["-C", repoPath, "merge-base", a, b]) else {
+            return nil
+        }
+        let hash = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return hash.isEmpty ? nil : hash
+    }
+}
+
 // MARK: - Worktree meta model
 
 public struct WorktreeMeta: Sendable, Equatable {
