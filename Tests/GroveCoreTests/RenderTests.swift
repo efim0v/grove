@@ -77,6 +77,47 @@ final class RenderTests: XCTestCase {
         XCTAssertEqual(renderSnapshotTree(snapshot), expected)
     }
 
+    func testRenderSnapshotTreeParentCycleRendersAsRoots() {
+        // Upstream parent resolution can tie-break two siblings into pointing at
+        // each other (alpha->beta and beta->alpha). Cycle members are never roots
+        // and never reached from one, so a naive walk drops them silently. The
+        // renderer must surface them as additional roots instead.
+        let r1 = RepoInfo(path: "/tmp/demo/r1", dirName: "r1")
+        let snapshot = ProjectSnapshot(
+            project: ProjectConfig(name: "demo", path: "/tmp/demo"),
+            repos: [r1],
+            workspaces: [
+                ws("alpha", parent: "beta", states: [state(repo: r1, branch: "feat/alpha", dirty: 0)]),
+                ws("beta", parent: "alpha", states: [state(repo: r1, branch: "feat/beta", dirty: 0)]),
+                ws("parent", parent: nil, states: [state(repo: r1, branch: "feat/parent", dirty: 0)]),
+            ],
+            loose: [], errors: [])
+        let expected = """
+        demo — 1 repo(s), 3 workspace(s)
+        ├─● parent (feat/parent) ✓ · 1 repo(s)
+        └─● alpha (feat/alpha) ✓ · 1 repo(s)
+          └─● beta (feat/beta) ✓ · 1 repo(s)
+        """
+        XCTAssertEqual(renderSnapshotTree(snapshot), expected)
+    }
+
+    func testRenderSnapshotTreeSelfParentRendersAsRoot() {
+        // A workspace naming itself as parent is a one-node cycle; it must still
+        // be rendered (as a root) rather than vanish from the tree.
+        let r1 = RepoInfo(path: "/tmp/demo/r1", dirName: "r1")
+        let snapshot = ProjectSnapshot(
+            project: ProjectConfig(name: "demo", path: "/tmp/demo"),
+            repos: [r1],
+            workspaces: [ws("omega", parent: "omega",
+                            states: [state(repo: r1, branch: "feat/omega", dirty: 0)])],
+            loose: [], errors: [])
+        let expected = """
+        demo — 1 repo(s), 1 workspace(s)
+        └─● omega (feat/omega) ✓ · 1 repo(s)
+        """
+        XCTAssertEqual(renderSnapshotTree(snapshot), expected)
+    }
+
     // MARK: - renderSessions
 
     func testRenderSessions() {

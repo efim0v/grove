@@ -28,10 +28,29 @@ public func renderSnapshotTree(_ snapshot: ProjectSnapshot) -> String {
         return label
     }
 
+    // Inconsistent parent data can form cycles (e.g. alpha->beta and beta->alpha):
+    // cycle members are never roots and never reached from one, so a naive walk
+    // would drop them silently. Promote one representative per unreached cycle
+    // (in name order) to an additional root, mirroring the missing-parent defense.
+    var reachable = Set<String>()
+    func markReachable(_ workspace: FeatureWorkspace) {
+        guard reachable.insert(workspace.name).inserted else { return }
+        for kid in children[workspace.name] ?? [] { markReachable(kid) }
+    }
+    for root in roots { markReachable(root) }
+    for workspace in snapshot.workspaces.sorted(by: { $0.name < $1.name })
+    where !reachable.contains(workspace.name) {
+        roots.append(workspace)
+        markReachable(workspace)
+    }
+
+    var visited = Set<String>()
     func render(_ workspace: FeatureWorkspace, prefix: String, isLast: Bool) {
+        visited.insert(workspace.name)
         let connector = isLast ? "└─" : "├─"
         lines.append(prefix + connector + nodeLabel(workspace))
-        let kids = children[workspace.name] ?? []
+        // Skip already-visited kids so cycle back-edges cannot recurse forever.
+        let kids = (children[workspace.name] ?? []).filter { !visited.contains($0.name) }
         let childPrefix = prefix + (isLast ? "  " : "│ ")
         for (index, kid) in kids.enumerated() {
             render(kid, prefix: childPrefix, isLast: index == kids.count - 1)
