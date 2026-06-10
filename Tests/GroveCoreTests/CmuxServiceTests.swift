@@ -38,7 +38,35 @@ final class CmuxServiceTests: XCTestCase {
 
     // MARK: listWorkspaces
 
-    func testListWorkspacesDecodesSnakeCaseJSON() async throws {
+    /// Real cmux (0.64.4) wraps the workspace list in an envelope object.
+    func testListWorkspacesDecodesEnvelopeJSON() async throws {
+        let json = """
+        {
+          "window_id" : "B87E5902-D79A-4F07-9CBB-13631DC98AB7",
+          "window_ref" : "window:1",
+          "workspaces" : [
+            {"id":"ws-1","title":"alpha","current_directory":"/Users/t/Workspaces/p/alpha",
+             "index":0,"pinned":false,"ref":"workspace:15","selected":false,
+             "custom_color":null,"description":null,"listening_ports":[]},
+            {"id":"ws-2","title":"other","current_directory":"/tmp/elsewhere",
+             "index":1,"pinned":false,"ref":"workspace:10","selected":true,
+             "custom_color":null,"description":null,"listening_ports":[]}
+          ]
+        }
+        """
+        let mock = MockRunner(results: [ok(json)])
+        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let list = try await cmux.listWorkspaces()
+        XCTAssertEqual(list, [
+            CmuxWorkspace(id: "ws-1", title: "alpha", currentDirectory: "/Users/t/Workspaces/p/alpha"),
+            CmuxWorkspace(id: "ws-2", title: "other", currentDirectory: "/tmp/elsewhere"),
+        ])
+        XCTAssertEqual(mock.invocations.count, 1)
+        XCTAssertEqual(mock.invocations[0].args, ["rpc", "workspace.list", "{}"])
+    }
+
+    /// Older/newer cmux builds that emit a bare top-level array must keep working.
+    func testListWorkspacesFallsBackToBareArrayJSON() async throws {
         let json = """
         [{"id":"ws-1","title":"alpha","current_directory":"/Users/t/Workspaces/p/alpha"},
          {"id":"ws-2","title":"other","current_directory":"/tmp/elsewhere"}]
@@ -52,6 +80,17 @@ final class CmuxServiceTests: XCTestCase {
         ])
         XCTAssertEqual(mock.invocations.count, 1)
         XCTAssertEqual(mock.invocations[0].args, ["rpc", "workspace.list", "{}"])
+    }
+
+    func testListWorkspacesThrowsOnUnparseableJSON() async {
+        let mock = MockRunner(results: [ok("not json at all")])
+        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        do {
+            _ = try await cmux.listWorkspaces()
+            XCTFail("expected listWorkspaces to throw")
+        } catch {
+            XCTAssertTrue("\(error)".contains("unparseable"), "unexpected error: \(error)")
+        }
     }
 
     // MARK: newWorkspace

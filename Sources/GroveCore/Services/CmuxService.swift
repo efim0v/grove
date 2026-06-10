@@ -63,15 +63,28 @@ public struct CmuxService: Sendable {
         }
     }
 
+    /// Real cmux (>= 0.64) wraps the list in an envelope object:
+    /// {"window_id": "...", "window_ref": "...", "workspaces": [...]}.
+    private struct WorkspaceListEnvelope: Decodable {
+        let workspaces: [WorkspaceDTO]
+    }
+
     public func listWorkspaces() async throws -> [CmuxWorkspace] {
         let result = try await runner.runOK(executable, ["rpc", "workspace.list", "{}"], cwd: nil, env: nil, timeout: 10)
         let data = Data(result.stdout.utf8)
-        do {
-            let dtos = try JSONDecoder().decode([WorkspaceDTO].self, from: data)
-            return dtos.map { CmuxWorkspace(id: $0.id, title: $0.title ?? "", currentDirectory: $0.currentDirectory) }
-        } catch {
-            throw GroveError.cmuxUnavailable("workspace.list returned unparseable JSON: \(error)")
+        let decoder = JSONDecoder()
+        let dtos: [WorkspaceDTO]
+        if let envelope = try? decoder.decode(WorkspaceListEnvelope.self, from: data) {
+            dtos = envelope.workspaces
+        } else {
+            // Fallback for cmux versions that return(ed) a bare top-level array.
+            do {
+                dtos = try decoder.decode([WorkspaceDTO].self, from: data)
+            } catch {
+                throw GroveError.cmuxUnavailable("workspace.list returned unparseable JSON: \(error)")
+            }
         }
+        return dtos.map { CmuxWorkspace(id: $0.id, title: $0.title ?? "", currentDirectory: $0.currentDirectory) }
     }
 
     public func newWorkspace(name: String, cwd: String, command: String?, focus: Bool) async throws {
