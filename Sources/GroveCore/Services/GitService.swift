@@ -25,7 +25,7 @@ public struct GitService: Sendable {
 
     public func discoverRepos(projectPath: String, scanDepth: Int, excluded: Set<String>) async -> [RepoInfo] {
         let fm = FileManager.default
-        let root = URL(fileURLWithPath: expandTilde(projectPath))
+        let root = URL(fileURLWithPath: expandTilde(projectPath)).standardizedFileURL
         var found: [RepoInfo] = []
         var queue: [(url: URL, depth: Int)] = [(root, 0)]
         var nextIndex = 0
