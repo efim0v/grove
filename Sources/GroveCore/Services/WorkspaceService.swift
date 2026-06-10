@@ -90,6 +90,53 @@ public struct WorkspaceService {
         URL(fileURLWithPath: expandTilde(path)).resolvingSymlinksInPath().path
     }
 
+    /// Result of listing one repo's worktrees inside the scan task group.
+    ///
+    /// WORKAROUND (Swift 6.3.2 release builds): this used to be the bare tuple
+    /// `(RepoInfo, [WorktreeEntry], String?)` with the child task returning
+    /// `(repo, try await git.worktrees(repo: repo), nil)` inside a do/catch.
+    /// Under -O that exact closure shape is miscompiled: the child's future
+    /// result is silently dropped (scan saw ZERO worktrees -> zero workspaces)
+    /// and the CLI intermittently aborts with
+    /// "libc++abi: Pure virtual function called!" in
+    /// swift::AsyncTask::completeFuture. Reproduced with a pure-Swift
+    /// CommandRunning stub (no Process/AsyncStream involved), so the trigger is
+    /// the closure/result shape, not ProcessRunner. A named Sendable result
+    /// struct + hoisting the awaited call into a local avoids the broken
+    /// codegen. Regression-covered by ScanWorktreeCollectionTests (release CI).
+    struct WorktreeScanResult: Sendable {
+        let repo: RepoInfo
+        let entries: [WorktreeEntry]
+        let error: String?
+    }
+
+    /// Lists worktrees of every repo in parallel. Failures degrade to error
+    /// strings ("worktrees <dir>: <error>"), never throw.
+    func collectWorktrees(repos: [RepoInfo]) async -> (byRepo: [RepoInfo: [WorktreeEntry]], errors: [String]) {
+        let git = self.git
+        var byRepo: [RepoInfo: [WorktreeEntry]] = [:]
+        var errors: [String] = []
+        await withTaskGroup(of: WorktreeScanResult.self) { group in
+            for repo in repos {
+                group.addTask {
+                    do {
+                        let entries = try await git.worktrees(repo: repo)
+                        return WorktreeScanResult(repo: repo, entries: entries, error: nil)
+                    } catch {
+                        return WorktreeScanResult(repo: repo, entries: [], error: String(describing: error))
+                    }
+                }
+            }
+            for await result in group {
+                byRepo[result.repo] = result.entries
+                if let error = result.error {
+                    errors.append("worktrees \(result.repo.dirName): \(error)")
+                }
+            }
+        }
+        return (byRepo, errors)
+    }
+
     public func scan(project: ProjectConfig) async -> ProjectSnapshot {
         var errors: [String] = []
         let git = self.git
@@ -104,19 +151,8 @@ public struct WorkspaceService {
                                             excluded: Set(project.excludedRepos).union([root]))
 
         // Worktrees of every repo, in parallel.
-        var worktreesByRepo: [RepoInfo: [WorktreeEntry]] = [:]
-        await withTaskGroup(of: (RepoInfo, [WorktreeEntry], String?).self) { group in
-            for repo in repos {
-                group.addTask {
-                    do { return (repo, try await git.worktrees(repo: repo), nil) }
-                    catch { return (repo, [], String(describing: error)) }
-                }
-            }
-            for await (repo, entries, error) in group {
-                worktreesByRepo[repo] = entries
-                if let error { errors.append("worktrees \(repo.dirName): \(error)") }
-            }
-        }
+        let (worktreesByRepo, worktreeErrors) = await collectWorktrees(repos: repos)
+        errors.append(contentsOf: worktreeErrors)
 
         // Base branch per repo (override -> origin/HEAD -> main/master/dev).
         var baseByRepo: [String: String] = [:]   // repo.path -> base branch

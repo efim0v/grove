@@ -83,4 +83,23 @@ final class ProcessRunnerTests: XCTestCase {
         let result = try await runner.runOK("echo", ["ok"])
         XCTAssertEqual(result.stdout, "ok\n")
     }
+
+    /// Stress: many concurrent runs in a TaskGroup, as scan() does. Guards the
+    /// pipe-drain/termination plumbing under release-mode concurrency. (The
+    /// 2026-06 release-only scan bug turned out NOT to be ProcessRunner — see
+    /// ScanWorktreeCollectionTests — but this coverage is worth keeping.)
+    func testManyConcurrentRunsReturnFullOutput() async throws {
+        let runner = self.runner
+        try await withThrowingTaskGroup(of: (Int, ProcessResult).self) { group in
+            for i in 0..<64 {
+                group.addTask {
+                    (i, try await runner.run("echo", ["hello-\(i)"]))
+                }
+            }
+            for try await (i, result) in group {
+                XCTAssertEqual(result.exitCode, 0)
+                XCTAssertEqual(result.stdout, "hello-\(i)\n", "lost stdout for run \(i)")
+            }
+        }
+    }
 }
