@@ -21,14 +21,20 @@ final class CmuxServiceTests: XCTestCase {
     private static let denialLine =
         "ERROR: Access denied — only processes started inside cmux can connect"
 
-    /// Hermetic service: socket denial probe and cmux.json password lookup
-    /// are stubbed so unit tests never touch the real machine state.
+    /// Hermetic service: socket denial probe, cmux.json password lookup and
+    /// the AppleScript backend are stubbed (with a FRESH backend state, never
+    /// the process-wide shared one) so unit tests never touch real machine
+    /// state or the real cmux.
     private func makeCmux(_ runner: MockRunner,
                           path: String = "/opt/cmux/bin/cmux",
-                          greeting: String? = nil) -> CmuxService {
+                          greeting: String? = nil,
+                          scripting: MockScripting? = nil,
+                          backend: CmuxBackendState = CmuxBackendState()) -> CmuxService {
         CmuxService(runner: runner, cmuxPath: path,
                     configFile: "/nonexistent/grove-tests/cmux.json",
-                    socketGreeting: { _ in greeting })
+                    socketGreeting: { _ in greeting },
+                    scripting: scripting ?? MockScripting(running: false),
+                    backend: backend)
     }
 
     // MARK: ping
@@ -217,33 +223,57 @@ final class CmuxServiceTests: XCTestCase {
         XCTAssertEqual(mock.invocations[0].args, ["close-workspace", "--workspace", "ws-9"])
     }
 
-    // MARK: - socket access control (GUI-context denial regression, see CmuxProbe)
+    // MARK: - socket access control (GUI-context denial, see CmuxProbe)
     //
     // cmux's server only accepts clients descended from cmux unless the user
     // allows external automation. Grove launched via LaunchServices is denied:
     // the server writes an ERROR line and hangs up, and the CLI reports only
-    // "Broken pipe". These tests pin the actionable-error conversion.
+    // "Broken pipe". These tests pin the denial -> AppleScript fallback.
 
-    func testEnsureRunningFailsFastWithActionableErrorWhenServerDeniesPeer() async {
+    func testEnsureRunningSwitchesToAppleScriptFastWhenServerDeniesPeer() async throws {
         let mock = MockRunner(results: [brokenPipe()])
-        let cmux = makeCmux(mock, greeting: Self.denialLine)
-        do {
-            try await cmux.ensureRunning()
-            XCTFail("expected denial error")
-        } catch {
-            let text = "\(error)"
-            XCTAssertTrue(text.contains("Access denied"), "got: \(text)")
-            XCTAssertTrue(text.contains("Socket control mode"), "got: \(text)")
-        }
-        // Fail fast: launching cmux cannot help (it IS running), so no
+        let backend = CmuxBackendState()
+        let cmux = makeCmux(mock, greeting: Self.denialLine,
+                            scripting: MockScripting(running: true), backend: backend)
+        try await cmux.ensureRunning()
+        XCTAssertTrue(backend.useAppleScript, "denial must flip the fallback flag")
+        // Fail over fast: launching cmux cannot help (it IS running), so no
         // `open -b` and no 10s ping loop.
         XCTAssertEqual(mock.invocations.count, 1)
         XCTAssertEqual(mock.invocations[0].args, ["ping"])
     }
 
-    func testListWorkspacesConvertsBrokenPipeToActionableDenialError() async {
+    func testListWorkspacesFallsBackToAppleScriptOnDenial() async throws {
+        let ws = CmuxWorkspace(id: "as:T-1", title: "alpha", currentDirectory: "/tmp/a")
         let mock = MockRunner(results: [brokenPipe()])
-        let cmux = makeCmux(mock, greeting: Self.denialLine)
+        let scripting = MockScripting(running: true, listResult: [ws])
+        let backend = CmuxBackendState()
+        let cmux = makeCmux(mock, greeting: Self.denialLine, scripting: scripting, backend: backend)
+        let list = try await cmux.listWorkspaces()
+        XCTAssertEqual(list, [ws])
+        XCTAssertTrue(backend.useAppleScript)
+        XCTAssertEqual(scripting.calls, [.list])
+    }
+
+    /// "Access denied" in the CLI output alone (no greeting confirmation
+    /// available) is denial evidence too.
+    func testAccessDeniedInStderrAloneTriggersFallback() async throws {
+        let denied = ProcessResult(exitCode: 1, stdout: "", stderr: Self.denialLine + "\n")
+        let mock = MockRunner(results: [denied])
+        let scripting = MockScripting(running: true)
+        let backend = CmuxBackendState()
+        let cmux = makeCmux(mock, greeting: nil, scripting: scripting, backend: backend)
+        _ = try await cmux.listWorkspaces()
+        XCTAssertTrue(backend.useAppleScript)
+        XCTAssertEqual(scripting.calls, [.list])
+    }
+
+    /// When the AppleScript leg is ALSO unavailable (cmux app gone), the
+    /// actionable denial explanation must still surface.
+    func testListWorkspacesDenialWithoutAppleScriptThrowsActionableError() async {
+        let mock = MockRunner(results: [brokenPipe()])
+        let cmux = makeCmux(mock, greeting: Self.denialLine,
+                            scripting: MockScripting(running: false))
         do {
             _ = try await cmux.listWorkspaces()
             XCTFail("expected denial error")
@@ -251,6 +281,7 @@ final class CmuxServiceTests: XCTestCase {
             let text = "\(error)"
             XCTAssertTrue(text.contains("cmux unavailable"), "got: \(text)")
             XCTAssertTrue(text.contains("Access denied"), "got: \(text)")
+            XCTAssertTrue(text.contains("Socket control mode"), "got: \(text)")
         }
     }
 
@@ -270,6 +301,101 @@ final class CmuxServiceTests: XCTestCase {
         }
     }
 
+    // MARK: - backend selection (socket primary, AppleScript fallback)
+
+    func testListWorkspacesRetriesSocketAndClearsFlagWhenItRecovers() async throws {
+        let json = #"{"workspaces": [{"id":"ws-1","title":"a","current_directory":"/t"}]}"#
+        let mock = MockRunner(results: [ok(json)])
+        let scripting = MockScripting(running: true)
+        let backend = CmuxBackendState()
+        backend.useAppleScript = true  // fallback previously engaged
+        let cmux = makeCmux(mock, scripting: scripting, backend: backend)
+        let list = try await cmux.listWorkspaces()
+        XCTAssertEqual(list, [CmuxWorkspace(id: "ws-1", title: "a", currentDirectory: "/t")])
+        XCTAssertFalse(backend.useAppleScript, "socket success must clear the fallback flag")
+        XCTAssertEqual(scripting.calls, [], "AppleScript must not be consulted when the socket works")
+        XCTAssertEqual(mock.invocations.count, 1)
+    }
+
+    func testPingTrueViaAppleScriptWhenDenied() async {
+        let mock = MockRunner(results: [brokenPipe()])
+        let backend = CmuxBackendState()
+        let cmux = makeCmux(mock, greeting: Self.denialLine,
+                            scripting: MockScripting(running: true), backend: backend)
+        let alive = await cmux.ping()
+        XCTAssertTrue(alive)
+        XCTAssertTrue(backend.useAppleScript)
+    }
+
+    func testPingFalseWhenDeniedAndAppleScriptUnavailable() async {
+        let mock = MockRunner(results: [brokenPipe()])
+        let backend = CmuxBackendState()
+        let cmux = makeCmux(mock, greeting: Self.denialLine,
+                            scripting: MockScripting(running: false), backend: backend)
+        let alive = await cmux.ping()
+        XCTAssertFalse(alive)
+    }
+
+    func testNewWorkspaceRoutesToAppleScriptWhenFlagSet() async throws {
+        let mock = MockRunner(results: [ok("")])
+        let scripting = MockScripting(running: true)
+        let backend = CmuxBackendState()
+        backend.useAppleScript = true
+        let cmux = makeCmux(mock, scripting: scripting, backend: backend)
+        try await cmux.newWorkspace(name: "alpha", cwd: "/tmp/ws/alpha", command: "claude", focus: true)
+        XCTAssertEqual(scripting.calls,
+                       [.newWorkspace(cwd: "/tmp/ws/alpha", command: "claude", focus: true)])
+        // The cmux CLI is bypassed; only the focus-activation `open -b` runs.
+        XCTAssertEqual(mock.invocations.count, 1)
+        XCTAssertEqual(mock.invocations[0].executable, "/usr/bin/open")
+        XCTAssertEqual(mock.invocations[0].args, ["-b", "com.cmuxterm.app"])
+    }
+
+    func testNewWorkspaceFallsBackMidCallOnDenial() async throws {
+        let mock = MockRunner(results: [brokenPipe()])
+        let scripting = MockScripting(running: true)
+        let backend = CmuxBackendState()
+        let cmux = makeCmux(mock, greeting: Self.denialLine, scripting: scripting, backend: backend)
+        try await cmux.newWorkspace(name: "alpha", cwd: "/tmp/ws/alpha", command: nil, focus: false)
+        XCTAssertTrue(backend.useAppleScript)
+        XCTAssertEqual(scripting.calls,
+                       [.newWorkspace(cwd: "/tmp/ws/alpha", command: nil, focus: false)])
+        // focus=false: no `open -b`; the single runner call is the denied CLI attempt.
+        XCTAssertEqual(mock.invocations.count, 1)
+    }
+
+    func testSelectWorkspaceRoutesNamespacedIdToAppleScript() async throws {
+        // Flag NOT set: the "as:" namespace alone must route to AppleScript.
+        let mock = MockRunner(results: [ok("")])
+        let scripting = MockScripting(running: true)
+        let cmux = makeCmux(mock, scripting: scripting)
+        try await cmux.selectWorkspace("as:TAB-9")
+        XCTAssertEqual(scripting.calls, [.select(tabId: "TAB-9")])
+        XCTAssertEqual(mock.invocations.count, 1)
+        XCTAssertEqual(mock.invocations[0].executable, "/usr/bin/open")
+    }
+
+    func testSelectWorkspacePassesRawIdToAppleScriptWhenFlagSet() async throws {
+        // Socket-minted ids ARE AppleScript tab ids; they must survive the
+        // backend switch (e.g. ids from claudeSessionWorkspaceMap).
+        let mock = MockRunner(results: [ok("")])
+        let scripting = MockScripting(running: true)
+        let backend = CmuxBackendState()
+        backend.useAppleScript = true
+        let cmux = makeCmux(mock, scripting: scripting, backend: backend)
+        try await cmux.selectWorkspace("AAAA-BBBB")
+        XCTAssertEqual(scripting.calls, [.select(tabId: "AAAA-BBBB")])
+    }
+
+    func testCloseWorkspaceRoutesNamespacedIdToAppleScript() async throws {
+        let mock = MockRunner(results: [])
+        let scripting = MockScripting(running: true)
+        let cmux = makeCmux(mock, scripting: scripting)
+        try await cmux.closeWorkspace("as:TAB-3")
+        XCTAssertEqual(scripting.calls, [.close(tabId: "TAB-3")])
+        XCTAssertEqual(mock.invocations.count, 0, "no CLI and no open -b on close")
+    }
+
     // MARK: - socket password forwarding (automation.socketPassword)
 
     func testPingForwardsSocketPasswordFromCmuxConfig() async throws {
@@ -279,7 +405,9 @@ final class CmuxServiceTests: XCTestCase {
             .write(to: file, atomically: true, encoding: .utf8)
         let mock = MockRunner(results: [ok("PONG")])
         let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux",
-                               configFile: file.path, socketGreeting: { _ in nil })
+                               configFile: file.path, socketGreeting: { _ in nil },
+                               scripting: MockScripting(running: false),
+                               backend: CmuxBackendState())
         _ = await cmux.ping()
         XCTAssertEqual(mock.invocations[0].env?["CMUX_SOCKET_PASSWORD"], "s3cret")
     }

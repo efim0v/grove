@@ -16,8 +16,11 @@ import Foundation
 ///     open -nW dist/Grove.app --args --cmux-probe /tmp/cmux-probe.txt
 ///
 /// (`-n` forces a new instance when Grove is already running.) Documented in
-/// README "Troubleshooting". The probe creates ONE cmux workspace named
-/// "grove-probe" and closes it (plus any leaked ones from earlier runs).
+/// README "Troubleshooting". The probe creates ONE cmux workspace at a time
+/// and closes it (plus any leaked "grove-probe"-titled ones from earlier
+/// runs), and exercises BOTH backends: the unix-socket CLI and the
+/// AppleScript fallback (see CmuxAppleScript). The first AppleScript call
+/// can block on the macOS automation consent dialog — answer it on screen.
 public enum CmuxProbe {
 
     /// Pure: the value following "--cmux-probe", nil when the flag is absent or last.
@@ -94,60 +97,148 @@ public enum CmuxProbe {
             fail("raw ping", started: t, error)
         }
 
-        // Step 2: production ping().
+        // Step 2: production ping(). With the AppleScript fallback in place,
+        // a socket denial now yields ping=true (cmux reachable via AppleScript).
         t = Date()
         let pong = await service.ping()
-        record("ping()", started: t, pong ? "PONG" : "FAILED: returned false")
+        record("ping()", started: t, (pong ? "OK" : "FAILED: returned false")
+               + " — active backend: \(Self.backendName())")
         if !pong { allOK = false }
 
         // Step 3: production ensureRunning().
         t = Date()
         do {
             try await service.ensureRunning()
-            record("ensureRunning()", started: t, "OK")
+            record("ensureRunning()", started: t, "OK — active backend: \(Self.backendName())")
         } catch {
             fail("ensureRunning()", started: t, error)
         }
 
-        // Step 4: production listWorkspaces().
+        // Step 4: production listWorkspaces() (socket first, AppleScript on denial).
         t = Date()
         do {
             let list = try await service.listWorkspaces()
             record("listWorkspaces()", started: t,
-                   "OK: \(list.count) workspaces: \(list.map(\.title).joined(separator: ", "))")
+                   "OK via \(Self.backendName()): \(list.count) workspaces: "
+                   + list.map(\.title).joined(separator: ", "))
         } catch {
             fail("listWorkspaces()", started: t, error)
         }
 
-        // Step 5: production newWorkspace (unfocused so the probe never steals focus).
+        // Steps 5+6: production create + close. The created workspace is found
+        // by diffing ids (the AppleScript backend cannot name tabs, so the
+        // "grove-probe" title only exists on the socket path).
         t = Date()
-        var created = false
         do {
+            let before = try await service.listWorkspaces()
             try await service.newWorkspace(name: "grove-probe", cwd: NSTemporaryDirectory(),
                                            command: nil, focus: false)
-            created = true
-            record("newWorkspace(grove-probe)", started: t, "OK")
+            record("newWorkspace(grove-probe)", started: t,
+                   "OK via \(Self.backendName())")
+            t = Date()
+            let after = try await service.listWorkspaces()
+            let beforeIds = Set(before.map(\.id))
+            // Leaked probes from interrupted earlier runs are titled
+            // "grove-probe" (socket path); include them in the cleanup.
+            let toClose = after.filter { !beforeIds.contains($0.id) || $0.title == "grove-probe" }
+            if toClose.isEmpty {
+                allOK = false
+                record("closeWorkspace", started: t, "FAILED: created workspace not found in list diff")
+            }
+            for ws in toClose {
+                try await service.closeWorkspace(ws.id)
+                record("closeWorkspace(\(ws.id))", started: t, "OK")
+            }
         } catch {
-            fail("newWorkspace(grove-probe)", started: t, error)
+            fail("newWorkspace/closeWorkspace", started: t, error)
         }
 
-        // Step 6: close every workspace titled "grove-probe" (the one just
-        // created plus any leaked by interrupted earlier runs).
-        if created {
+        // AppleScript backend, exercised DIRECTLY so the probe proves both
+        // legs regardless of which one the service is currently routed to.
+        // The first Apple Event from a freshly (re)signed Grove triggers the
+        // macOS automation consent dialog and blocks until it is answered.
+        out.append("")
+        out.append("== AppleScript backend (direct) ==")
+        let scripting = CmuxAppleScript()
+        out.append("[AS running] cmux app running: \(scripting.isAppRunning())")
+
+        // Transport micro-benchmarks. The backend transport is an osascript
+        // child (in-process NSAppleScript stalls non-deterministically from
+        // GUI Grove, see CmuxAppleScript); the raw-osascript lines below
+        // cross-check the child transport without the backend's plumbing.
+        let versionScript = "tell application id \"\(CmuxService.bundleID)\" to get version"
+        t = Date()
+        do {
+            let v = try await scripting.runScript(versionScript)
+            record("AS micro get-version (backend transport)", started: t, "OK: \(v)")
+        } catch {
+            fail("AS micro get-version (backend transport)", started: t, error)
+        }
+        t = Date()
+        do {
+            let r = try await runner.run("/usr/bin/osascript", ["-e", versionScript],
+                                         cwd: nil, env: nil, timeout: 150)
+            record("AS micro get-version (osascript child)", started: t,
+                   "exit=\(r.exitCode) stdout=\(String(reflecting: r.stdout)) stderr=\(String(reflecting: r.stderr.prefix(200)))")
+        } catch {
+            fail("AS micro get-version (osascript child)", started: t, error)
+        }
+        t = Date()
+        do {
+            let r = try await runner.run("/usr/bin/osascript", ["-e", CmuxAppleScript.listScriptSource],
+                                         cwd: nil, env: nil, timeout: 150)
+            let rows = r.stdout.components(separatedBy: CmuxAppleScript.rowSeparator)
+                .filter { !$0.isEmpty }
+            record("AS full list (osascript child)", started: t,
+                   "exit=\(r.exitCode) rows=\(rows.count) stderr=\(String(reflecting: r.stderr.prefix(200)))")
+        } catch {
+            fail("AS full list (osascript child)", started: t, error)
+        }
+
+        var asListOK = false
+        t = Date()
+        do {
+            let list = try await scripting.listWorkspaces()
+            asListOK = !list.isEmpty
+            record("AS list", started: t, "OK: \(list.count) workspaces; first: "
+                   + list.prefix(3).map { "\($0.title) @ \($0.currentDirectory)" }
+                       .joined(separator: " | "))
+            if list.isEmpty { allOK = false }
+        } catch {
+            fail("AS list", started: t, error)
+        }
+        // Direct AS create+close only when the service leg above ran on the
+        // socket (otherwise the AppleScript leg was already exercised, and a
+        // second probe tab would disturb the user's cmux for no extra signal).
+        if asListOK && !CmuxBackendState.shared.useAppleScript {
+            // Per-script timing of the create+close leg (the trace hook lines
+            // are appended to the report after the step).
+            let traceBox = TraceBox()
+            CmuxAppleScript.trace = { traceBox.append($0) }
+            defer {
+                CmuxAppleScript.trace = nil
+                out.append("-- AS script trace --")
+                out.append(contentsOf: traceBox.lines())
+            }
             t = Date()
             do {
-                let probes = try await service.listWorkspaces().filter { $0.title == "grove-probe" }
-                if probes.isEmpty {
-                    allOK = false
-                    record("closeWorkspace", started: t, "FAILED: created workspace not found in list")
+                let before = try await scripting.listWorkspaces()
+                try await scripting.newWorkspace(cwd: NSTemporaryDirectory(), command: nil, focus: false)
+                let after = try await scripting.listWorkspaces()
+                let beforeIds = Set(before.map(\.id))
+                let added = after.filter { !beforeIds.contains($0.id) }
+                for ws in added {
+                    try await scripting.closeWorkspace(
+                        tabId: CmuxAppleScript.tabId(fromNamespaced: ws.id) ?? ws.id)
                 }
-                for ws in probes {
-                    try await service.closeWorkspace(ws.id)
-                    record("closeWorkspace(\(ws.id))", started: t, "OK")
-                }
+                record("AS create+close", started: t,
+                       added.isEmpty ? "FAILED: no new tab in list diff" : "OK (\(added.map(\.id).joined(separator: ", ")))")
+                if added.isEmpty { allOK = false }
             } catch {
-                fail("closeWorkspace", started: t, error)
+                fail("AS create+close", started: t, error)
             }
+        } else if asListOK {
+            out.append("[AS create+close] covered by the service steps above (fallback active)")
         }
 
         // Extra context experiments (do not affect allOK except where noted):
@@ -198,8 +289,22 @@ public enum CmuxProbe {
                    + (password == nil ? "not configured" : "configured (forwarded as CMUX_SOCKET_PASSWORD)"))
 
         out.append("")
+        out.append("final active backend: \(Self.backendName())")
         out.append(allOK ? "RESULT: ALL STEPS OK" : "RESULT: FAILURES (see above)")
         return (out.joined(separator: "\n") + "\n", allOK)
+    }
+
+    /// The backend the production CmuxService is currently routed to.
+    static func backendName() -> String {
+        CmuxBackendState.shared.useAppleScript ? "applescript (socket denied -> fallback)" : "socket"
+    }
+
+    /// Lock-guarded line collector for CmuxAppleScript.trace.
+    private final class TraceBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var collected: [String] = []
+        func append(_ line: String) { lock.lock(); collected.append(line); lock.unlock() }
+        func lines() -> [String] { lock.lock(); defer { lock.unlock() }; return collected }
     }
 
     /// Spawns the fallback cmux binary with env = [HOME] only (like `env -i

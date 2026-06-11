@@ -38,11 +38,23 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>26.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Grove controls the cmux terminal to open and switch workspaces.</string>
 </dict>
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
+# Sign with the stable development identity when present so the macOS
+# automation (Apple Events -> cmux) consent survives rebuilds: ad-hoc
+# signatures change every build, which voids the TCC grant each time.
+IDENTITY="Apple Development: Your Name (TEAMID)"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$IDENTITY"; then
+    codesign --force --sign "$IDENTITY" "$APP"
+    echo "signed: $IDENTITY"
+else
+    codesign --force --sign - "$APP"
+    echo "signed: ad-hoc (stable identity not found; automation consent will reset on rebuild)"
+fi
 echo "built: $APP"
 
 if [[ "${1:-}" == "--launch" ]]; then

@@ -49,13 +49,23 @@ cmux once. Alternatively set a socket password in the same settings pane —
 Grove reads `automation.socketPassword` from `~/.config/cmux/cmux.json` and
 forwards it as `CMUX_SOCKET_PASSWORD` automatically.
 
+Since the AppleScript fallback (`CmuxAppleScript`), a socket denial is also
+self-healing: Grove switches to driving cmux through its AppleScript
+dictionary (one-time macOS consent dialog: System Settings > Privacy &
+Security > Automation > Grove > cmux) and silently returns to the socket once
+it accepts Grove again. Workspaces created via the fallback keep cmux's
+cwd-derived tab title (the dictionary has no rename), and
+`Scripts/build-app.sh` signs with a stable development identity so the
+automation grant survives rebuilds.
+
 ### cmux diagnostic probe
 
 `Grove.app` ships a hidden diagnostic flag that runs the exact production cmux
-call path (ping, ensure-running, list, create + close a `grove-probe`
-workspace) WITHOUT the error-swallowing the UI does, and writes a step-by-step
-report (environment, executable resolution, per-step stdout/stderr/error,
-raw-socket denial check):
+call path (ping, ensure-running, list, create + close a probe workspace —
+exercising BOTH the socket backend and the AppleScript fallback) WITHOUT the
+error-swallowing the UI does, and writes a step-by-step report (environment,
+executable resolution, per-step stdout/stderr/error, raw-socket denial check,
+active backend):
 
     Scripts/build-app.sh
     open -nW dist/Grove.app --args --cmux-probe /tmp/cmux-probe.txt

@@ -12,6 +12,22 @@ public struct CmuxWorkspace: Sendable, Equatable {
     }
 }
 
+/// Process-wide memory of which cmux backend is in use. Set to AppleScript
+/// when the control socket denies Grove; cleared whenever the socket answers
+/// again (after the user restarts cmux in "automation" mode the socket
+/// silently resumes — listWorkspaces re-probes it on every call). Shared
+/// because AppState constructs a fresh CmuxService per interaction.
+final class CmuxBackendState: @unchecked Sendable {
+    static let shared = CmuxBackendState()
+    private let lock = NSLock()
+    private var fallback = false
+
+    var useAppleScript: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return fallback }
+        set { lock.lock(); fallback = newValue; lock.unlock() }
+    }
+}
+
 public struct CmuxService: Sendable {
     private let runner: any CommandRunning
     private let cmuxPath: String?
@@ -20,23 +36,42 @@ public struct CmuxService: Sendable {
     private let configFile: String?
     /// Raw-socket denial probe (see readSocketGreeting). Test seam.
     private let socketGreeting: @Sendable (String) -> String?
+    // BACKEND SEAM. The unix-socket CLI is the primary backend; `scripting`
+    // (AppleScript, see CmuxAppleScript) is the fallback used while
+    // `backend.useAppleScript` is set after a socket access denial.
+    // NOTE for the future: this seam is where other terminal providers
+    // (Terminal.app, iTerm2, Ghostty) plug in later — they would implement
+    // CmuxScripting-like backends selected by configuration instead of by
+    // denial fallback.
+    private let scripting: any CmuxScripting
+    private let backend: CmuxBackendState
+
+    /// Socket refusal carried internally so each public operation can flip to
+    /// the AppleScript backend; never escapes the public API.
+    private struct SocketDenied: Error { let line: String }
 
     static let fallbackPath = "/Applications/cmux.app/Contents/Resources/bin/cmux"
     static let bundleID = "com.cmuxterm.app"
 
     public init(runner: any CommandRunning = ProcessRunner(), cmuxPath: String? = nil) {
         self.init(runner: runner, cmuxPath: cmuxPath, configFile: nil,
-                  socketGreeting: { Self.readSocketGreeting(path: $0) })
+                  socketGreeting: { Self.readSocketGreeting(path: $0) },
+                  scripting: CmuxAppleScript(), backend: .shared)
     }
 
     /// Full-seam init for tests: configFile feeds password resolution,
-    /// socketGreeting replaces the raw-socket denial probe.
+    /// socketGreeting replaces the raw-socket denial probe, scripting/backend
+    /// replace the AppleScript fallback (tests MUST pass a fresh
+    /// CmuxBackendState, never .shared, to stay hermetic).
     init(runner: any CommandRunning, cmuxPath: String?, configFile: String?,
-         socketGreeting: @escaping @Sendable (String) -> String?) {
+         socketGreeting: @escaping @Sendable (String) -> String?,
+         scripting: any CmuxScripting, backend: CmuxBackendState) {
         self.runner = runner
         self.cmuxPath = cmuxPath
         self.configFile = configFile
         self.socketGreeting = socketGreeting
+        self.scripting = scripting
+        self.backend = backend
     }
 
     /// Explicit path wins; otherwise "cmux" when a PATH lookup finds it,
@@ -54,69 +89,124 @@ public struct CmuxService: Sendable {
     }
 
     public func ping() async -> Bool {
-        await pingResult().ok
+        let result = await pingResult()
+        if result.ok {
+            backend.useAppleScript = false
+            return true
+        }
+        // Denied (or already in fallback mode): cmux is reachable when the
+        // AppleScript backend can see the running app.
+        if result.denied != nil || backend.useAppleScript {
+            if scripting.isAppRunning() {
+                backend.useAppleScript = true
+                return true
+            }
+        }
+        return false
     }
 
     /// ping with the failure detail preserved (ping() collapses it to a Bool).
-    func pingResult() async -> (ok: Bool, detail: String?) {
+    /// `denied` carries the server's refusal line when the socket actively
+    /// rejected us (the trigger for the AppleScript fallback).
+    func pingResult() async -> (ok: Bool, detail: String?, denied: String?) {
         do {
             let result = try await runner.run(executable, ["ping"], cwd: nil, env: passwordEnv(), timeout: 10)
             if result.exitCode == 0
                 && result.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "PONG" {
-                return (true, nil)
+                return (true, nil, nil)
             }
             let firstErrorLine = result.stderr
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .split(separator: "\n").first.map(String.init) ?? ""
             return (false, "ping exit=\(result.exitCode)"
-                        + (firstErrorLine.isEmpty ? "" : ": \(firstErrorLine)"))
+                        + (firstErrorLine.isEmpty ? "" : ": \(firstErrorLine)"),
+                    denialEvidence(exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr))
         } catch {
-            return (false, "ping failed: \(error)")
+            return (false, "ping failed: \(error)", nil)
         }
     }
 
     public func ensureRunning() async throws {
         var last = await pingResult()
-        if last.ok { return }
-        // cmux may be RUNNING but refusing us: its control socket rejects
-        // clients not descended from cmux unless the user allows external
-        // automation (socketControlMode). Launching + waiting 10s would only
-        // bury that in a misleading timeout — fail fast with the real reason.
-        if let denial = socketDenial() {
-            throw GroveError.cmuxUnavailable(Self.denialMessage(denial))
+        if last.ok {
+            backend.useAppleScript = false
+            return
         }
+        // cmux is RUNNING but refusing us (socketControlMode "cmuxOnly"): the
+        // refusal itself proves the app is alive, so the AppleScript backend
+        // can serve every operation — switch over instead of failing.
+        if last.denied != nil {
+            backend.useAppleScript = true
+            return
+        }
+        if backend.useAppleScript && scripting.isAppRunning() { return }
         _ = try? await runner.run("/usr/bin/open", ["-b", Self.bundleID], cwd: nil, env: nil, timeout: 10)
         let deadline = Date().addingTimeInterval(10)
         while true {
             last = await pingResult()
-            if last.ok { return }
+            if last.ok {
+                backend.useAppleScript = false
+                return
+            }
+            // A cmux we just launched comes up in "cmuxOnly" mode too.
+            if last.denied != nil {
+                backend.useAppleScript = true
+                return
+            }
             if Date() >= deadline { break }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
-        // A cmux we just launched comes up in "cmuxOnly" mode too: prefer the
-        // actionable denial message over a generic timeout.
-        if let denial = socketDenial() {
-            throw GroveError.cmuxUnavailable(Self.denialMessage(denial))
+        // App is up but its socket never answered: AppleScript can still drive it.
+        if scripting.isAppRunning() {
+            backend.useAppleScript = true
+            return
         }
         let detail = last.detail.map { " (last \($0))" } ?? ""
         throw GroveError.cmuxUnavailable(
             "cmux did not answer ping within 10s after launching \(Self.bundleID)\(detail)")
     }
 
-    /// Runs a cmux CLI command. The CLI reports a server-side hangup only as
-    /// "Failed to write to socket (Broken pipe)" — when that happens, ask the
-    /// socket directly whether the server DENIED us and convert the opaque
-    /// process failure into the actionable error.
-    private func runCmux(_ args: [String]) async throws -> ProcessResult {
-        do {
-            return try await runner.runOK(executable, args, cwd: nil, env: passwordEnv(), timeout: 10)
-        } catch GroveError.processFailed(let command, let exitCode, let stderr)
-            where stderr.contains("Failed to write to socket") || stderr.contains("Broken pipe") {
-            if let denial = socketDenial() {
-                throw GroveError.cmuxUnavailable(Self.denialMessage(denial))
-            }
-            throw GroveError.processFailed(command: command, exitCode: exitCode, stderr: stderr)
+    /// Non-nil when a failed CLI call means the server DENIED us: either the
+    /// denial text surfaced directly, or the CLI's opaque "Broken pipe" hangup
+    /// is confirmed as a denial by reading the socket's greeting.
+    private func denialEvidence(exitCode: Int32, stdout: String, stderr: String) -> String? {
+        guard exitCode != 0 else { return nil }
+        let combined = stderr + "\n" + stdout
+        if combined.contains("Access denied") {
+            return combined.split(separator: "\n")
+                .first(where: { $0.contains("Access denied") })
+                .map(String.init)
         }
+        if combined.contains("Failed to write to socket") || combined.contains("Broken pipe") {
+            return socketDenial()
+        }
+        return nil
+    }
+
+    /// Runs a cmux CLI command. A denial (see denialEvidence) is thrown as the
+    /// internal SocketDenied so callers can fall back to AppleScript; other
+    /// failures stay GroveError.processFailed.
+    private func runCmux(_ args: [String]) async throws -> ProcessResult {
+        let result = try await runner.run(executable, args, cwd: nil, env: passwordEnv(), timeout: 10)
+        if result.exitCode == 0 { return result }
+        if let line = denialEvidence(exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr) {
+            throw SocketDenied(line: line)
+        }
+        throw GroveError.processFailed(
+            command: ([executable] + args).joined(separator: " "),
+            exitCode: result.exitCode,
+            stderr: result.stderr)
+    }
+
+    /// Switches to the AppleScript backend after a socket denial; throws the
+    /// actionable denial message when the app is not even running (denial with
+    /// no app should not happen, but a race with cmux quitting can produce it).
+    private func appleScriptFallback(_ denial: SocketDenied) throws -> any CmuxScripting {
+        backend.useAppleScript = true
+        guard scripting.isAppRunning() else {
+            throw GroveError.cmuxUnavailable(Self.denialMessage(denial.line))
+        }
+        return scripting
     }
 
     private struct WorkspaceDTO: Decodable {
@@ -136,9 +226,30 @@ public struct CmuxService: Sendable {
         let workspaces: [WorkspaceDTO]
     }
 
+    /// Always attempts the socket first, even in AppleScript-fallback mode:
+    /// after the user restarts cmux with socketControlMode "automation" the
+    /// socket starts accepting us again, and this is where Grove notices and
+    /// silently switches back.
     public func listWorkspaces() async throws -> [CmuxWorkspace] {
-        let result = try await runCmux(["rpc", "workspace.list", "{}"])
-        let data = Data(result.stdout.utf8)
+        do {
+            let result = try await runCmux(["rpc", "workspace.list", "{}"])
+            let parsed = try Self.parseWorkspaceList(result.stdout)
+            backend.useAppleScript = false
+            return parsed
+        } catch let denial as SocketDenied {
+            return try await appleScriptFallback(denial).listWorkspaces()
+        } catch {
+            // Non-denial socket trouble while already in fallback mode: serve
+            // from AppleScript rather than surfacing a socket error.
+            if backend.useAppleScript, scripting.isAppRunning() {
+                return try await scripting.listWorkspaces()
+            }
+            throw error
+        }
+    }
+
+    static func parseWorkspaceList(_ stdout: String) throws -> [CmuxWorkspace] {
+        let data = Data(stdout.utf8)
         let decoder = JSONDecoder()
         let dtos: [WorkspaceDTO]
         if let envelope = try? decoder.decode(WorkspaceListEnvelope.self, from: data) {
@@ -161,20 +272,54 @@ public struct CmuxService: Sendable {
     }
 
     public func newWorkspace(name: String, cwd: String, command: String?, focus: Bool) async throws {
-        var args = ["new-workspace", "--name", name, "--cwd", cwd]
-        if let command { args += ["--command", command] }
-        args += ["--focus", focus ? "true" : "false"]
-        _ = try await runCmux(args)
+        if backend.useAppleScript, scripting.isAppRunning() {
+            try await scripting.newWorkspace(cwd: cwd, command: command, focus: focus)
+        } else {
+            do {
+                var args = ["new-workspace", "--name", name, "--cwd", cwd]
+                if let command { args += ["--command", command] }
+                args += ["--focus", focus ? "true" : "false"]
+                _ = try await runCmux(args)
+            } catch let denial as SocketDenied {
+                try await appleScriptFallback(denial)
+                    .newWorkspace(cwd: cwd, command: command, focus: focus)
+            }
+        }
         if focus { try await activateApp() }
     }
 
     public func selectWorkspace(_ idOrRef: String) async throws {
-        _ = try await runCmux(["select-workspace", "--workspace", idOrRef])
+        // "as:" ids were minted by the AppleScript backend's list — they route
+        // back to it even if the socket has resumed in the meantime.
+        if let tabId = CmuxAppleScript.tabId(fromNamespaced: idOrRef) {
+            try await scripting.selectWorkspace(tabId: tabId)
+        } else if backend.useAppleScript, scripting.isAppRunning() {
+            // Socket workspace ids ARE the AppleScript tab ids (verified
+            // against cmux 0.64.4), so ids from claudeSessionWorkspaceMap or a
+            // pre-fallback list keep working across the backend switch.
+            try await scripting.selectWorkspace(tabId: idOrRef)
+        } else {
+            do {
+                _ = try await runCmux(["select-workspace", "--workspace", idOrRef])
+            } catch let denial as SocketDenied {
+                try await appleScriptFallback(denial).selectWorkspace(tabId: idOrRef)
+            }
+        }
         try await activateApp()
     }
 
     public func closeWorkspace(_ idOrRef: String) async throws {
-        _ = try await runCmux(["close-workspace", "--workspace", idOrRef])
+        if let tabId = CmuxAppleScript.tabId(fromNamespaced: idOrRef) {
+            try await scripting.closeWorkspace(tabId: tabId)
+        } else if backend.useAppleScript, scripting.isAppRunning() {
+            try await scripting.closeWorkspace(tabId: idOrRef)
+        } else {
+            do {
+                _ = try await runCmux(["close-workspace", "--workspace", idOrRef])
+            } catch let denial as SocketDenied {
+                try await appleScriptFallback(denial).closeWorkspace(tabId: idOrRef)
+            }
+        }
     }
 
     /// Claude session id -> cmux workspace id, from cmux's hook registry
