@@ -258,39 +258,62 @@ struct WorkspaceRowCard: View {
         }
     }
 
-    @ViewBuilder private var cmuxButton: some View {
-        if workspace.cmuxWorkspaces.count > 1 {
-            if isSnapshotRender {
-                // Menu placeholder landmine again: Button lookalike jumping
-                // to the first matching cmux workspace.
-                Button("cmux") {
-                    if let first = workspace.cmuxWorkspaces.first {
-                        Task { await state.goToCmux(first) }
-                    }
-                }
-            } else {
-                Menu("cmux") {
-                    ForEach(workspace.cmuxWorkspaces, id: \.id) { cmuxWorkspace in
-                        Button(cmuxWorkspace.title.isEmpty ? cmuxWorkspace.id : cmuxWorkspace.title) {
-                            Task { await state.goToCmux(cmuxWorkspace) }
-                        }
-                    }
-                }
-                .menuStyle(.button)
-                .fixedSize()
-            }
-        } else if let cmuxWorkspace = workspace.cmuxWorkspaces.first {
-            Button("cmux") { Task { await state.goToCmux(cmuxWorkspace) } }
+    private var cmuxButton: some View {
+        CmuxButton(state: state, matches: workspace.cmuxWorkspaces,
+                   newWorkspaceCwd: workspace.umbrellaPath,
+                   newWorkspaceTitle: workspace.name)
+    }
+}
+
+/// The cmux action for one worktree context (workspace action bar / loose
+/// row). Matches come from current_directory equality — but a cmux
+/// workspace's current_directory is the cwd of its FOCUSED PANE, i.e.
+/// transient: any long-lived workspace merely cd'd into the worktree gets
+/// matched (v1.2.1 fix 2, diagnosed live). So with matches the button is a
+/// Menu — "Go to <title>" per match PLUS "New cmux workspace here" as the
+/// escape hatch — whose primaryAction (plain click) jumps to the first match,
+/// preserving the old single-click behavior. With no match it stays the plain
+/// "cmux" -> new shell workspace button (spec §6.1: never a dead control).
+struct CmuxButton: View {
+    @ObservedObject var state: AppState
+    let matches: [CmuxWorkspace]
+    let newWorkspaceCwd: String
+    let newWorkspaceTitle: String
+    /// Menu renders as a yellow placeholder under ImageRenderer — snapshot
+    /// mode swaps in a plain-Button lookalike with the primary action, so the
+    /// PNGs keep showing the same "cmux" label.
+    @Environment(\.isSnapshotRender) private var isSnapshotRender
+
+    var body: some View {
+        if matches.isEmpty {
+            Button("cmux") { openShell() }
+                .help("Open a new cmux shell workspace here")
+        } else if isSnapshotRender {
+            Button("cmux") { goToFirst() }
         } else {
-            // Spec §6.1: never a dead control — create a shell-only cmux
-            // workspace at the umbrella and jump to it (Steps 5a/5b).
-            Button("cmux") {
-                Task {
-                    await state.openCmuxShell(cwd: workspace.umbrellaPath,
-                                              title: workspace.name)
+            Menu("cmux") {
+                ForEach(matches, id: \.id) { match in
+                    Button("Go to “\(match.title.isEmpty ? match.id : match.title)”") {
+                        Task { await state.goToCmux(match) }
+                    }
                 }
+                Divider()
+                Button("New cmux workspace here") { openShell() }
+            } primaryAction: {
+                goToFirst()
             }
-            .help("Open a new cmux shell workspace here")
+            .menuStyle(.button)
+            .fixedSize()
+            .help("Click: go to the matched cmux workspace; menu: all matches or a new one")
         }
+    }
+
+    private func goToFirst() {
+        guard let first = matches.first else { return }
+        Task { await state.goToCmux(first) }
+    }
+
+    private func openShell() {
+        Task { await state.openCmuxShell(cwd: newWorkspaceCwd, title: newWorkspaceTitle) }
     }
 }

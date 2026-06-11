@@ -324,8 +324,13 @@ struct WorkspacesScreen: View {
                     .menuStyle(.button)
                     .fixedSize()
                 }
-                if let cmuxWorkspace = loose.cmuxWorkspaces.first {
-                    Button("cmux") { Task { await state.goToCmux(cmuxWorkspace) } }
+                if !loose.cmuxWorkspaces.isEmpty {
+                    // Same escape-hatch Menu as the workspace cards (v1.2.1
+                    // fix 2); a loose row with NO match keeps no cmux button,
+                    // exactly as before.
+                    CmuxButton(state: state, matches: loose.cmuxWorkspaces,
+                               newWorkspaceCwd: loose.entry.path,
+                               newWorkspaceTitle: (loose.entry.path as NSString).lastPathComponent)
                 }
             }
             // Spec §2: loose rows list their sessions too, with the same
