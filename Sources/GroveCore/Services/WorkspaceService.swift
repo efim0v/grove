@@ -81,12 +81,25 @@ public struct CreatedArtifact: Sendable {
     public let worktreePath: String
     public let branch: String
     public let branchWasCreated: Bool
+
+    public init(repoPath: String, worktreePath: String, branch: String, branchWasCreated: Bool) {
+        self.repoPath = repoPath
+        self.worktreePath = worktreePath
+        self.branch = branch
+        self.branchWasCreated = branchWasCreated
+    }
 }
 
 public struct CreationReport: Sendable {
     public let artifacts: [CreatedArtifact]
     public let logLines: [String]
     public let failure: String?
+
+    public init(artifacts: [CreatedArtifact], logLines: [String], failure: String?) {
+        self.artifacts = artifacts
+        self.logLines = logLines
+        self.failure = failure
+    }
 }
 
 // MARK: - Parent resolution (pure)
@@ -480,3 +493,11 @@ public struct WorkspaceService {
         return log
     }
 }
+
+// Equatable for GroveAppKit presentation models and tests: WorkspaceTreeRow
+// (Task 16) embeds FeatureWorkspace; AppState tests (Task 17) compare whole
+// ProjectSnapshot values. Same-file extensions so the conformances synthesize.
+extension WorkspaceRepoState: Equatable {}
+extension FeatureWorkspace: Equatable {}
+extension LooseWorktree: Equatable {}
+extension ProjectSnapshot: Equatable {}
