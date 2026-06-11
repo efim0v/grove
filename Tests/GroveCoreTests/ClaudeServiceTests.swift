@@ -298,8 +298,36 @@ final class ClaudeServiceTests: XCTestCase {
         XCTAssertEqual(process.cwd, "/work/demo_app")
         XCTAssertEqual(process.status, "busy")
         XCTAssertEqual(process.accountName, "work")
+        // startedAt parsed from the ISO8601 fractional timestamp in the record.
+        XCTAssertEqual(process.startedAt,
+                       isoDateWithFractional.date(from: "2026-06-10T09:58:11.000Z"))
         XCTAssertEqual(checkedPids.sorted(), [54321, 61234],
                        "malformed json must be skipped before pid validation")
+    }
+
+    func testLiveProcessStartedAtParsesPlainIsoVariant() throws {
+        let dir = try makeSessionsDir()
+        // No fractional seconds — must still parse via the plain ISO8601 formatter.
+        try #"{"pid":54322,"sessionId":"0a1b2c3d-0010-4000-8000-000000000010","cwd":"/work/plain","status":"waiting","startedAt":"2026-06-10T09:58:11Z"}"#
+            .write(to: dir.appendingPathComponent("54322.json"), atomically: true, encoding: .utf8)
+        service.processValidator = { _ in true }
+
+        let process = try XCTUnwrap(service.liveProcesses(account: account).first)
+        XCTAssertEqual(process.startedAt, isoDatePlain.date(from: "2026-06-10T09:58:11Z"))
+    }
+
+    func testLiveProcessStartedAtNilWhenAbsentOrUnparseable() throws {
+        let dir = try makeSessionsDir()
+        try #"{"pid":54323,"sessionId":"0a1b2c3d-0011-4000-8000-000000000011","cwd":"/work/nodate","status":"idle"}"#
+            .write(to: dir.appendingPathComponent("54323.json"), atomically: true, encoding: .utf8)
+        try #"{"pid":54324,"sessionId":"0a1b2c3d-0012-4000-8000-000000000012","cwd":"/work/baddate","status":"idle","startedAt":"not-a-date"}"#
+            .write(to: dir.appendingPathComponent("54324.json"), atomically: true, encoding: .utf8)
+        service.processValidator = { _ in true }
+
+        let live = service.liveProcesses(account: account)
+        XCTAssertEqual(live.count, 2)
+        XCTAssertNil(live.first { $0.pid == 54323 }?.startedAt)
+        XCTAssertNil(live.first { $0.pid == 54324 }?.startedAt)
     }
 
     func testLiveProcessesEmptyWhenSessionsDirMissing() {
@@ -308,6 +336,70 @@ final class ClaudeServiceTests: XCTestCase {
             return true
         }
         XCTAssertEqual(service.liveProcesses(account: account), [])
+    }
+
+    // MARK: - cross-account session copy (feasibility verdict: FEASIBLE)
+
+    /// Copies the jsonl AND its sidecar <id>/ dir into the target account's
+    /// identical projects/<mangle(cwd)>/ path.
+    func testCopySessionCopiesJsonlAndSidecarIntoTargetProjectsDir() throws {
+        let cwd = "/work/cross_account"
+        let id = "0a1b2c3d-aa01-4000-8000-0000000000a1"
+        let srcDir = try Fixture.tempDir("acc-src")
+        let dstDir = try Fixture.tempDir("acc-dst")
+        let src = AccountConfig(name: "a", configDir: srcDir.path)
+        let dst = AccountConfig(name: "b", configDir: dstDir.path)
+
+        let mangled = ClaudeService.mangle(cwd)
+        let srcProjects = srcDir.appendingPathComponent("projects").appendingPathComponent(mangled)
+        try FileManager.default.createDirectory(at: srcProjects, withIntermediateDirectories: true)
+        try "jsonl-content".write(to: srcProjects.appendingPathComponent("\(id).jsonl"),
+                                  atomically: true, encoding: .utf8)
+        // sidecar dir <id>/ with a nested file
+        let sidecar = srcProjects.appendingPathComponent(id).appendingPathComponent("subagents")
+        try FileManager.default.createDirectory(at: sidecar, withIntermediateDirectories: true)
+        try "agent".write(to: sidecar.appendingPathComponent("a.json"),
+                          atomically: true, encoding: .utf8)
+
+        let session = ClaudeSession(id: id, cwd: cwd, title: nil,
+                                    lastActivity: Date(), accountName: "a", gitBranch: nil)
+        let copied = try service.copySession(session, from: src, to: dst)
+        XCTAssertTrue(copied)
+
+        let dstProjects = dstDir.appendingPathComponent("projects").appendingPathComponent(mangled)
+        XCTAssertEqual(try String(contentsOf: dstProjects.appendingPathComponent("\(id).jsonl"),
+                                  encoding: .utf8), "jsonl-content")
+        XCTAssertEqual(try String(contentsOf: dstProjects
+                                    .appendingPathComponent(id)
+                                    .appendingPathComponent("subagents")
+                                    .appendingPathComponent("a.json"), encoding: .utf8), "agent")
+    }
+
+    func testCopySessionDoesNotOverwriteExistingJsonl() throws {
+        let cwd = "/work/cross_account_no_overwrite"
+        let id = "0a1b2c3d-aa02-4000-8000-0000000000a2"
+        let srcDir = try Fixture.tempDir("acc-src2")
+        let dstDir = try Fixture.tempDir("acc-dst2")
+        let src = AccountConfig(name: "a", configDir: srcDir.path)
+        let dst = AccountConfig(name: "b", configDir: dstDir.path)
+        let mangled = ClaudeService.mangle(cwd)
+
+        let srcProjects = srcDir.appendingPathComponent("projects").appendingPathComponent(mangled)
+        try FileManager.default.createDirectory(at: srcProjects, withIntermediateDirectories: true)
+        try "NEW".write(to: srcProjects.appendingPathComponent("\(id).jsonl"),
+                        atomically: true, encoding: .utf8)
+        // Pre-existing target jsonl must be preserved.
+        let dstProjects = dstDir.appendingPathComponent("projects").appendingPathComponent(mangled)
+        try FileManager.default.createDirectory(at: dstProjects, withIntermediateDirectories: true)
+        try "EXISTING".write(to: dstProjects.appendingPathComponent("\(id).jsonl"),
+                             atomically: true, encoding: .utf8)
+
+        let session = ClaudeSession(id: id, cwd: cwd, title: nil,
+                                    lastActivity: Date(), accountName: "a", gitBranch: nil)
+        let copied = try service.copySession(session, from: src, to: dst)
+        XCTAssertFalse(copied, "must report no-copy when target already exists")
+        XCTAssertEqual(try String(contentsOf: dstProjects.appendingPathComponent("\(id).jsonl"),
+                                  encoding: .utf8), "EXISTING")
     }
 
     // MARK: - launchCommand

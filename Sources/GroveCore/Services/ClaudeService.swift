@@ -37,13 +37,19 @@ public struct LiveProcess: Sendable, Equatable {
     public let cwd: String
     public let status: String
     public let accountName: String
+    /// Process start time parsed from the record's `startedAt` (ISO8601, both
+    /// fractional variants — same parser as git commit dates). nil when the
+    /// field is absent or unparseable. Drives the table's live-runtime column.
+    public let startedAt: Date?
 
-    public init(pid: Int32, sessionId: String, cwd: String, status: String, accountName: String) {
+    public init(pid: Int32, sessionId: String, cwd: String, status: String,
+                accountName: String, startedAt: Date? = nil) {
         self.pid = pid
         self.sessionId = sessionId
         self.cwd = cwd
         self.status = status
         self.accountName = accountName
+        self.startedAt = startedAt
     }
 }
 
@@ -232,8 +238,10 @@ public final class ClaudeService {
                 let status = object["status"] as? String
             else { continue }
             guard processValidator(pid) else { continue }
+            let startedAt = (object["startedAt"] as? String).flatMap(gitISODate)
             result.append(LiveProcess(pid: pid, sessionId: sessionId, cwd: cwd,
-                                      status: status, accountName: account.name))
+                                      status: status, accountName: account.name,
+                                      startedAt: startedAt))
         }
         return result.sorted { $0.pid < $1.pid }
     }
@@ -256,6 +264,48 @@ public final class ClaudeService {
         guard process.terminationStatus == 0 else { return false }
         let command = String(data: data, encoding: .utf8) ?? ""
         return command.contains("claude")
+    }
+
+    // MARK: - Cross-account session copy
+
+    /// Makes `session` resumable under `target` by copying its transcript into
+    /// the target account's identical `projects/<mangle(cwd)>/` path. The
+    /// feasibility experiment proved the session-lookup layer resolves a copied
+    /// jsonl (it reached the auth gate, not "No conversation found") — auth then
+    /// comes from the target account's keychain at runtime.
+    ///
+    /// Copies the `<id>.jsonl` and, when present, its sidecar `<id>/` directory
+    /// (subagents/workflows). NEVER overwrites: returns false (and copies
+    /// nothing) when the target jsonl already exists. Returns true when it
+    /// actually copied the jsonl. Throws only on unexpected FileManager errors.
+    @discardableResult
+    public func copySession(_ session: ClaudeSession,
+                            from source: AccountConfig,
+                            to target: AccountConfig) throws -> Bool {
+        let fm = FileManager.default
+        let mangled = ClaudeService.mangle(session.cwd)
+        let srcProjects = expandTilde(source.configDir) + "/projects/" + mangled
+        let dstProjects = expandTilde(target.configDir) + "/projects/" + mangled
+        let jsonlName = session.id + ".jsonl"
+        let srcJsonl = srcProjects + "/" + jsonlName
+        let dstJsonl = dstProjects + "/" + jsonlName
+
+        guard fm.fileExists(atPath: srcJsonl) else { return false }
+        guard !fm.fileExists(atPath: dstJsonl) else { return false }   // no overwrite
+
+        try fm.createDirectory(atPath: dstProjects, withIntermediateDirectories: true)
+        try fm.copyItem(atPath: srcJsonl, toPath: dstJsonl)
+
+        // Sidecar <id>/ dir (subagents, workflows) — copy when present and not
+        // already there. Its absence is normal (most sessions have none).
+        let srcSidecar = srcProjects + "/" + session.id
+        let dstSidecar = dstProjects + "/" + session.id
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: srcSidecar, isDirectory: &isDir), isDir.boolValue,
+           !fm.fileExists(atPath: dstSidecar) {
+            try fm.copyItem(atPath: srcSidecar, toPath: dstSidecar)
+        }
+        return true
     }
 
     // MARK: - Launch commands
