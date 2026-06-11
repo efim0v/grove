@@ -2,11 +2,12 @@
 
 ## How to render
 
-    swift run GroveApp --snapshot /tmp/grove-snap     # prints "snapshot: 6 files", exits
+    swift run GroveApp --snapshot /tmp/grove-snap     # prints "snapshot: 8 files", exits
 
-Six scenes, each 760x520 @2x (1520x1040 px), defined in
+Eight scenes, each at its route's adaptive panel size @2x, defined in
 `Sources/GroveAppKit/Snapshot/SnapshotMode.swift` (`SnapshotScene`):
-root-workspaces, workspaces-expanded, create-sheet, graph, accounts, settings.
+projects, root-workspaces, workspaces-expanded, create-sheet, graph, accounts,
+settings, error-banner (the RootView actionError strip over the projects route).
 The state comes from `SnapshotMode.fixtureState()` — fully synthetic
 (no git, no disk scanning, no real config); see the coverage matrix in that file.
 Ages are relative to render-time `Date()`, so badge buckets stay truthful.

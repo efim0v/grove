@@ -21,10 +21,11 @@ final class SnapshotModeTests: XCTestCase {
 
     // MARK: - scenes
 
-    func testSevenScenesWithContractFileNames() {
+    func testEightScenesWithContractFileNames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.allCases.map(\.fileName),
                        ["projects.png", "root-workspaces.png", "workspaces-expanded.png",
-                        "create-sheet.png", "graph.png", "accounts.png", "settings.png"])
+                        "create-sheet.png", "graph.png", "accounts.png", "settings.png",
+                        "error-banner.png"])
     }
 
     /// Every scene is RootView with a ROUTE (the panel is a state machine of
@@ -48,6 +49,16 @@ final class SnapshotModeTests: XCTestCase {
         let create = state(.createSheet)
         XCTAssertEqual(create.route, .createWorkspace(projectID))
         XCTAssertEqual(create.createPrefill?.name, "checkout-flow")
+
+        // error-banner pins the RootView banner styling: actionError set, and
+        // the message mentions cmux so the "Launch cmux" affordance renders.
+        let banner = state(.errorBanner)
+        XCTAssertEqual(banner.route, .projects)
+        XCTAssertEqual(banner.actionError?.localizedCaseInsensitiveContains("cmux"), true)
+        // No other scene shows the banner.
+        for scene in SnapshotMode.SnapshotScene.allCases where scene != .errorBanner {
+            XCTAssertNil(state(scene).actionError, "\(scene) must not set actionError")
+        }
     }
 
     /// Canvas sizes mirror RootView's adaptive per-route panel frames.
@@ -59,6 +70,8 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertEqual(SnapshotMode.SnapshotScene.createSheet.size, CGSize(width: 540, height: 560))
         XCTAssertEqual(SnapshotMode.SnapshotScene.accounts.size, CGSize(width: 560, height: 480))
         XCTAssertEqual(SnapshotMode.SnapshotScene.settings.size, CGSize(width: 560, height: 560))
+        // projects frame + vertical allowance for the banner stacked above it.
+        XCTAssertEqual(SnapshotMode.SnapshotScene.errorBanner.size, CGSize(width: 420, height: 504))
     }
 
     // MARK: - rich fixture (Task 18)

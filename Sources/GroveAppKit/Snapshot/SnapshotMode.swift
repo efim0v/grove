@@ -43,10 +43,13 @@ public enum SnapshotMode {
         case graph = "graph"
         case accounts = "accounts"
         case settings = "settings"
+        case errorBanner = "error-banner"
 
         var fileName: String { rawValue + ".png" }
 
         /// Canvas size = the route's adaptive panel frame (RootView).
+        /// error-banner adds vertical allowance on top of the projects frame
+        /// because RootView stacks the banner ABOVE the routed screen.
         var size: CGSize {
             switch self {
             case .projects: return CGSize(width: 420, height: 440)
@@ -55,6 +58,7 @@ public enum SnapshotMode {
             case .createSheet: return CGSize(width: 540, height: 560)
             case .accounts: return CGSize(width: 560, height: 480)
             case .settings: return CGSize(width: 560, height: 560)
+            case .errorBanner: return CGSize(width: 420, height: 504)
             }
         }
     }
@@ -411,6 +415,12 @@ public enum SnapshotMode {
             state.route = .accounts
         case .settings:
             state.route = .projectSettings(projectID)
+        case .errorBanner:
+            // Pins the RootView error banner styling (DesignRadius.field,
+            // material strip). The message mentions cmux so the "Launch cmux"
+            // affordance renders too.
+            state.route = .projects
+            state.actionError = "cmux unavailable: socket control mode blocks external clients"
         }
         return state
     }
