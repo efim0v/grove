@@ -95,6 +95,101 @@ public func badges(for ws: FeatureWorkspace, now: Date) -> WorkspaceBadges {
                            resumableCount: resumableCount)
 }
 
+// MARK: - Tree rows
+
+public struct WorkspaceTreeRow: Identifiable, Equatable {
+    public var id: String { name }
+    public let name: String
+    public let workspace: FeatureWorkspace
+    /// 0 = root (forked straight from base branches).
+    public let depth: Int
+    /// One flag per ancestor level (count == depth): true when that ancestor
+    /// lineage keeps a continuing "│" lane below this row (i.e. the ancestor
+    /// at that level is NOT the last among its siblings).
+    public let ancestorContinues: [Bool]
+    /// True when this row is the last among its own siblings.
+    public let isLast: Bool
+    public let badges: WorkspaceBadges
+
+    public init(name: String, workspace: FeatureWorkspace, depth: Int,
+                ancestorContinues: [Bool], isLast: Bool, badges: WorkspaceBadges) {
+        self.name = name
+        self.workspace = workspace
+        self.depth = depth
+        self.ancestorContinues = ancestorContinues
+        self.isLast = isLast
+        self.badges = badges
+    }
+}
+
+/// Flattens the snapshot's workspaces into DFS pre-order rows.
+///
+/// Roots are workspaces whose parentName is nil, unknown (not in the snapshot),
+/// self-referential, or part of a parent cycle. Cycle handling: a workspace
+/// whose parent chain leads back to itself sits ON a cycle — its parent edge is
+/// cut, so every cycle member becomes a root, while workspaces hanging BELOW
+/// the cycle keep their edge and stay attached. Roots and children are sorted
+/// by name; every workspace appears exactly once.
+public func buildWorkspaceTree(_ snapshot: ProjectSnapshot, now: Date) -> [WorkspaceTreeRow] {
+    let byName = Dictionary(snapshot.workspaces.map { ($0.name, $0) },
+                            uniquingKeysWith: { first, _ in first })
+
+    // Resolved parent edges: the parent must exist and differ from the child.
+    var parent: [String: String] = [:]
+    for ws in byName.values {
+        if let p = ws.parentName, p != ws.name, byName[p] != nil {
+            parent[ws.name] = p
+        }
+    }
+
+    // Cut the edge of every node that is ON a cycle (walking its ancestor chain
+    // returns to the node itself). The step bound makes the walk total even on
+    // arbitrary inconsistent input.
+    var onCycle: Set<String> = []
+    for name in byName.keys {
+        var current = parent[name]
+        var steps = 0
+        while let p = current, steps <= byName.count {
+            if p == name {
+                onCycle.insert(name)
+                break
+            }
+            current = parent[p]
+            steps += 1
+        }
+    }
+    for name in onCycle {
+        parent.removeValue(forKey: name)
+    }
+
+    var children: [String: [String]] = [:]
+    for (child, p) in parent {
+        children[p, default: []].append(child)
+    }
+    for key in children.keys {
+        children[key]?.sort()
+    }
+    let roots = byName.keys.filter { parent[$0] == nil }.sorted()
+
+    var rows: [WorkspaceTreeRow] = []
+    func visit(_ name: String, depth: Int, ancestorContinues: [Bool], isLast: Bool) {
+        guard let ws = byName[name] else { return }
+        rows.append(WorkspaceTreeRow(name: name, workspace: ws, depth: depth,
+                                     ancestorContinues: ancestorContinues, isLast: isLast,
+                                     badges: badges(for: ws, now: now)))
+        let kids = children[name] ?? []
+        for (index, kid) in kids.enumerated() {
+            visit(kid, depth: depth + 1,
+                  ancestorContinues: ancestorContinues + [!isLast],
+                  isLast: index == kids.count - 1)
+        }
+    }
+    for (index, root) in roots.enumerated() {
+        visit(root, depth: 0, ancestorContinues: [], isLast: index == roots.count - 1)
+    }
+    return rows
+}
+
 // MARK: - Relative age ("5m", "3h", "2d", "5w")
 
 /// Coarse relative age for session/commit rows. Buckets: minutes below one
