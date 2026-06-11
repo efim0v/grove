@@ -222,9 +222,13 @@ struct WorkspacesScreen: View {
     }
 
     private func baseSummary(snapshot: ProjectSnapshot) -> String {
-        let bases = Set(snapshot.workspaces.flatMap { workspace in
-            workspace.repos.compactMap { $0.meta?.baseBranch }
-        })
+        // Stacked children measure against their PARENT's feature branch, so only
+        // root workspaces (parentName == nil) contribute real base branches here.
+        let bases = Set(snapshot.workspaces
+            .filter { $0.parentName == nil }
+            .flatMap { workspace in
+                workspace.repos.compactMap { $0.meta?.baseBranch }
+            })
         return bases.sorted().joined(separator: " · ")
     }
 
