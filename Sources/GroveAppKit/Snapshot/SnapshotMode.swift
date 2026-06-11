@@ -2,10 +2,45 @@ import AppKit
 import SwiftUI
 import GroveCore
 
+/// Pre-expanded workspace names for the "workspaces-expanded" snapshot scene.
+/// The placeholder RootView ignores it; WorkspacesScreen (Task 19) consumes it
+/// to render expanded WorkspaceRowCards without interaction.
+struct SnapshotExpandedWorkspacesKey: EnvironmentKey {
+    static let defaultValue: Set<String> = []
+}
+
+extension EnvironmentValues {
+    var snapshotExpandedWorkspaces: Set<String> {
+        get { self[SnapshotExpandedWorkspacesKey.self] }
+        set { self[SnapshotExpandedWorkspacesKey.self] = newValue }
+    }
+}
+
+/// Stand-in for sheets that later tasks implement. createSheet -> replaced by
+/// CreateWorkspaceSheet in Task 20; settings -> replaced by SettingsSheet in Task 22.
+struct SheetScenePlaceholder: View {
+    let title: String
+    let note: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text(title)
+                .font(.title2.weight(.semibold))
+            Text(note)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .glassCard()
+        .padding(40)
+    }
+}
+
 /// Agent-verifiable UI harness: `GroveApp --snapshot <outDir>` renders the app
 /// with a synthetic fixture state into PNGs and exits without ever starting
-/// NSApplication. Task 15 skeleton: 1-workspace fixture, root-workspaces.png
-/// only. Task 18 grows the fixture and renders all six scenes.
+/// NSApplication. Task 18: rich fixture (4 workspaces incl. one stacked child,
+/// all four age buckets, busy/waiting/resumable mixes, 2 loose worktrees) and
+/// all six scenes. Tasks 19-22 re-render these PNGs after each screen lands.
 public enum SnapshotMode {
     enum SnapshotError: Error, CustomStringConvertible {
         case renderFailed(String)
@@ -17,6 +52,17 @@ public enum SnapshotMode {
             case .encodeFailed(let name): return "PNG encoding failed for \(name)"
             }
         }
+    }
+
+    enum SnapshotScene: String, CaseIterable {
+        case rootWorkspaces = "root-workspaces"
+        case workspacesExpanded = "workspaces-expanded"
+        case createSheet = "create-sheet"
+        case graph = "graph"
+        case accounts = "accounts"
+        case settings = "settings"
+
+        var fileName: String { rawValue + ".png" }
     }
 
     /// True (and never actually returns: exit() inside) when "--snapshot <dir>"
@@ -57,7 +103,8 @@ public enum SnapshotMode {
             id: UUID(uuidString: "B0000000-0000-0000-0000-000000000001")!,
             name: "acme.shop",
             path: "/Users/demo/Desktop/acme.shop",
-            workspacesRoot: "/Users/demo/Workspaces/acme.shop"
+            workspacesRoot: "/Users/demo/Workspaces/acme.shop",
+            baseBranchOverrides: ["acme-server-config-a": "docker"]
         )
         state.config = GroveConfig(
             version: 1,
@@ -68,51 +115,257 @@ public enum SnapshotMode {
                 AccountConfig(name: "work", configDir: "~/.claude-accounts/work"),
             ]
         )
-        state.snapshots = [project.id: fixtureSnapshot(project: project, now: Date())]
+        let now = Date()
+        state.snapshots = [project.id: fixtureSnapshot(project: project, now: now)]
         state.selectedProjectID = project.id
+        state.graphRepoPath = project.path + "/acme_client"
+        state.graphNodes = fixtureGraphNodes(now: now)
         return state
     }
 
     /// Ages are relative to `now` (real clock at render time) because the
     /// views compute badges against Date() — fixed dates would drift.
+    ///
+    /// Coverage matrix (badge variety per contract):
+    ///   media-pipeline   root,  12d aging,  dirty 12, 1 busy,    0 resumable, cmux-mapped
+    ///   media-upload     CHILD of media-pipeline, 2d fresh, dirty 3, 1 waiting, 1 resumable
+    ///   folders-followup root,  24d stale,  dirty 0,  no live,   2 resumable
+    ///   live-tier-redis  root,  meta degraded -> unknown age, nothing else
+    ///   loose: group-chats (+9/-3, 1 resumable) and legacy-auth (meta nil)
     static func fixtureSnapshot(project: ProjectConfig, now: Date) -> ProjectSnapshot {
         let root = "/Users/demo/Workspaces/acme.shop"
         let client = RepoInfo(path: project.path + "/acme_client", dirName: "acme_client")
-        let umbrella = root + "/media-pipeline"
-        let workspace = FeatureWorkspace(
+        let server = RepoInfo(path: project.path + "/acme_server", dirName: "acme_server")
+        let config = RepoInfo(path: project.path + "/acme-server-config-a",
+                              dirName: "acme-server-config-a")
+
+        func day(_ n: Double) -> Date { now.addingTimeInterval(-n * 86_400) }
+
+        // media-pipeline: root workspace, 2 repos, busy Claude, cmux workspace.
+        let mpUmbrella = root + "/media-pipeline"
+        let mediaPipeline = FeatureWorkspace(
             name: "media-pipeline",
-            umbrellaPath: umbrella,
+            umbrellaPath: mpUmbrella,
             repos: [
                 WorkspaceRepoState(
                     repo: client,
-                    entry: WorktreeEntry(path: umbrella + "/acme_client",
+                    entry: WorktreeEntry(path: mpUmbrella + "/acme_client",
                                          branch: "feat/media-pipeline",
                                          head: "aaaa111", isMain: false),
                     meta: WorktreeMeta(baseBranch: "dev", forkPoint: "ffff000",
-                                       forkDate: now.addingTimeInterval(-6 * 86_400),
-                                       ahead: 14, behind: 2, dirtyCount: 8,
-                                       lastCommitDate: now.addingTimeInterval(-3_600),
+                                       forkDate: day(12), ahead: 14, behind: 2, dirtyCount: 8,
+                                       lastCommitDate: day(0.04),
                                        lastCommitSubject: "wire upload progress events"),
+                    scanError: nil),
+                WorkspaceRepoState(
+                    repo: server,
+                    entry: WorktreeEntry(path: mpUmbrella + "/acme_server",
+                                         branch: "feat/media-pipeline",
+                                         head: "aaaa222", isMain: false),
+                    meta: WorktreeMeta(baseBranch: "master", forkPoint: "ffff001",
+                                       forkDate: day(12), ahead: 5, behind: 0, dirtyCount: 4,
+                                       lastCommitDate: day(0.2),
+                                       lastCommitSubject: "media service: chunked uploads"),
                     scanError: nil),
             ],
             parentName: nil,
             sessions: [
-                ClaudeSession(id: "s-mp-1", cwd: umbrella,
+                ClaudeSession(id: "s-mp-1", cwd: mpUmbrella,
                               title: "Implement media pipeline",
                               lastActivity: now.addingTimeInterval(-900),
                               accountName: "default",
                               gitBranch: "feat/media-pipeline"),
             ],
             liveProcesses: [
-                LiveProcess(pid: 4242, sessionId: "s-mp-1", cwd: umbrella,
+                LiveProcess(pid: 4242, sessionId: "s-mp-1", cwd: mpUmbrella,
                             status: "busy", accountName: "default"),
             ],
             cmuxWorkspaces: [
-                CmuxWorkspace(id: "ws-101", title: "media-pipeline", currentDirectory: umbrella),
+                CmuxWorkspace(id: "ws-101", title: "media-pipeline",
+                              currentDirectory: mpUmbrella),
             ]
         )
-        return ProjectSnapshot(project: project, repos: [client],
-                               workspaces: [workspace], loose: [], errors: [])
+
+        // media-upload: STACKED on media-pipeline (meta relative to the parent
+        // branch, mirroring WorkspaceService.scan), waiting Claude + 1 resumable.
+        let muUmbrella = root + "/media-upload"
+        let mediaUpload = FeatureWorkspace(
+            name: "media-upload",
+            umbrellaPath: muUmbrella,
+            repos: [
+                WorkspaceRepoState(
+                    repo: client,
+                    entry: WorktreeEntry(path: muUmbrella + "/acme_client",
+                                         branch: "feat/media-upload",
+                                         head: "bbbb111", isMain: false),
+                    meta: WorktreeMeta(baseBranch: "feat/media-pipeline", forkPoint: "aaaa111",
+                                       forkDate: day(2), ahead: 3, behind: 0, dirtyCount: 3,
+                                       lastCommitDate: day(0.1),
+                                       lastCommitSubject: "upload retry with backoff"),
+                    scanError: nil),
+                WorkspaceRepoState(
+                    repo: server,
+                    entry: WorktreeEntry(path: muUmbrella + "/acme_server",
+                                         branch: "feat/media-upload",
+                                         head: "bbbb222", isMain: false),
+                    meta: WorktreeMeta(baseBranch: "feat/media-pipeline", forkPoint: "aaaa222",
+                                       forkDate: day(2), ahead: 1, behind: 0, dirtyCount: 0,
+                                       lastCommitDate: day(1.5),
+                                       lastCommitSubject: "accept multipart on /media"),
+                    scanError: nil),
+            ],
+            parentName: "media-pipeline",
+            sessions: [
+                ClaudeSession(id: "s-mu-1", cwd: muUmbrella,
+                              title: "Multipart upload endpoint",
+                              lastActivity: now.addingTimeInterval(-120),
+                              accountName: "work",
+                              gitBranch: "feat/media-upload"),
+                ClaudeSession(id: "s-mu-2", cwd: muUmbrella,
+                              title: "Client retry UX",
+                              lastActivity: day(1),
+                              accountName: "default",
+                              gitBranch: "feat/media-upload"),
+            ],
+            liveProcesses: [
+                LiveProcess(pid: 4343, sessionId: "s-mu-1", cwd: muUmbrella,
+                            status: "waiting", accountName: "work"),
+            ],
+            cmuxWorkspaces: []
+        )
+
+        // folders-followup: stale root, clean tree, two resumable sessions.
+        let ffUmbrella = root + "/folders-followup"
+        let foldersFollowup = FeatureWorkspace(
+            name: "folders-followup",
+            umbrellaPath: ffUmbrella,
+            repos: [
+                WorkspaceRepoState(
+                    repo: client,
+                    entry: WorktreeEntry(path: ffUmbrella + "/acme_client",
+                                         branch: "feat/folders-followup",
+                                         head: "cccc111", isMain: false),
+                    meta: WorktreeMeta(baseBranch: "dev", forkPoint: "ffff002",
+                                       forkDate: day(24), ahead: 9, behind: 6, dirtyCount: 0,
+                                       lastCommitDate: day(20),
+                                       lastCommitSubject: "folder rename flow"),
+                    scanError: nil),
+            ],
+            parentName: nil,
+            sessions: [
+                ClaudeSession(id: "s-ff-1", cwd: ffUmbrella,
+                              title: "Folder sharing follow-ups",
+                              lastActivity: day(20),
+                              accountName: "default",
+                              gitBranch: "feat/folders-followup"),
+                ClaudeSession(id: "s-ff-2", cwd: ffUmbrella,
+                              title: "Migration dry-run",
+                              lastActivity: day(21),
+                              accountName: "work",
+                              gitBranch: "feat/folders-followup"),
+            ],
+            liveProcesses: [],
+            cmuxWorkspaces: []
+        )
+
+        // live-tier-redis: degraded scan (meta nil -> unknown age), nothing live.
+        let ltUmbrella = root + "/live-tier-redis"
+        let liveTierRedis = FeatureWorkspace(
+            name: "live-tier-redis",
+            umbrellaPath: ltUmbrella,
+            repos: [
+                WorkspaceRepoState(
+                    repo: config,
+                    entry: WorktreeEntry(path: ltUmbrella + "/acme-server-config-a",
+                                         branch: "feat/live-tier-redis",
+                                         head: "dddd111", isMain: false),
+                    meta: nil,
+                    scanError: "git meta timed out after 10s"),
+            ],
+            parentName: nil,
+            sessions: [],
+            liveProcesses: [],
+            cmuxWorkspaces: []
+        )
+
+        // Two loose worktrees (outside the workspaces root, spec §2).
+        let gcPath = client.path + "/.worktrees/group-chats"
+        let groupChats = LooseWorktree(
+            repo: client,
+            entry: WorktreeEntry(path: gcPath, branch: "feature/group-chats",
+                                 head: "eeee111", isMain: false),
+            meta: WorktreeMeta(baseBranch: "dev", forkPoint: "ffff003",
+                               forkDate: day(30), ahead: 9, behind: 3, dirtyCount: 0,
+                               lastCommitDate: day(9),
+                               lastCommitSubject: "group chat read receipts"),
+            sessions: [
+                ClaudeSession(id: "s-gc-1", cwd: gcPath,
+                              title: "Group chats",
+                              lastActivity: day(9),
+                              accountName: "default",
+                              gitBranch: "feature/group-chats"),
+            ],
+            liveProcesses: [],
+            cmuxWorkspaces: []
+        )
+        let legacyAuth = LooseWorktree(
+            repo: server,
+            entry: WorktreeEntry(path: server.path + "/.worktrees/legacy-auth",
+                                 branch: "legacy-auth",
+                                 head: "eeee222", isMain: false),
+            meta: nil,
+            sessions: [],
+            liveProcesses: [],
+            cmuxWorkspaces: []
+        )
+
+        // Workspaces sorted by name, like WorkspaceService.scan emits them.
+        return ProjectSnapshot(
+            project: project,
+            repos: [config, client, server].sorted { $0.path < $1.path },
+            workspaces: [foldersFollowup, liveTierRedis, mediaPipeline, mediaUpload],
+            loose: [groupChats, legacyAuth],
+            errors: []
+        )
+    }
+
+    // MARK: - Graph fixture (consumed by GraphScreen in Task 21)
+
+    /// Hand-laid-out commit topology: trunk on lane 0, a merged feature branch
+    /// on lane 1, an old side branch on lane 2. The lane numbers are exactly
+    /// what GroveCore.layoutLanes produces for this parent structure
+    /// (testFixtureGraphLanesMatchLayoutLanes keeps that honest).
+    static func fixtureGraphNodes(now: Date) -> [CommitNode] {
+        func at(hoursAgo: Double) -> Date { now.addingTimeInterval(-hoursAgo * 3_600) }
+        return [
+            CommitNode(hash: "a1", parents: ["a2", "b1"], author: "artem", date: at(hoursAgo: 2),
+                       refs: ["HEAD -> dev", "origin/dev"], subject: "Merge media upload pipeline", lane: 0),
+            CommitNode(hash: "b1", parents: ["b2"], author: "claude", date: at(hoursAgo: 5),
+                       refs: ["feat/media-upload"], subject: "Add chunked upload retry", lane: 1),
+            CommitNode(hash: "a2", parents: ["a3"], author: "artem", date: at(hoursAgo: 8),
+                       refs: [], subject: "Fix session token refresh", lane: 0),
+            CommitNode(hash: "b2", parents: ["a3"], author: "claude", date: at(hoursAgo: 26),
+                       refs: [], subject: "Wire upload progress events", lane: 1),
+            CommitNode(hash: "a3", parents: ["a4"], author: "artem", date: at(hoursAgo: 50),
+                       refs: ["tag: v0.4.0"], subject: "Release 0.4.0", lane: 0),
+            CommitNode(hash: "c1", parents: ["a4"], author: "artem", date: at(hoursAgo: 70),
+                       refs: ["feat/folders-followup"], subject: "Folder share ACL checks", lane: 1),
+            CommitNode(hash: "d1", parents: ["a4"], author: "claude", date: at(hoursAgo: 200),
+                       refs: ["feat/live-tier-redis"], subject: "Redis live tier experiment", lane: 2),
+            CommitNode(hash: "a4", parents: [], author: "artem", date: at(hoursAgo: 240),
+                       refs: ["main"], subject: "Initial import", lane: 0),
+        ]
+    }
+
+    // MARK: - Identity fixture (consumed by AccountsScreen in Task 22)
+
+    /// Deterministic identities for accounts.png: "default" is logged in,
+    /// every other account renders the not-logged-in row.
+    static func fixtureIdentity(_ account: AccountConfig) -> AccountIdentity? {
+        guard account.name == "default" else { return nil }
+        return AccountIdentity(email: "artem@example.com",
+                               organization: "Personal",
+                               tier: "max_20x")
     }
 
     // MARK: - Rendering
@@ -120,10 +373,37 @@ public enum SnapshotMode {
     @MainActor
     static func renderAll(into outDir: URL) throws -> Int {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        for scene in SnapshotScene.allCases {
+            try writePNG(view(for: scene), to: outDir.appendingPathComponent(scene.fileName))
+        }
+        return SnapshotScene.allCases.count
+    }
+
+    /// Fresh fixture per scene so scene-specific mutations never leak.
+    @MainActor
+    static func view(for scene: SnapshotScene) -> AnyView {
         let state = fixtureState()
-        try writePNG(RootView(state: state),
-                     to: outDir.appendingPathComponent("root-workspaces.png"))
-        return 1
+        switch scene {
+        case .rootWorkspaces:
+            return AnyView(RootView(state: state))
+        case .workspacesExpanded:
+            return AnyView(RootView(state: state)
+                .environment(\.snapshotExpandedWorkspaces, ["media-upload"]))
+        case .createSheet:
+            // Task 20 replaces this with CreateWorkspaceSheet over the fixture.
+            return AnyView(SheetScenePlaceholder(title: "Create Workspace",
+                                                 note: "CreateWorkspaceSheet lands in Task 20"))
+        case .graph:
+            state.selectedTab = .graph
+            return AnyView(RootView(state: state))
+        case .accounts:
+            state.selectedTab = .accounts
+            return AnyView(RootView(state: state))
+        case .settings:
+            // Task 22 replaces this with SettingsSheet over the fixture.
+            return AnyView(SheetScenePlaceholder(title: "Settings",
+                                                 note: "SettingsSheet lands in Task 22"))
+        }
     }
 
     /// Offscreen render at 760x520 logical points, scale 2 (1520x1040 px).
