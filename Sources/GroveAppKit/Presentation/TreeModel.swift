@@ -205,3 +205,32 @@ public func relativeAge(_ date: Date, now: Date) -> String {
     if days < 7 { return "\(days)d" }
     return "\(days / 7)w"
 }
+
+// MARK: - Search filter
+
+/// Case-insensitive substring filter over workspace names and per-repo branch
+/// names. A kept row's ancestors are always kept too (so the tree stays
+/// connected); descendants of a match are kept only if they match themselves.
+/// An empty / whitespace-only query returns the rows unchanged.
+public func filterTree(_ rows: [WorkspaceTreeRow], query: String) -> [WorkspaceTreeRow] {
+    let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !needle.isEmpty else { return rows }
+
+    func matches(_ row: WorkspaceTreeRow) -> Bool {
+        if row.name.lowercased().contains(needle) { return true }
+        return row.workspace.repos.contains { state in
+            state.entry.branch?.lowercased().contains(needle) == true
+        }
+    }
+
+    // Rows are DFS pre-order, so a stack of row indices keyed by depth is
+    // exactly the ancestor chain of the current row.
+    var keep = Set<Int>()
+    var stack: [Int] = []
+    for (index, row) in rows.enumerated() {
+        while stack.count > row.depth { stack.removeLast() }
+        stack.append(index)
+        if matches(row) { keep.formUnion(stack) }
+    }
+    return rows.enumerated().filter { keep.contains($0.offset) }.map { $0.element }
+}
