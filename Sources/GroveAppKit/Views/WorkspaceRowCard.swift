@@ -11,6 +11,9 @@ struct WorkspaceRowCard: View {
     let isExpanded: Bool
     let now: Date
     let onToggle: () -> Void
+    /// Opens the create sheet prefilled with forkFrom = this workspace
+    /// ("+ child workspace", spec §6.1 node context).
+    var onCreateChild: (() -> Void)? = nil
     /// ImageRenderer landmine (verified in this task's PNGs): SwiftUI `Menu`
     /// and `.buttonStyle(.link)` render as yellow/crossed placeholders
     /// offscreen — snapshot mode swaps in static lookalikes.
@@ -30,6 +33,11 @@ struct WorkspaceRowCard: View {
         }
         .padding(10)
         .glassCard()
+        .contextMenu {
+            if let onCreateChild {
+                Button("New child workspace…") { onCreateChild() }
+            }
+        }
     }
 
     // MARK: - Header + badges
@@ -217,6 +225,14 @@ struct WorkspaceRowCard: View {
             .disabled(latestResumable == nil)
 
             cmuxButton
+            if let onCreateChild {
+                Button {
+                    onCreateChild()
+                } label: {
+                    Label("Child", systemImage: "plus")
+                }
+                .help("Create a stacked child workspace forked from this one")
+            }
             Spacer()
         }
         .font(.caption)

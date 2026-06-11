@@ -390,9 +390,7 @@ public enum SnapshotMode {
             return AnyView(RootView(state: state)
                 .environment(\.snapshotExpandedWorkspaces, ["media-upload"]))
         case .createSheet:
-            // Task 20 replaces this with CreateWorkspaceSheet over the fixture.
-            return AnyView(SheetScenePlaceholder(title: "Create Workspace",
-                                                 note: "CreateWorkspaceSheet lands in Task 20"))
+            return AnyView(CreateWorkspaceSheet(state: state, prefill: CreatePrefill(name: "checkout-flow")))
         case .graph:
             state.selectedTab = .graph
             return AnyView(RootView(state: state))

@@ -60,6 +60,7 @@ struct WorkspacesScreen: View {
     @State private var expanded: Set<String> = []
     @State private var flatList = false
     @State private var looseExpanded = true
+    @State private var createPrefill: CreatePrefill?
 
     init(state: AppState) {
         _state = ObservedObject(wrappedValue: state)
@@ -93,6 +94,9 @@ struct WorkspacesScreen: View {
                 }
             }
         }
+        .sheet(item: $createPrefill) { prefill in
+            CreateWorkspaceSheet(state: state, prefill: prefill)
+        }
     }
 
     /// The whole column, extracted so `content` can swap its container:
@@ -125,7 +129,8 @@ struct WorkspacesScreen: View {
             badges: row.badges,
             isExpanded: isExpanded(row.name),
             now: now,
-            onToggle: { toggle(row.name) }
+            onToggle: { toggle(row.name) },
+            onCreateChild: { createPrefill = CreatePrefill(forkFrom: row.workspace) }
         )
         .padding(.vertical, 3)
         .padding(.leading, connectorWidth)
@@ -159,6 +164,12 @@ struct WorkspacesScreen: View {
             Text(snapshot.project.name)
                 .font(.title3.weight(.semibold))
             Spacer()
+            Button {
+                createPrefill = CreatePrefill()
+            } label: {
+                Label("Workspace", systemImage: "plus")
+            }
+            .controlSize(.small)
             viewToggle
         }
         .padding(.vertical, 10)
