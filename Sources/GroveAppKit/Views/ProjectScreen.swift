@@ -3,7 +3,7 @@ import GroveCore
 
 /// Project scope (route .project(id)): back chevron + project name + search
 /// (⌘F) + refresh (⌘R) + gear (-> per-project settings) in the header, the
-/// capsule tab strip (Workspaces | Graph only — Accounts is its own route),
+/// capsule tab strip (Workspaces | Graph | Claude — Accounts is its own route),
 /// and the selected tab's screen at full width.
 struct ProjectScreen: View {
     @ObservedObject var state: AppState
@@ -88,11 +88,12 @@ struct ProjectScreen: View {
         )
     }
 
-    // Pure-SwiftUI tab strip. NOT Picker(.segmented): that control is
-    // AppKit-backed and ImageRenderer draws it as an error placeholder
-    // offscreen. The selected pill is REAL Liquid Glass live (translucent fill
-    // in snapshots); siblings share one GlassEffectContainer so the glass
-    // renders as a group when the selection moves.
+    // Pure-SwiftUI tab strip (Workspaces | Graph | Claude). NOT
+    // Picker(.segmented): that control is AppKit-backed and ImageRenderer draws
+    // it as an error placeholder offscreen. The selected pill is REAL Liquid
+    // Glass live (translucent fill in snapshots); siblings share one
+    // GlassEffectContainer so the glass renders as a group when the selection
+    // moves.
     private var tabStrip: some View {
         GlassEffectContainer {
             HStack(spacing: 4) {
@@ -100,7 +101,7 @@ struct ProjectScreen: View {
                     Button {
                         state.selectedTab = tab
                     } label: {
-                        Text(tab.rawValue.capitalized)
+                        Text(tab.label)
                             .font(.callout.weight(state.selectedTab == tab ? .semibold : .regular))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
@@ -119,6 +120,7 @@ struct ProjectScreen: View {
         switch state.selectedTab {
         case .workspaces: WorkspacesScreen(state: state)
         case .graph: GraphScreen(state: state)
+        case .sessions: SessionsScreen(state: state)
         }
     }
 }
