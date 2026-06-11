@@ -133,12 +133,17 @@ struct WorkspaceRowCard: View {
                 .font(.caption)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
-                // Concentric with the card's DesignRadius.card container shape
-                // (GlassCard declares it); the minimum keeps mid-card chips —
-                // too far from any card corner to resolve — at the concentric
-                // radius for the card's 10pt content padding.
-                .background(.white.opacity(0.06), in: ConcentricRectangle(corners: .concentric(
-                    minimum: .fixed(DesignRadius.nested(parent: DesignRadius.card, inset: 10)))))
+                // Repeated mid-row elements: a ConcentricRectangle resolves its
+                // corners against the GlassCard container, so a chip adjacent to
+                // a card corner inherits the card radius while an inner/mid-row
+                // chip collapses to the floor — sibling chips render with
+                // different corners (visual bug). A FIXED continuous radius keeps
+                // every chip identical. The chip is inset from the card edge by
+                // the card's 10pt content padding, so its concentric radius is
+                // nested(parent: .card, inset: 10).
+                .background(.white.opacity(0.06), in: RoundedRectangle(
+                    cornerRadius: DesignRadius.nested(parent: DesignRadius.card, inset: 10),
+                    style: .continuous))
                 .help(repoState.entry.path)
             }
         }
