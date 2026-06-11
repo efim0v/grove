@@ -223,3 +223,20 @@ extension AppState {
         await workspaceService.rollback(artifacts)
     }
 }
+
+// MARK: - cmux shell fallback (spec §6.1)
+
+extension AppState {
+    /// Creates a NEW shell-only cmux workspace at `cwd` and focuses it — the
+    /// cmux-button fallback when a workspace has no cmux workspace yet.
+    /// `command: nil` means cmux starts its default shell.
+    public func openCmuxShell(cwd: String, title: String) async {
+        let service = cmux()
+        do {
+            try await service.ensureRunning()
+            try await service.newWorkspace(name: title, cwd: cwd, command: nil, focus: true)
+        } catch {
+            actionError = String(describing: error)
+        }
+    }
+}

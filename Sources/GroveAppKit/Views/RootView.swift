@@ -2,8 +2,8 @@ import SwiftUI
 import GroveCore
 
 /// Panel root: sidebar of projects + tab strip + content + footer with Quit.
-/// Task 15 placeholder: stub rows instead of the real screens. Task 19/21/22
-/// replace the tab content with WorkspacesScreen / GraphScreen / AccountsScreen.
+/// Workspaces tab renders the real WorkspacesScreen (Task 19); graph/accounts
+/// stubs remain until Tasks 21/22 land GraphScreen / AccountsScreen.
 public struct RootView: View {
     @ObservedObject private var state: AppState
 
@@ -87,71 +87,10 @@ public struct RootView: View {
     @ViewBuilder
     private var content: some View {
         switch state.selectedTab {
-        case .workspaces: workspacesStub
+        case .workspaces: WorkspacesScreen(state: state)
         case .graph: graphStub
         case .accounts: accountsStub
         }
-    }
-
-    // Plain VStack, not ScrollView: ImageRenderer does not render ScrollView
-    // content offscreen; the real scrolling screen arrives in Task 19.
-    private var workspacesStub: some View {
-        VStack {
-            VStack(alignment: .leading, spacing: 8) {
-                if let snapshot = state.selectedSnapshot {
-                    ForEach(snapshot.workspaces, id: \.name) { workspace in
-                        workspaceStubRow(workspace)
-                    }
-                    if !snapshot.loose.isEmpty {
-                        Text("Loose worktrees (\(snapshot.loose.count))")
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 6)
-                        ForEach(snapshot.loose, id: \.entry.path) { loose in
-                            Text("\(loose.repo.dirName)/…/\(URL(fileURLWithPath: loose.entry.path).lastPathComponent)")
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } else if state.selectedProject == nil {
-                    Text("No project selected")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("No scan data yet — refresh lands in Task 17")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private func workspaceStubRow(_ workspace: FeatureWorkspace) -> some View {
-        HStack(spacing: 8) {
-            Circle().fill(Color.accentColor).frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(workspace.name)
-                    .font(.callout.weight(.semibold))
-                Text(workspace.repos.first?.entry.branch ?? "detached")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if !workspace.liveProcesses.isEmpty {
-                Text("\(workspace.liveProcesses.count) live")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            }
-            if !workspace.sessions.isEmpty {
-                Text("\(workspace.sessions.count) session(s)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(10)
-        .glassCard()
-        .padding(.leading, workspace.parentName == nil ? 0 : 24)
     }
 
     private var graphStub: some View {

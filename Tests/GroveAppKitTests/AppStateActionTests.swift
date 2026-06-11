@@ -197,6 +197,35 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertNil(state.actionError)
     }
 
+    // MARK: - openCmuxShell
+
+    func testOpenCmuxShellCreatesFocusedShellOnlyWorkspace() async throws {
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+
+        await state.openCmuxShell(cwd: "/ws/feat-x", title: "feat-x")
+
+        XCTAssertNil(state.actionError)
+        let args = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first).args
+        // No --command pair: cmux starts its default shell in cwd.
+        XCTAssertEqual(args, ["new-workspace", "--name", "feat-x", "--cwd", "/ws/feat-x",
+                              "--focus", "true"])
+        // focus=true activates the app through the SAME stub runner — never for real.
+        XCTAssertEqual(runner.calls.filter { $0.executable == "/usr/bin/open" }.count, 1)
+    }
+
+    func testOpenCmuxShellFailureLandsInActionError() async {
+        let runner = ScriptedRunner(responses: [
+            "ping": .ok("PONG"),
+            "new-workspace": .fail("no window"),
+        ])
+        let state = makeState(runner: runner)
+
+        await state.openCmuxShell(cwd: "/ws/feat-x", title: "feat-x")
+
+        XCTAssertNotNil(state.actionError)
+    }
+
     // MARK: - loadGraph
 
     func testLoadGraphReadsRealRepo() async throws {
