@@ -21,11 +21,11 @@ final class SnapshotModeTests: XCTestCase {
 
     // MARK: - scenes
 
-    func testEightScenesWithContractFileNames() {
+    func testNineScenesWithContractFileNames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.allCases.map(\.fileName),
                        ["projects.png", "root-workspaces.png", "workspaces-expanded.png",
-                        "create-sheet.png", "graph.png", "accounts.png", "settings.png",
-                        "error-banner.png"])
+                        "create-sheet.png", "graph.png", "sessions.png", "accounts.png",
+                        "settings.png", "error-banner.png"])
     }
 
     /// Every scene is RootView with a ROUTE (the panel is a state machine of
@@ -43,6 +43,8 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertEqual(state(.workspacesExpanded).route, .project(projectID))
         XCTAssertEqual(state(.graph).route, .project(projectID))
         XCTAssertEqual(state(.graph).selectedTab, .graph)
+        XCTAssertEqual(state(.sessions).route, .project(projectID))
+        XCTAssertEqual(state(.sessions).selectedTab, .sessions)
         XCTAssertEqual(state(.accounts).route, .accounts)
         XCTAssertEqual(state(.settings).route, .projectSettings(projectID))
 
@@ -67,6 +69,7 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertEqual(SnapshotMode.SnapshotScene.rootWorkspaces.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.workspacesExpanded.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.graph.size, CGSize(width: 760, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.sessions.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.createSheet.size, CGSize(width: 540, height: 560))
         XCTAssertEqual(SnapshotMode.SnapshotScene.accounts.size, CGSize(width: 560, height: 480))
         XCTAssertEqual(SnapshotMode.SnapshotScene.settings.size, CGSize(width: 560, height: 560))
@@ -128,6 +131,44 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertNil(snapshot.loose.last?.meta)                // degraded loose scan
         let mp = snapshot.workspaces.first { $0.name == "media-pipeline" }
         XCTAssertEqual(mp?.cmuxWorkspaces.first?.id, "ws-101")
+    }
+
+    /// Locks what sessions.png must render: a busy live row mapped to Go (its
+    /// cwd is listed by a cmux workspace), a waiting live row, resumables, and
+    /// both accounts represented (spec §5 variety).
+    @MainActor
+    func testFixtureSessionRowsCoverStatusAndActionVariety() {
+        let snapshot = SnapshotMode.fixtureState().selectedSnapshot!
+        let rows = buildSessionRows(snapshot: snapshot, cmuxMap: [:], now: Date())
+        let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+
+        // busy live, mapped to Go via the media-pipeline cmux workspace cwd,
+        // with a runtime (startedAt set in the fixture).
+        XCTAssertEqual(byId["s-mp-1"]?.liveStatus, .busy)
+        XCTAssertEqual(byId["s-mp-1"]?.action, .go)
+        XCTAssertNotNil(byId["s-mp-1"]?.startedAt)
+        XCTAssertEqual(byId["s-mp-1"]?.location, "media-pipeline")
+        XCTAssertEqual(byId["s-mp-1"]?.accountName, "default")
+
+        // waiting live, no cmux workspace -> Resume, also has a runtime.
+        XCTAssertEqual(byId["s-mu-1"]?.liveStatus, .waiting)
+        XCTAssertEqual(byId["s-mu-1"]?.action, .resume)
+        XCTAssertNotNil(byId["s-mu-1"]?.startedAt)
+        XCTAssertEqual(byId["s-mu-1"]?.accountName, "work")
+
+        // resumables (no live process).
+        XCTAssertNil(byId["s-mu-2"]?.liveStatus)
+        XCTAssertEqual(byId["s-mu-2"]?.action, .resume)
+        XCTAssertNil(byId["s-ff-1"]?.liveStatus)
+
+        // loose worktree session location derives from the worktree leaf.
+        XCTAssertEqual(byId["s-gc-1"]?.location, "group-chats")
+
+        // Both accounts present in the table.
+        XCTAssertEqual(Set(rows.map(\.accountName)), ["default", "work"])
+        // Live first (busy before waiting), resumables after.
+        XCTAssertEqual(Array(rows.prefix(2).map(\.id)), ["s-mp-1", "s-mu-1"])
+        XCTAssertTrue(rows.dropFirst(2).allSatisfy { $0.liveStatus == nil })
     }
 
     @MainActor

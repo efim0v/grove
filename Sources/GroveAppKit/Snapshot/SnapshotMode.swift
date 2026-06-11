@@ -41,6 +41,7 @@ public enum SnapshotMode {
         case workspacesExpanded = "workspaces-expanded"
         case createSheet = "create-sheet"
         case graph = "graph"
+        case sessions = "sessions"
         case accounts = "accounts"
         case settings = "settings"
         case errorBanner = "error-banner"
@@ -53,7 +54,7 @@ public enum SnapshotMode {
         var size: CGSize {
             switch self {
             case .projects: return CGSize(width: 420, height: 440)
-            case .rootWorkspaces, .workspacesExpanded, .graph:
+            case .rootWorkspaces, .workspacesExpanded, .graph, .sessions:
                 return CGSize(width: 760, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)
             case .accounts: return CGSize(width: 560, height: 480)
@@ -189,7 +190,8 @@ public enum SnapshotMode {
             ],
             liveProcesses: [
                 LiveProcess(pid: 4242, sessionId: "s-mp-1", cwd: mpUmbrella,
-                            status: "busy", accountName: "default"),
+                            status: "busy", accountName: "default",
+                            startedAt: now.addingTimeInterval(-2_700)),  // 45m runtime
             ],
             cmuxWorkspaces: [
                 CmuxWorkspace(id: "ws-101", title: "media-pipeline",
@@ -240,7 +242,8 @@ public enum SnapshotMode {
             ],
             liveProcesses: [
                 LiveProcess(pid: 4343, sessionId: "s-mu-1", cwd: muUmbrella,
-                            status: "waiting", accountName: "work"),
+                            status: "waiting", accountName: "work",
+                            startedAt: now.addingTimeInterval(-360)),    // 6m runtime
             ],
             cmuxWorkspaces: []
         )
@@ -410,6 +413,9 @@ public enum SnapshotMode {
             state.route = .createWorkspace(projectID)
         case .graph:
             state.selectedTab = .graph
+            state.route = .project(projectID)
+        case .sessions:
+            state.selectedTab = .sessions
             state.route = .project(projectID)
         case .accounts:
             state.route = .accounts
