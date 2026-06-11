@@ -321,14 +321,18 @@ extension AppState {
         }
     }
 
-    /// Jumps to the cmux workspace hosting the session (via the hook registry);
-    /// when unmapped, relaunches Claude with --resume in a fresh workspace.
+    /// Jumps to the cmux workspace hosting the session. The Sessions table
+    /// resolves the target workspace id when it builds the row (`cmuxWorkspaceId`
+    /// — from the hook registry OR a cmux workspace already sitting in the
+    /// session's cwd, which the spec's "Go" requires) and passes it as
+    /// `workspaceId`. When nil, we re-resolve through the hook registry; only on
+    /// a genuine miss do we relaunch Claude with --resume in a fresh workspace.
     public func goToSession(_ s: ClaudeSession, fallbackCwd: String, fallbackTitle: String,
-                            account: AccountConfig) async {
+                            account: AccountConfig, workspaceId: String? = nil) async {
         let service = cmux()
-        if let workspaceId = service.claudeSessionWorkspaceMap(hookFile: cmuxHookFile)[s.id] {
+        if let id = workspaceId ?? service.claudeSessionWorkspaceMap(hookFile: cmuxHookFile)[s.id] {
             do {
-                try await service.selectWorkspace(workspaceId)
+                try await service.selectWorkspace(id)
             } catch {
                 actionError = String(describing: error)
             }

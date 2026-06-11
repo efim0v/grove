@@ -139,8 +139,8 @@ final class SnapshotModeTests: XCTestCase {
     @MainActor
     func testFixtureSessionRowsCoverStatusAndActionVariety() {
         let snapshot = SnapshotMode.fixtureState().selectedSnapshot!
-        let rows = buildSessionRows(snapshot: snapshot, cmuxMap: [:], now: Date())
-        let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        let rows = buildSessionRows(snapshot: snapshot, cmuxMap: [:])
+        let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.sessionId, $0) })
 
         // busy live, mapped to Go via the media-pipeline cmux workspace cwd,
         // with a runtime (startedAt set in the fixture).
@@ -167,7 +167,7 @@ final class SnapshotModeTests: XCTestCase {
         // Both accounts present in the table.
         XCTAssertEqual(Set(rows.map(\.accountName)), ["default", "work"])
         // Live first (busy before waiting), resumables after.
-        XCTAssertEqual(Array(rows.prefix(2).map(\.id)), ["s-mp-1", "s-mu-1"])
+        XCTAssertEqual(Array(rows.prefix(2).map(\.sessionId)), ["s-mp-1", "s-mu-1"])
         XCTAssertTrue(rows.dropFirst(2).allSatisfy { $0.liveStatus == nil })
     }
 

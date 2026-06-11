@@ -131,6 +131,26 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(args[commandIndex + 1].contains("--resume 'sess-9'"))
     }
 
+    /// A `.go` row resolved only via the cwd-match path (no hook entry) carries
+    /// the matched cmux workspace id; goToSession must selectWorkspace it
+    /// directly, NOT relaunch --resume in a fresh workspace (issue 2).
+    func testGoToSessionWithExplicitWorkspaceIdSelectsItWithoutHookFile() async throws {
+        let runner = ScriptedRunner(responses: [:])
+        let state = makeState(runner: runner)
+        state.cmuxHookFile = root.appendingPathComponent("no-such-hooks.json").path
+        let session = ClaudeSession(id: "sess-cwd", cwd: "/ws/feat-x", title: nil,
+                                    lastActivity: Date(), accountName: "work", gitBranch: nil)
+
+        await state.goToSession(session, fallbackCwd: "/ws/feat-x", fallbackTitle: "feat-x",
+                                account: account, workspaceId: "cw-cwd")
+
+        XCTAssertEqual(runner.calls(startingWith: "select-workspace").first?.args,
+                       ["select-workspace", "--workspace", "cw-cwd"])
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty,
+                      "Go must jump to the matched workspace, not spawn a second writer")
+        XCTAssertNil(state.actionError)
+    }
+
     // MARK: - resumeSession (cross-account, feasibility verdict: FEASIBLE)
 
     /// Same-account resume copies nothing and just launches --resume in the

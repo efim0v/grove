@@ -28,8 +28,7 @@ struct SessionsScreen: View {
     private func content(snapshot: ProjectSnapshot) -> some View {
         let now = Date()
         let rows = filterRows(buildSessionRows(snapshot: snapshot,
-                                               cmuxMap: cmuxMap(),
-                                               now: now),
+                                               cmuxMap: cmuxMap()),
                               query: state.searchQuery)
         return Group {
             if rows.isEmpty {
@@ -216,16 +215,18 @@ struct SessionsScreen: View {
 
     // MARK: - Actions
 
-    /// Row click / primary button: Go jumps to the cmux workspace; Resume
+    /// Row click / primary button: Go jumps to the cmux workspace the row
+    /// already resolved (`cmuxWorkspaceId` — hook map OR cwd match); Resume
     /// relaunches under the session's OWNING account.
     private func performPrimary(_ row: SessionRow) {
         guard let snapshot = state.selectedSnapshot,
-              let session = findSession(row.id, in: snapshot) else { return }
+              let session = findSession(row, in: snapshot) else { return }
         let account = account(named: row.accountName)
         Task {
             if row.action == .go {
                 await state.goToSession(session, fallbackCwd: session.cwd,
-                                        fallbackTitle: row.title, account: account)
+                                        fallbackTitle: row.title, account: account,
+                                        workspaceId: row.cmuxWorkspaceId)
             } else {
                 await state.resumeSession(session, as: account)
             }
@@ -234,7 +235,7 @@ struct SessionsScreen: View {
 
     private func resume(_ row: SessionRow, as account: AccountConfig) {
         guard let snapshot = state.selectedSnapshot,
-              let session = findSession(row.id, in: snapshot) else { return }
+              let session = findSession(row, in: snapshot) else { return }
         Task { await state.resumeSession(session, as: account) }
     }
 
@@ -244,12 +245,19 @@ struct SessionsScreen: View {
             ?? AccountConfig(name: "default", configDir: "~/.claude")
     }
 
-    private func findSession(_ id: String, in snapshot: ProjectSnapshot) -> ClaudeSession? {
+    /// Resolves the exact ClaudeSession a row stands for. Account-aware: after a
+    /// cross-account resume two sessions share an id under different accounts, so
+    /// matching on id alone could return the WRONG account's copy and resume it
+    /// under the wrong identity. Match on (id, accountName).
+    private func findSession(_ row: SessionRow, in snapshot: ProjectSnapshot) -> ClaudeSession? {
+        func match(_ s: ClaudeSession) -> Bool {
+            s.id == row.sessionId && s.accountName == row.accountName
+        }
         for workspace in snapshot.workspaces {
-            if let s = workspace.sessions.first(where: { $0.id == id }) { return s }
+            if let s = workspace.sessions.first(where: match) { return s }
         }
         for loose in snapshot.loose {
-            if let s = loose.sessions.first(where: { $0.id == id }) { return s }
+            if let s = loose.sessions.first(where: match) { return s }
         }
         return nil
     }

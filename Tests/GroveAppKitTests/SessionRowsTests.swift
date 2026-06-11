@@ -55,10 +55,10 @@ final class SessionRowsTests: XCTestCase {
                       live: [live(42, session: "s1", status: "busy",
                                   startedAt: ago(300))]),
         ])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: ["s1": "cmux-ws-1"], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: ["s1": "cmux-ws-1"])
         XCTAssertEqual(rows.count, 1)
         let row = rows[0]
-        XCTAssertEqual(row.id, "s1")
+        XCTAssertEqual(row.sessionId, "s1")
         XCTAssertEqual(row.action, .go)
         XCTAssertEqual(row.liveStatus, .busy)
         XCTAssertEqual(row.startedAt, ago(300))
@@ -76,7 +76,7 @@ final class SessionRowsTests: XCTestCase {
                       cmux: [CmuxWorkspace(id: "cw", title: "media", currentDirectory: cwd)]),
         ])
         // empty cmux hook map — the cmux-workspace-lists-cwd path must still yield Go.
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
         XCTAssertEqual(rows.map(\.action), [.go])
         XCTAssertEqual(rows[0].liveStatus, .waiting)
     }
@@ -89,7 +89,7 @@ final class SessionRowsTests: XCTestCase {
                       sessions: [session("s3")],
                       live: [live(9, session: "s3", status: "idle")]),
         ])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
         XCTAssertEqual(rows.map(\.action), [.resume])
         XCTAssertEqual(rows[0].liveStatus, .idle)
     }
@@ -100,7 +100,7 @@ final class SessionRowsTests: XCTestCase {
         let snap = snapshot(workspaces: [
             workspace("old", sessions: [session("s4", age: 7200)], live: []),
         ])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: ["s4": "anything"], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: ["s4": "anything"])
         XCTAssertEqual(rows.count, 1)
         XCTAssertNil(rows[0].liveStatus, "a session with no live process is resumable")
         XCTAssertEqual(rows[0].action, .resume)
@@ -113,7 +113,7 @@ final class SessionRowsTests: XCTestCase {
         let snap = snapshot(workspaces: [
             workspace("w", sessions: [session("0a1b2c3d-dead-beef", title: nil)]),
         ])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
         XCTAssertEqual(rows[0].title, "0a1b2c3d")
     }
 
@@ -124,7 +124,7 @@ final class SessionRowsTests: XCTestCase {
             loose("group-chats", path: "/p/client/.worktrees/group-chats",
                   sessions: [session("s5", cwd: "/p/client/.worktrees/group-chats")]),
         ])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
         XCTAssertEqual(rows.map(\.location), ["group-chats"])
     }
 
@@ -134,7 +134,7 @@ final class SessionRowsTests: XCTestCase {
         let snap = snapshot(workspaces: [
             workspace("w", sessions: [session("s6", account: "work")]),
         ])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
         XCTAssertEqual(rows.map(\.accountName), ["work"])
     }
 
@@ -151,17 +151,88 @@ final class SessionRowsTests: XCTestCase {
                              live(2, session: "busy1", status: "busy"),
                              live(3, session: "wait1", status: "waiting")]),
         ])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
         // live first: busy, waiting, idle — then resumable newest-first.
-        XCTAssertEqual(rows.map(\.id), ["busy1", "wait1", "idle1", "res-new", "res-old"])
+        XCTAssertEqual(rows.map(\.sessionId), ["busy1", "wait1", "idle1", "res-new", "res-old"])
     }
 
     func testAggregatesWorkspacesAndLooseTogether() {
         let snap = snapshot(
             workspaces: [workspace("w", sessions: [session("a")])],
             loose: [loose("leaf", sessions: [session("b")])])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:], now: now)
-        XCTAssertEqual(Set(rows.map(\.id)), ["a", "b"])
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
+        XCTAssertEqual(Set(rows.map(\.sessionId)), ["a", "b"])
+    }
+
+    // MARK: - cross-account duplicate dedup (issue 1)
+
+    /// After a cross-account resume the same session id exists under two accounts
+    /// at one cwd; the scanner flatMaps all accounts, so the same container can
+    /// list the session twice with identical ids but DIFFERENT accountNames.
+    /// buildSessionRows must keep BOTH (distinct accounts) and give each a stable,
+    /// unique Identifiable id so SwiftUI's ForEach is well-defined.
+    func testSameSessionIdUnderTwoAccountsYieldsTwoRowsWithUniqueIds() {
+        let snap = snapshot(workspaces: [
+            workspace("w", sessions: [
+                session("dup", account: "default", title: "Owner copy"),
+                session("dup", account: "work", title: "Resumed copy"),
+            ]),
+        ])
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
+        XCTAssertEqual(rows.count, 2, "both accounts' copies survive")
+        XCTAssertEqual(Set(rows.map(\.sessionId)), ["dup"])
+        XCTAssertEqual(Set(rows.map(\.accountName)), ["default", "work"])
+        XCTAssertEqual(Set(rows.map(\.id)).count, 2, "row ids are unique per (account, session)")
+    }
+
+    /// An exact duplicate (same id AND same account) — e.g. the same session
+    /// reachable via both a live process source and a transcript scan within one
+    /// container — must collapse to a single row, never a duplicate Identifiable.
+    func testExactDuplicateSessionInOneContainerIsDeduped() {
+        let snap = snapshot(workspaces: [
+            workspace("w", sessions: [
+                session("same", account: "default", title: "First"),
+                session("same", account: "default", title: "Second"),
+            ]),
+        ])
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
+        XCTAssertEqual(rows.count, 1, "identical (account, session) collapses to one row")
+        XCTAssertEqual(rows[0].title, "First", "first occurrence wins")
+    }
+
+    // MARK: - Go carries the matched cmux workspace id (issue 2)
+
+    func testGoActionCarriesCmuxWorkspaceIdFromHookMap() {
+        let snap = snapshot(workspaces: [
+            workspace("w", sessions: [session("s1")],
+                      live: [live(1, session: "s1", status: "busy")]),
+        ])
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: ["s1": "ws-hook"])
+        XCTAssertEqual(rows[0].action, .go)
+        XCTAssertEqual(rows[0].cmuxWorkspaceId, "ws-hook")
+    }
+
+    func testGoActionCarriesCmuxWorkspaceIdFromCwdMatch() {
+        let cwd = "/ws/media-upload"
+        let snap = snapshot(workspaces: [
+            workspace("media-upload", umbrella: cwd,
+                      sessions: [session("s2", cwd: cwd)],
+                      live: [live(7, session: "s2", status: "busy", cwd: cwd)],
+                      cmux: [CmuxWorkspace(id: "cw-9", title: "media", currentDirectory: cwd)]),
+        ])
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
+        XCTAssertEqual(rows[0].action, .go)
+        XCTAssertEqual(rows[0].cmuxWorkspaceId, "cw-9",
+                       "Go via the cwd-only path must carry the matched workspace id")
+    }
+
+    func testResumeRowHasNoCmuxWorkspaceId() {
+        let snap = snapshot(workspaces: [
+            workspace("w", sessions: [session("s3")]),
+        ])
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
+        XCTAssertEqual(rows[0].action, .resume)
+        XCTAssertNil(rows[0].cmuxWorkspaceId)
     }
 
     // MARK: - shell status is not a recognised live status (renders as idle-ish)
@@ -171,7 +242,7 @@ final class SessionRowsTests: XCTestCase {
             workspace("w", sessions: [session("sh")],
                       live: [live(5, session: "sh", status: "shell")]),
         ])
-        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:], now: now)
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
         // unknown/shell status is still "live" but sorts in the idle bucket.
         XCTAssertEqual(rows[0].liveStatus, .idle)
     }
