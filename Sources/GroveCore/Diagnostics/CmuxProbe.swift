@@ -1,0 +1,227 @@
+import Dispatch
+import Foundation
+
+/// Hidden diagnostic mode: `Grove --cmux-probe <outFile>`.
+///
+/// Runs the EXACT production cmux call path — `CmuxService()` default init,
+/// from a @MainActor task like every AppState action — but WITHOUT the `try?`
+/// error swallowing the production code does, and writes a step-by-step report
+/// (environment, executable resolution, per-step exit code/stdout/stderr/error)
+/// to `outFile`, then exits: 0 when every step passed, 1 otherwise.
+///
+/// To capture the true GUI context (LaunchServices launch: launchd ancestry —
+/// which cmux's socket access control keys on — no TTY, cwd "/"), run it
+/// through `open` against the built bundle:
+///
+///     open -nW dist/Grove.app --args --cmux-probe /tmp/cmux-probe.txt
+///
+/// (`-n` forces a new instance when Grove is already running.) Documented in
+/// README "Troubleshooting". The probe creates ONE cmux workspace named
+/// "grove-probe" and closes it (plus any leaked ones from earlier runs).
+public enum CmuxProbe {
+
+    /// Pure: the value following "--cmux-probe", nil when the flag is absent or last.
+    public static func parseOutFile(from arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: "--cmux-probe"),
+              arguments.indices.contains(index + 1)
+        else { return nil }
+        return arguments[index + 1]
+    }
+
+    /// True (and never actually returns: exit() inside) when "--cmux-probe
+    /// <file>" is present; false when absent so main.swift starts the real app.
+    /// The probe body runs in a @MainActor task (the production call path is
+    /// @MainActor AppState) serviced by dispatchMain().
+    public static func runIfRequested() -> Bool {
+        guard let outFile = parseOutFile(from: CommandLine.arguments) else { return false }
+        Task { @MainActor in
+            let (report, ok) = await run()
+            try? report.write(toFile: outFile, atomically: true, encoding: .utf8)
+            FileHandle.standardError.write(Data(report.utf8))
+            exit(ok ? 0 : 1)
+        }
+        dispatchMain()
+    }
+
+    // MARK: - Probe body
+
+    @MainActor
+    static func run() async -> (report: String, ok: Bool) {
+        var out: [String] = []
+        var allOK = true
+        let info = ProcessInfo.processInfo
+        let fm = FileManager.default
+
+        out.append("grove cmux probe — \(Date()) — grove \(GroveVersion.current)")
+        out.append("pid \(info.processIdentifier)  cwd \(fm.currentDirectoryPath)")
+        out.append("arguments: \(CommandLine.arguments.joined(separator: " "))")
+        out.append("tty: stdin=\(isatty(0)) stdout=\(isatty(1)) stderr=\(isatty(2))")
+        out.append("")
+
+        out.append("== environment (\(info.environment.count) vars) ==")
+        for key in info.environment.keys.sorted() {
+            out.append("\(key)=\(info.environment[key] ?? "")")
+        }
+        out.append("")
+
+        // Production default init: this is exactly what AppState.cmux() builds.
+        let service = CmuxService()
+        let runner = ProcessRunner()
+        out.append("== executable resolution ==")
+        out.append("PATH=\(info.environment["PATH"] ?? "<unset>")")
+        out.append("resolved executable: \(service.executable)")
+        out.append("fallback \(CmuxService.fallbackPath) isExecutable: \(fm.isExecutableFile(atPath: CmuxService.fallbackPath))")
+        out.append("")
+
+        func record(_ name: String, started: Date, _ detail: String) {
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            out.append("[\(name)] (\(ms)ms) \(detail)")
+        }
+        func fail(_ name: String, started: Date, _ error: Error) {
+            allOK = false
+            record(name, started: started, "FAILED: \(error)")
+        }
+
+        // Step 1: raw ping — same executable/args as production ping(), but
+        // exit code, stdout and stderr captured verbatim (ping() swallows them).
+        var t = Date()
+        do {
+            let r = try await runner.run(service.executable, ["ping"], cwd: nil, env: nil, timeout: 10)
+            record("raw ping", started: t,
+                   "exit=\(r.exitCode) stdout=\(String(reflecting: r.stdout)) stderr=\(String(reflecting: r.stderr))")
+            if r.exitCode != 0 { allOK = false }
+        } catch {
+            fail("raw ping", started: t, error)
+        }
+
+        // Step 2: production ping().
+        t = Date()
+        let pong = await service.ping()
+        record("ping()", started: t, pong ? "PONG" : "FAILED: returned false")
+        if !pong { allOK = false }
+
+        // Step 3: production ensureRunning().
+        t = Date()
+        do {
+            try await service.ensureRunning()
+            record("ensureRunning()", started: t, "OK")
+        } catch {
+            fail("ensureRunning()", started: t, error)
+        }
+
+        // Step 4: production listWorkspaces().
+        t = Date()
+        do {
+            let list = try await service.listWorkspaces()
+            record("listWorkspaces()", started: t,
+                   "OK: \(list.count) workspaces: \(list.map(\.title).joined(separator: ", "))")
+        } catch {
+            fail("listWorkspaces()", started: t, error)
+        }
+
+        // Step 5: production newWorkspace (unfocused so the probe never steals focus).
+        t = Date()
+        var created = false
+        do {
+            try await service.newWorkspace(name: "grove-probe", cwd: NSTemporaryDirectory(),
+                                           command: nil, focus: false)
+            created = true
+            record("newWorkspace(grove-probe)", started: t, "OK")
+        } catch {
+            fail("newWorkspace(grove-probe)", started: t, error)
+        }
+
+        // Step 6: close every workspace titled "grove-probe" (the one just
+        // created plus any leaked by interrupted earlier runs).
+        if created {
+            t = Date()
+            do {
+                let probes = try await service.listWorkspaces().filter { $0.title == "grove-probe" }
+                if probes.isEmpty {
+                    allOK = false
+                    record("closeWorkspace", started: t, "FAILED: created workspace not found in list")
+                }
+                for ws in probes {
+                    try await service.closeWorkspace(ws.id)
+                    record("closeWorkspace(\(ws.id))", started: t, "OK")
+                }
+            } catch {
+                fail("closeWorkspace", started: t, error)
+            }
+        }
+
+        // Extra context experiments (do not affect allOK except where noted):
+        out.append("")
+        out.append("== experiments ==")
+
+        // E1: CLI runs at all (no socket needed for --version).
+        t = Date()
+        do {
+            let r = try await runner.run(service.executable, ["--version"], cwd: nil, env: nil, timeout: 10)
+            record("E1 cmux --version", started: t, "exit=\(r.exitCode) stdout=\(String(reflecting: r.stdout.prefix(120)))")
+        } catch { record("E1 cmux --version", started: t, "FAILED: \(error)") }
+
+        // E2: identify — server identity and caller context (needs socket).
+        t = Date()
+        do {
+            let r = try await runner.run(service.executable, ["identify"], cwd: nil, env: nil, timeout: 10)
+            record("E2 cmux identify", started: t,
+                   "exit=\(r.exitCode) stdout=\(String(reflecting: r.stdout)) stderr=\(String(reflecting: r.stderr))")
+        } catch { record("E2 cmux identify", started: t, "FAILED: \(error)") }
+
+        // E3: explicit --socket with the resolved socket path.
+        let socketPath = CmuxService.controlSocketPath()
+        t = Date()
+        do {
+            let r = try await runner.run(service.executable, ["--socket", socketPath, "ping"], cwd: nil, env: nil, timeout: 10)
+            record("E3 ping --socket \(socketPath)", started: t,
+                   "exit=\(r.exitCode) stdout=\(String(reflecting: r.stdout)) stderr=\(String(reflecting: r.stderr))")
+        } catch { record("E3 ping --socket", started: t, "FAILED: \(error)") }
+
+        // E4: minimal env (HOME only), absolute fallback binary, bypassing
+        // ProcessRunner's env inheritance — the configuration the orchestrator
+        // verified works from a terminal.
+        t = Date()
+        out.append(minimalEnvPing())
+        record("E4 done", started: t, "")
+
+        // E5: production denial probe — raw read-only connect from THIS
+        // process. cmux's server rejects unauthorized peers by writing one
+        // "ERROR: ..." line and hanging up; authorized peers see silence (nil).
+        let greeting = CmuxService.readSocketGreeting(path: socketPath)
+        out.append("[E5 socket greeting] path=\(socketPath) -> "
+                   + (greeting.map { String(reflecting: $0) } ?? "nil (silent: authorized, or socket absent)"))
+
+        // E6: socket password resolution from cmux's own config.
+        let password = CmuxService.socketPassword(configFile: nil)
+        out.append("[E6 socket password] automation.socketPassword "
+                   + (password == nil ? "not configured" : "configured (forwarded as CMUX_SOCKET_PASSWORD)"))
+
+        out.append("")
+        out.append(allOK ? "RESULT: ALL STEPS OK" : "RESULT: FAILURES (see above)")
+        return (out.joined(separator: "\n") + "\n", allOK)
+    }
+
+    /// Spawns the fallback cmux binary with env = [HOME] only (like `env -i
+    /// HOME=$HOME cmux ping`), synchronously, raw Process (not ProcessRunner).
+    static func minimalEnvPing() -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: CmuxService.fallbackPath)
+        p.arguments = ["ping"]
+        p.environment = ["HOME": NSHomeDirectory()]
+        let outPipe = Pipe(), errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+        p.standardInput = FileHandle.nullDevice
+        do {
+            try p.run()
+        } catch {
+            return "[E4 minimal-env ping] spawn failed: \(error)"
+        }
+        let stdout = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let stderr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        p.waitUntilExit()
+        return "[E4 minimal-env ping] exit=\(p.terminationStatus) stdout=\(String(reflecting: stdout)) stderr=\(String(reflecting: stderr))"
+    }
+
+}

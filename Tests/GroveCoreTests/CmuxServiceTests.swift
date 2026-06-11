@@ -11,11 +11,31 @@ final class CmuxServiceTests: XCTestCase {
         ProcessResult(exitCode: code, stdout: "", stderr: "no socket")
     }
 
+    /// The only signal the cmux CLI emits when the server hangs up on a
+    /// denied peer (it never reads the server's ERROR line).
+    private func brokenPipe() -> ProcessResult {
+        ProcessResult(exitCode: 1, stdout: "",
+                      stderr: "Error: Failed to write to socket (Broken pipe, errno 32)\n")
+    }
+
+    private static let denialLine =
+        "ERROR: Access denied — only processes started inside cmux can connect"
+
+    /// Hermetic service: socket denial probe and cmux.json password lookup
+    /// are stubbed so unit tests never touch the real machine state.
+    private func makeCmux(_ runner: MockRunner,
+                          path: String = "/opt/cmux/bin/cmux",
+                          greeting: String? = nil) -> CmuxService {
+        CmuxService(runner: runner, cmuxPath: path,
+                    configFile: "/nonexistent/grove-tests/cmux.json",
+                    socketGreeting: { _ in greeting })
+    }
+
     // MARK: ping
 
     func testPingReturnsTrueOnPong() async {
         let mock = MockRunner(results: [ok("PONG\n")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         let alive = await cmux.ping()
         XCTAssertTrue(alive)
         XCTAssertEqual(mock.invocations.count, 1)
@@ -24,14 +44,14 @@ final class CmuxServiceTests: XCTestCase {
 
     func testPingReturnsFalseOnOtherOutput() async {
         let mock = MockRunner(results: [ok("NOPE")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         let alive = await cmux.ping()
         XCTAssertFalse(alive)
     }
 
     func testPingReturnsFalseOnNonZeroExit() async {
         let mock = MockRunner(results: [failed()])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         let alive = await cmux.ping()
         XCTAssertFalse(alive)
     }
@@ -55,7 +75,7 @@ final class CmuxServiceTests: XCTestCase {
         }
         """
         let mock = MockRunner(results: [ok(json)])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         let list = try await cmux.listWorkspaces()
         XCTAssertEqual(list, [
             CmuxWorkspace(id: "ws-1", title: "alpha", currentDirectory: "/Users/t/Workspaces/p/alpha"),
@@ -72,7 +92,7 @@ final class CmuxServiceTests: XCTestCase {
          {"id":"ws-2","title":"other","current_directory":"/tmp/elsewhere"}]
         """
         let mock = MockRunner(results: [ok(json)])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         let list = try await cmux.listWorkspaces()
         XCTAssertEqual(list, [
             CmuxWorkspace(id: "ws-1", title: "alpha", currentDirectory: "/Users/t/Workspaces/p/alpha"),
@@ -84,7 +104,7 @@ final class CmuxServiceTests: XCTestCase {
 
     func testListWorkspacesThrowsOnUnparseableJSON() async {
         let mock = MockRunner(results: [ok("not json at all")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         do {
             _ = try await cmux.listWorkspaces()
             XCTFail("expected listWorkspaces to throw")
@@ -97,7 +117,7 @@ final class CmuxServiceTests: XCTestCase {
 
     func testNewWorkspaceBuildsExactArgsAndOpensAppWhenFocused() async throws {
         let mock = MockRunner(results: [ok(""), ok("")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         try await cmux.newWorkspace(name: "alpha", cwd: "/tmp/ws/alpha", command: "claude", focus: true)
         XCTAssertEqual(mock.invocations.count, 2)
         XCTAssertEqual(mock.invocations[0].executable, "/opt/cmux/bin/cmux")
@@ -111,7 +131,7 @@ final class CmuxServiceTests: XCTestCase {
 
     func testNewWorkspaceOmitsCommandWhenNil() async throws {
         let mock = MockRunner(results: [ok(""), ok("")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         try await cmux.newWorkspace(name: "alpha", cwd: "/tmp/ws/alpha", command: nil, focus: true)
         XCTAssertEqual(mock.invocations.count, 2)
         XCTAssertEqual(mock.invocations[0].args,
@@ -122,7 +142,7 @@ final class CmuxServiceTests: XCTestCase {
 
     func testNewWorkspaceDoesNotOpenAppWhenNotFocused() async throws {
         let mock = MockRunner(results: [ok("")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         try await cmux.newWorkspace(name: "alpha", cwd: "/tmp/ws/alpha", command: "claude", focus: false)
         XCTAssertEqual(mock.invocations.count, 1)
         XCTAssertEqual(mock.invocations[0].executable, "/opt/cmux/bin/cmux")
@@ -135,7 +155,7 @@ final class CmuxServiceTests: XCTestCase {
 
     func testSelectWorkspaceSelectsThenOpensCmuxApp() async throws {
         let mock = MockRunner(results: [ok(""), ok("")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         try await cmux.selectWorkspace("ws-1")
         XCTAssertEqual(mock.invocations.count, 2)
         XCTAssertEqual(mock.invocations[0].executable, "/opt/cmux/bin/cmux")
@@ -148,7 +168,7 @@ final class CmuxServiceTests: XCTestCase {
 
     func testEnsureRunningLaunchesAppWhenFirstPingFails() async throws {
         let mock = MockRunner(results: [failed(), ok(""), ok("PONG")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(mock)
         try await cmux.ensureRunning()
         XCTAssertEqual(mock.invocations.count, 3)
         XCTAssertEqual(mock.invocations[0].args, ["ping"])
@@ -161,7 +181,7 @@ final class CmuxServiceTests: XCTestCase {
 
     func testExplicitCmuxPathUsedAsExecutable() async {
         let mock = MockRunner(results: [ok("PONG")])
-        let cmux = CmuxService(runner: mock, cmuxPath: "/custom/place/cmux")
+        let cmux = makeCmux(mock, path: "/custom/place/cmux")
         _ = await cmux.ping()
         XCTAssertEqual(mock.invocations[0].executable, "/custom/place/cmux")
     }
@@ -177,13 +197,145 @@ final class CmuxServiceTests: XCTestCase {
          "broken": "not-an-object"}
         """
         try json.write(to: file, atomically: true, encoding: .utf8)
-        let cmux = CmuxService(runner: MockRunner(results: []), cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(MockRunner(results: []))
         let map = cmux.claudeSessionWorkspaceMap(hookFile: file.path)
         XCTAssertEqual(map, ["sess-1": "ws-uuid-1", "sess-2": "ws-uuid-2"])
     }
 
     func testClaudeSessionWorkspaceMapMissingFileIsEmpty() {
-        let cmux = CmuxService(runner: MockRunner(results: []), cmuxPath: "/opt/cmux/bin/cmux")
+        let cmux = makeCmux(MockRunner(results: []))
         XCTAssertEqual(cmux.claudeSessionWorkspaceMap(hookFile: "/nonexistent/hook.json"), [:])
+    }
+
+    // MARK: - closeWorkspace
+
+    func testCloseWorkspaceBuildsExactArgs() async throws {
+        let mock = MockRunner(results: [ok("")])
+        let cmux = makeCmux(mock)
+        try await cmux.closeWorkspace("ws-9")
+        XCTAssertEqual(mock.invocations.count, 1)
+        XCTAssertEqual(mock.invocations[0].args, ["close-workspace", "--workspace", "ws-9"])
+    }
+
+    // MARK: - socket access control (GUI-context denial regression, see CmuxProbe)
+    //
+    // cmux's server only accepts clients descended from cmux unless the user
+    // allows external automation. Grove launched via LaunchServices is denied:
+    // the server writes an ERROR line and hangs up, and the CLI reports only
+    // "Broken pipe". These tests pin the actionable-error conversion.
+
+    func testEnsureRunningFailsFastWithActionableErrorWhenServerDeniesPeer() async {
+        let mock = MockRunner(results: [brokenPipe()])
+        let cmux = makeCmux(mock, greeting: Self.denialLine)
+        do {
+            try await cmux.ensureRunning()
+            XCTFail("expected denial error")
+        } catch {
+            let text = "\(error)"
+            XCTAssertTrue(text.contains("Access denied"), "got: \(text)")
+            XCTAssertTrue(text.contains("Socket control mode"), "got: \(text)")
+        }
+        // Fail fast: launching cmux cannot help (it IS running), so no
+        // `open -b` and no 10s ping loop.
+        XCTAssertEqual(mock.invocations.count, 1)
+        XCTAssertEqual(mock.invocations[0].args, ["ping"])
+    }
+
+    func testListWorkspacesConvertsBrokenPipeToActionableDenialError() async {
+        let mock = MockRunner(results: [brokenPipe()])
+        let cmux = makeCmux(mock, greeting: Self.denialLine)
+        do {
+            _ = try await cmux.listWorkspaces()
+            XCTFail("expected denial error")
+        } catch {
+            let text = "\(error)"
+            XCTAssertTrue(text.contains("cmux unavailable"), "got: \(text)")
+            XCTAssertTrue(text.contains("Access denied"), "got: \(text)")
+        }
+    }
+
+    func testBrokenPipeWithoutDenialStaysProcessFailed() async {
+        // greeting nil = the socket is silent/absent (cmux died mid-flight):
+        // the original processFailed must survive untouched.
+        let mock = MockRunner(results: [brokenPipe()])
+        let cmux = makeCmux(mock, greeting: nil)
+        do {
+            _ = try await cmux.listWorkspaces()
+            XCTFail("expected processFailed")
+        } catch GroveError.processFailed(_, let exitCode, let stderr) {
+            XCTAssertEqual(exitCode, 1)
+            XCTAssertTrue(stderr.contains("Broken pipe"))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    // MARK: - socket password forwarding (automation.socketPassword)
+
+    func testPingForwardsSocketPasswordFromCmuxConfig() async throws {
+        let dir = try Fixture.tempDir("cmux-config")
+        let file = dir.appendingPathComponent("cmux.json")
+        try #"{"automation": {"socketControlMode": "password", "socketPassword": "s3cret"}}"#
+            .write(to: file, atomically: true, encoding: .utf8)
+        let mock = MockRunner(results: [ok("PONG")])
+        let cmux = CmuxService(runner: mock, cmuxPath: "/opt/cmux/bin/cmux",
+                               configFile: file.path, socketGreeting: { _ in nil })
+        _ = await cmux.ping()
+        XCTAssertEqual(mock.invocations[0].env?["CMUX_SOCKET_PASSWORD"], "s3cret")
+    }
+
+    func testNoPasswordEnvWhenCmuxConfigHasNone() async {
+        let mock = MockRunner(results: [ok("PONG")])
+        let cmux = makeCmux(mock)
+        _ = await cmux.ping()
+        XCTAssertNil(mock.invocations[0].env)
+    }
+
+    // MARK: - control socket path resolution
+
+    func testControlSocketPathPrefersEnvOverrides() {
+        XCTAssertEqual(CmuxService.controlSocketPath(env: ["CMUX_SOCKET_PATH": "/x/y.sock"]),
+                       "/x/y.sock")
+        XCTAssertEqual(CmuxService.controlSocketPath(env: ["CMUX_SOCKET": "/legacy.sock"]),
+                       "/legacy.sock")
+        // Empty values (cmux exports CMUX_SOCKET="") fall through to the default.
+        XCTAssertEqual(CmuxService.controlSocketPath(env: ["CMUX_SOCKET": ""]),
+                       NSHomeDirectory() + "/Library/Application Support/cmux/cmux.sock")
+    }
+
+    // MARK: - readSocketGreeting against a real local unix socket
+
+    func testReadSocketGreetingReadsImmediateErrorLine() throws {
+        let path = "/tmp/grove-test-\(UUID().uuidString.prefix(8)).sock"
+        defer { unlink(path) }
+        let server = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(server, 0)
+        defer { close(server) }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+            raw.copyBytes(from: Array(path.utf8))
+        }
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(server, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0, "bind failed errno=\(errno)")
+        XCTAssertEqual(listen(server, 1), 0)
+        let line = Self.denialLine
+        let acceptor = Thread {
+            let client = accept(server, nil, nil)
+            guard client >= 0 else { return }
+            let bytes = Array((line + "\n").utf8)
+            _ = bytes.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+            close(client)
+        }
+        acceptor.start()
+        XCTAssertEqual(CmuxService.readSocketGreeting(path: path), line)
+    }
+
+    func testReadSocketGreetingNilWhenSocketAbsent() {
+        XCTAssertNil(CmuxService.readSocketGreeting(path: "/nonexistent/grove/no.sock"))
     }
 }
