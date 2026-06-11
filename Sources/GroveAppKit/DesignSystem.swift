@@ -9,17 +9,22 @@ import SwiftUI
 /// from any container corner to resolve, and the radius for plain
 /// RoundedRectangle fallbacks.
 enum DesignRadius {
+    // v1.2.1 fix 3: the whole scale bumped to match macOS/iOS 26 (the old
+    // 18/16/10 read as pre-26). The spec named card 22 / field 14 / floor 8;
+    // panel follows to 26 so the concentric ordering (panel > card > field)
+    // the system is built on keeps holding.
+
     /// Full-screen panel states (the MenuBarExtra window content).
-    static let panel: CGFloat = 18
+    static let panel: CGFloat = 26
     /// Cards/sections (GlassCard chrome).
-    static let card: CGFloat = 16
+    static let card: CGFloat = 22
     /// Text fields, picker chips, log wells.
-    static let field: CGFloat = 10
+    static let field: CGFloat = 14
 
     /// Concentric radius for an element inset inside a rounded parent,
-    /// floored at 4 so tight insets never collapse to sharp corners.
+    /// floored at 8 so tight insets never collapse to sharp corners.
     static func nested(parent: CGFloat, inset: CGFloat) -> CGFloat {
-        max(4, parent - inset)
+        max(8, parent - inset)
     }
 }
 
