@@ -59,10 +59,11 @@ enum Fix {
         sessionId: String,
         status: String,
         cwd: String = "/ws/feature",
-        account: String = "default"
+        account: String = "default",
+        startedAt: Date? = nil
     ) -> LiveProcess {
         LiveProcess(pid: pid, sessionId: sessionId, cwd: cwd,
-                    status: status, accountName: account)
+                    status: status, accountName: account, startedAt: startedAt)
     }
 
     static func snapshot(workspaces: [FeatureWorkspace]) -> ProjectSnapshot {

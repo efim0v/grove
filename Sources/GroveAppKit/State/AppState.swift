@@ -2,11 +2,22 @@ import Foundation
 import SwiftUI
 import GroveCore
 
-/// Capsule tab strip inside the project scope. Accounts left the strip when
-/// it became its own Route (.accounts).
+/// Capsule tab strip inside the project scope (Workspaces | Graph | Claude).
+/// Accounts left the strip when it became its own Route (.accounts).
 public enum MainTab: String, CaseIterable {
     case workspaces
     case graph
+    case sessions
+
+    /// Tab-strip label. `sessions` reads "Claude" (the strip is
+    /// Workspaces | Graph | Claude).
+    public var label: String {
+        switch self {
+        case .workspaces: return "Workspaces"
+        case .graph: return "Graph"
+        case .sessions: return "Claude"
+        }
+    }
 }
 
 /// Single observable source of truth for the app. Owns the config (loaded via
@@ -324,6 +335,27 @@ extension AppState {
             return
         }
         await launchClaude(cwd: fallbackCwd, title: fallbackTitle, account: account, resume: s.id)
+    }
+
+    /// Resumes `session` under `account` (Sessions tab "Resume" / "Resume as
+    /// <name>"). When `account` differs from the session's owning account, the
+    /// feasibility experiment (verdict: FEASIBLE) lets us make it resumable by
+    /// copying the transcript into the target account's identical projects path
+    /// first — the lookup layer resolves the copied jsonl; auth comes from the
+    /// target account's keychain at runtime. Same-account resume copies nothing.
+    /// A copy failure lands in actionError and aborts the launch.
+    public func resumeSession(_ session: ClaudeSession, as account: AccountConfig) async {
+        if account.name != session.accountName,
+           let source = config.accounts.first(where: { $0.name == session.accountName }) {
+            do {
+                try ClaudeService().copySession(session, from: source, to: account)
+            } catch {
+                actionError = String(describing: error)
+                return
+            }
+        }
+        let title = session.title ?? (session.cwd as NSString).lastPathComponent
+        await launchClaude(cwd: session.cwd, title: title, account: account, resume: session.id)
     }
 }
 

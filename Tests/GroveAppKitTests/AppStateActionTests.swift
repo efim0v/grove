@@ -131,6 +131,66 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(args[commandIndex + 1].contains("--resume 'sess-9'"))
     }
 
+    // MARK: - resumeSession (cross-account, feasibility verdict: FEASIBLE)
+
+    /// Same-account resume copies nothing and just launches --resume in the
+    /// session's own cwd under its owning account.
+    func testResumeSessionSameAccountLaunchesWithoutCopying() async throws {
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        let session = ClaudeSession(id: "sess-same", cwd: "/ws/feat-x", title: "Tidy up",
+                                    lastActivity: Date(), accountName: "work", gitBranch: nil)
+
+        await state.resumeSession(session, as: account)   // account.name == "work"
+
+        XCTAssertNil(state.actionError)
+        let args = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first).args
+        let cwdIndex = try XCTUnwrap(args.firstIndex(of: "--cwd"))
+        XCTAssertEqual(args[cwdIndex + 1], "/ws/feat-x")
+        let commandIndex = try XCTUnwrap(args.firstIndex(of: "--command"))
+        XCTAssertTrue(args[commandIndex + 1].contains("--resume 'sess-same'"))
+    }
+
+    /// Cross-account resume copies the source jsonl into the target account's
+    /// identical projects/<mangle(cwd)>/ path, then launches --resume under the
+    /// target account's CLAUDE_CONFIG_DIR.
+    func testResumeSessionCrossAccountCopiesJsonlThenLaunchesUnderTarget() async throws {
+        let cwd = "/ws/feat-x"
+        let id = "sess-cross"
+        // Two real config dirs; source owns the transcript.
+        let srcDir = root.appendingPathComponent("acc-src")
+        let dstDir = root.appendingPathComponent("acc-dst")
+        let source = AccountConfig(name: "owner", configDir: srcDir.path)
+        let target = AccountConfig(name: "work", configDir: dstDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [source, target]))
+
+        let mangled = ClaudeService.mangle(cwd)
+        let srcProjects = srcDir.appendingPathComponent("projects").appendingPathComponent(mangled)
+        try FileManager.default.createDirectory(at: srcProjects, withIntermediateDirectories: true)
+        try "transcript".write(to: srcProjects.appendingPathComponent("\(id).jsonl"),
+                               atomically: true, encoding: .utf8)
+
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        let session = ClaudeSession(id: id, cwd: cwd, title: nil,
+                                    lastActivity: Date(), accountName: "owner", gitBranch: nil)
+
+        await state.resumeSession(session, as: target)
+
+        XCTAssertNil(state.actionError)
+        // Copied into target's projects dir.
+        let dstJsonl = dstDir.appendingPathComponent("projects")
+            .appendingPathComponent(mangled).appendingPathComponent("\(id).jsonl")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dstJsonl.path))
+        // Launched under the TARGET account's config dir.
+        let args = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first).args
+        let commandIndex = try XCTUnwrap(args.firstIndex(of: "--command"))
+        XCTAssertTrue(args[commandIndex + 1].contains("CLAUDE_CONFIG_DIR=\(shellQuote(dstDir.path))"))
+        XCTAssertTrue(args[commandIndex + 1].contains("--resume '\(id)'"))
+    }
+
     // MARK: - createWorkspace / rollback (real git fixture)
 
     private func saveProjectFixture() throws -> (project: ProjectConfig, repo: RepoInfo, workspacesRoot: URL) {
