@@ -18,6 +18,18 @@ public final class AppState: ObservableObject {
     @Published public var snapshots: [UUID: ProjectSnapshot] = [:]
     @Published public var selectedProjectID: UUID?
     @Published public var selectedTab: MainTab = .workspaces
+    /// The panel's current full-screen state. Mutate via open()/goBack() so
+    /// the transition direction and per-route side effects stay consistent.
+    @Published public var route: Route = .projects
+    /// Pending prefill for the createWorkspace route; producers set it right
+    /// before open(.createWorkspace(id)), goBack() consumes it.
+    @Published public var createPrefill: CreatePrefill?
+    /// Direction of the LAST route change (push = forward, pop = backward),
+    /// derived from route depth. Drives RootView's transition edges. Not
+    /// @Published: it always changes together with `route`.
+    public private(set) var routeIsForward = true
+    /// The scan spawned by the last open(.project(id)); tests await it.
+    internal var refreshTask: Task<Void, Never>?
     @Published public var searchQuery: String = ""
     @Published public var isScanning: Bool = false
     @Published public var actionError: String?
@@ -56,6 +68,29 @@ public final class AppState: ObservableObject {
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Grove/config.json")
         self.init(configStore: ConfigStore(url: url))
+    }
+
+    // MARK: - Navigation (panel state machine)
+
+    /// Navigates the panel. Pushes vs pops are classified by route depth
+    /// (deeper-or-equal = forward). Opening a project selects it and kicks
+    /// off a scan so the workspace tree is fresh by the time it settles.
+    public func open(_ target: Route) {
+        routeIsForward = target.depth >= route.depth
+        if case .project(let id) = target {
+            selectedProjectID = id
+            refreshTask = Task { await self.refresh() }
+        }
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            route = target
+        }
+    }
+
+    /// Pops along Route.backRoute. Leaving createWorkspace consumes the
+    /// pending prefill so a later visit never reuses stale form state.
+    public func goBack() {
+        if case .createWorkspace = route { createPrefill = nil }
+        open(route.backRoute)
     }
 
     // MARK: - Selection
@@ -117,7 +152,7 @@ public final class AppState: ObservableObject {
         persist()
     }
 
-    /// Global settings edit (SettingsSheet); persists like every other config mutation.
+    /// Global settings edit (GlobalSettingsScreen); persists like every other config mutation.
     public func setWorkspacesRootTemplate(_ template: String) {
         config.workspacesRootTemplate = template
         persist()
@@ -281,7 +316,7 @@ extension AppState {
 
 extension AppState {
     /// nil = no project selected. A report with a non-nil failure also sets
-    /// actionError; the sheet additionally shows report.logLines.
+    /// actionError; the create screen additionally shows report.logLines.
     /// startPointOverrides (keyed by repo dirName) beat both the resolved base
     /// branch and any fork-from parent branch — see WorkspaceService.
     public func createWorkspace(name: String, branch: String, repos: [RepoInfo],
