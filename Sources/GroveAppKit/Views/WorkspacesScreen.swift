@@ -184,13 +184,16 @@ struct WorkspacesScreen: View {
     /// Pure-SwiftUI tree/list toggle in the capsule style of ProjectScreen's
     /// tab strip (Task 15). NOT Picker(.segmented): segmented controls are
     /// AppKit-backed and ImageRenderer draws them as a yellow error
-    /// placeholder offscreen.
+    /// placeholder offscreen. The selected pill is real Liquid Glass live
+    /// (selectionCapsule), grouped so the glass renders together.
     private var viewToggle: some View {
-        HStack(spacing: 4) {
-            toggleButton("point.3.connected.trianglepath.dotted", isOn: !flatList,
-                         help: "Tree") { flatList = false }
-            toggleButton("list.bullet", isOn: flatList,
-                         help: "Flat list") { flatList = true }
+        GlassEffectContainer {
+            HStack(spacing: 4) {
+                toggleButton("point.3.connected.trianglepath.dotted", isOn: !flatList,
+                             help: "Tree") { flatList = false }
+                toggleButton("list.bullet", isOn: flatList,
+                             help: "Flat list") { flatList = true }
+            }
         }
     }
 
@@ -201,9 +204,7 @@ struct WorkspacesScreen: View {
                 .font(.callout)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
-                .background(isOn ? AnyShapeStyle(.white.opacity(0.18))
-                                 : AnyShapeStyle(.clear),
-                            in: .capsule)
+                .selectionCapsule(isOn: isOn)
         }
         .buttonStyle(.plain)
         .help(help)

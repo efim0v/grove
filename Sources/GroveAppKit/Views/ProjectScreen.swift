@@ -85,7 +85,7 @@ struct ProjectScreen: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .frame(width: 170)
-        .background(.white.opacity(0.07), in: Capsule())
+        .modifier(SearchFieldChrome())
         .background(
             Button("") { searchFocused = true }
                 .keyboardShortcut("f")
@@ -95,22 +95,25 @@ struct ProjectScreen: View {
     }
 
     // Pure-SwiftUI tab strip. NOT Picker(.segmented): that control is
-    // AppKit-backed and ImageRenderer draws it as an error placeholder offscreen.
+    // AppKit-backed and ImageRenderer draws it as an error placeholder
+    // offscreen. The selected pill is REAL Liquid Glass live (translucent fill
+    // in snapshots); siblings share one GlassEffectContainer so the glass
+    // renders as a group when the selection moves.
     private var tabStrip: some View {
-        HStack(spacing: 4) {
-            ForEach(MainTab.allCases, id: \.rawValue) { tab in
-                Button {
-                    state.selectedTab = tab
-                } label: {
-                    Text(tab.rawValue.capitalized)
-                        .font(.callout.weight(state.selectedTab == tab ? .semibold : .regular))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(state.selectedTab == tab ? AnyShapeStyle(.white.opacity(0.18))
-                                                             : AnyShapeStyle(.clear),
-                                    in: .capsule)
+        GlassEffectContainer {
+            HStack(spacing: 4) {
+                ForEach(MainTab.allCases, id: \.rawValue) { tab in
+                    Button {
+                        state.selectedTab = tab
+                    } label: {
+                        Text(tab.rawValue.capitalized)
+                            .font(.callout.weight(state.selectedTab == tab ? .semibold : .regular))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .selectionCapsule(isOn: state.selectedTab == tab)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
     }

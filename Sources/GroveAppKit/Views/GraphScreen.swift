@@ -45,20 +45,24 @@ struct GraphScreen: View {
             Text("Repo")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            ForEach(state.selectedSnapshot?.repos ?? [], id: \.path) { repo in
-                let isSelected = repo.path == state.graphRepoPath
-                Button {
-                    Task { await state.loadGraph(repoPath: repo.path) }
-                } label: {
-                    Text(repo.dirName)
-                        .font(.caption.weight(isSelected ? .semibold : .regular))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 3)
-                        .background(isSelected ? AnyShapeStyle(.white.opacity(0.18))
-                                               : AnyShapeStyle(.white.opacity(0.04)),
-                                    in: .capsule)
+            // Selected chip = real Liquid Glass live (translucent fill in
+            // snapshots); idle chips keep their faint fill in both modes.
+            GlassEffectContainer {
+                HStack(spacing: 6) {
+                    ForEach(state.selectedSnapshot?.repos ?? [], id: \.path) { repo in
+                        let isSelected = repo.path == state.graphRepoPath
+                        Button {
+                            Task { await state.loadGraph(repoPath: repo.path) }
+                        } label: {
+                            Text(repo.dirName)
+                                .font(.caption.weight(isSelected ? .semibold : .regular))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 3)
+                                .selectionCapsule(isOn: isSelected, idleOpacity: 0.04)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .buttonStyle(.plain)
             }
             Spacer()
             Text("\(state.graphNodes.count) commits")
