@@ -10,7 +10,6 @@ import GroveCore
 struct GraphScreen: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
-    @State private var createPrefill: CreatePrefill?
 
     /// Geometry shared with GraphLanesCanvas: dot x = laneOrigin + lane*laneSpacing.
     static let rowHeight: CGFloat = 24
@@ -29,12 +28,6 @@ struct GraphScreen: View {
             } else {
                 graphBody
             }
-        }
-        // NOT .sheet: a real sheet is a second key window, which auto-hides
-        // the MenuBarExtra(.window) panel (see PanelOverlay.swift).
-        .panelOverlay(item: $createPrefill) { prefill in
-            CreateWorkspaceSheet(state: state, prefill: prefill,
-                                 onClose: { createPrefill = nil })
         }
         .task(id: state.selectedProjectID) {
             // Live default selection only; the snapshot fixture pre-loads nodes.
@@ -178,8 +171,11 @@ struct GraphScreen: View {
     @ViewBuilder private func chipMenu(_ chip: RefChip) -> some View {
         if let branch = chip.branch {
             Button("Create workspace from this branch…") {
-                createPrefill = CreatePrefill(name: sanitizedWorkspaceName(fromBranch: branch),
-                                              branch: branch, forkFrom: nil, base: branch)
+                // Creation is a full-screen panel state, never an overlay.
+                guard let id = state.selectedProjectID else { return }
+                state.createPrefill = CreatePrefill(name: sanitizedWorkspaceName(fromBranch: branch),
+                                                    branch: branch, forkFrom: nil, base: branch)
+                state.open(.createWorkspace(id))
             }
             if let snapshot = state.selectedSnapshot,
                let location = worktreeLocation(forBranch: branch, in: snapshot) {

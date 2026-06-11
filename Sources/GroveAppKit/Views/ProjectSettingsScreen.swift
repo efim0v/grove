@@ -1,115 +1,89 @@
 import SwiftUI
-import AppKit
 import GroveCore
 
-/// Settings sheet (spec §6.4). Global: the workspaces-root template.
-/// Per selected project: read-only path, workspacesRoot override,
-/// branchTemplate, a default-Claude-account picker, repo-aware base-branch
-/// override rows (branch picker per scanned repo, "auto" = detect), the
-/// postCreateHooks dictionary with add/remove rows, excludedRepos, scanDepth.
-/// Add project = NSOpenPanel (live interaction only — never constructed
-/// during snapshot rendering).
+/// Per-project settings screen (route .projectSettings(id), spec §6.4):
+/// read-only path, workspacesRoot override, branchTemplate, a default-Claude-
+/// account picker, repo-aware base-branch override rows (branch picker per
+/// scanned repo, "auto" = detect), the postCreateHooks dictionary with
+/// add/remove rows, excludedRepos, scanDepth, and remove-project. Global
+/// fields live in GlobalSettingsScreen.
 ///
 /// DOCUMENTED DEVIATION from spec §6.4: there is no separate GLOBAL
 /// default-branch-template field — ProjectConfig.branchTemplate already
 /// defaults to "feat/{name}" for every new project, which covers the use
 /// case without a second template layer.
-struct SettingsSheet: View {
+struct ProjectSettingsScreen: View {
     @ObservedObject var state: AppState
-    /// Explicit close callback: this view is presented as a PanelOverlay (not
-    /// a real sheet), so @Environment(\.dismiss) would be a no-op. Defaults to
-    /// {} for the standalone snapshot scene.
-    var onClose: () -> Void = {}
+    let projectID: UUID
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
     @State private var newHookRepo = ""
     @State private var newHookCommand = ""
     @State private var newExcludedRepo = ""
 
+    /// Always the CURRENT copy in state.config (edits replace it there).
+    private var project: ProjectConfig? {
+        state.config.projects.first { $0.id == projectID }
+    }
+
+    /// This project's scan snapshot — NOT selectedSnapshot, so the screen
+    /// stays correct even if the selection moves underneath it.
+    private var snapshot: ProjectSnapshot? {
+        state.snapshots[projectID]
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            if isSnapshotRender {
-                form.padding(12)
-            } else {
-                ScrollView {
-                    form.padding(12)
+            if let project {
+                if isSnapshotRender {
+                    form(project)
+                        .padding(12)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                } else {
+                    ScrollView {
+                        form(project).padding(12)
+                    }
                 }
-                // 400 keeps header + divider + scroll within the PanelOverlay
-                // card cap (~460) inside the 520-tall panel.
-                .frame(maxHeight: 400)
+            } else {
+                Text("This project is no longer configured.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(width: 540)
-        .fixedSize(horizontal: false, vertical: true)
         .task {
             // Fill the base-branch-override pickers; rows degrade to text
             // fields until then. Never runs under ImageRenderer.
-            await state.loadBranches(for: state.selectedSnapshot?.repos ?? [])
+            await state.loadBranches(for: snapshot?.repos ?? [])
         }
     }
 
     private var header: some View {
-        HStack {
-            Text("Settings")
-                .font(.headline)
-            Spacer()
+        HStack(spacing: 8) {
             Button {
-                onClose()
+                state.goBack()
             } label: {
-                Image(systemName: "xmark.circle.fill")
+                Image(systemName: "chevron.left")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .help("Back")
+            Text("Settings")
+                .font(.headline)
+            if let project {
+                Text(project.name)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
         }
         .padding(12)
     }
 
-    private var form: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            globalSection
-            Divider()
-            if let project = state.selectedProject {
-                projectSection(project)
-            } else {
-                Text("No project selected — add one below.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            Divider()
-            projectListActions
-        }
-    }
-
-    // MARK: - Global
-
-    private var globalSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            sectionTitle("Global")
-            HStack(spacing: 8) {
-                Text("Workspaces root template")
-                    .font(.callout)
-                SnapshotSafeTextField(title: "~/Workspaces/{project}",
-                                      text: rootTemplateBinding, monospaced: true)
-            }
-            Text("{project} is replaced by the project name; per-project override below wins.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-    }
-
-    private var rootTemplateBinding: Binding<String> {
-        Binding(get: { state.config.workspacesRootTemplate },
-                set: { state.setWorkspacesRootTemplate($0) })
-    }
-
-    // MARK: - Selected project
-
-    private func projectSection(_ project: ProjectConfig) -> some View {
+    private func form(_ project: ProjectConfig) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Project: \(project.name)")
-
             row("Path") {
                 Text(project.path)
                     .font(.system(.caption, design: .monospaced))
@@ -148,6 +122,7 @@ struct SettingsSheet: View {
 
             Button("Remove project from Grove", role: .destructive) {
                 state.removeProject(id: project.id)
+                state.open(.projects)
             }
             .controlSize(.small)
             .help("Config only — no repos or worktrees are touched")
@@ -226,7 +201,7 @@ struct SettingsSheet: View {
     }
 
     /// Always the CURRENT copy from state.config (the captured `project`
-    /// value goes stale after any edit in the same sheet session).
+    /// value goes stale after any edit in the same screen session).
     private func currentProject(_ project: ProjectConfig) -> ProjectConfig {
         state.config.projects.first { $0.id == project.id } ?? project
     }
@@ -240,7 +215,7 @@ struct SettingsSheet: View {
     /// unknown path) degrade to a snapshot-safe text field.
     private func baseBranchOverridesEditor(_ project: ProjectConfig) -> some View {
         let overrides = currentProject(project).baseBranchOverrides
-        let rows = overrideEditorRows(snapshot: state.selectedSnapshot, overrides: overrides)
+        let rows = overrideEditorRows(snapshot: snapshot, overrides: overrides)
         return VStack(alignment: .leading, spacing: 4) {
             Text("Base branch overrides (auto = detect from origin/HEAD)")
                 .font(.caption.weight(.semibold))
@@ -400,40 +375,6 @@ struct SettingsSheet: View {
                 Spacer()
             }
         }
-    }
-
-    // MARK: - Project list actions
-
-    private var projectListActions: some View {
-        HStack(spacing: 8) {
-            Button {
-                addProjectViaPanel()
-            } label: {
-                Label("Add project…", systemImage: "plus")
-            }
-            Text("pick the project directory that contains your repos")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            Spacer()
-        }
-    }
-
-    /// NSOpenPanel is LIVE-only: it sits behind a button action, so snapshot
-    /// rendering (which never dispatches actions) cannot reach it.
-    private func addProjectViaPanel() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Add Project"
-        if panel.runModal() == .OK, let url = panel.url {
-            state.addProject(at: url.path)
-        }
-    }
-
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text)
-            .font(.subheadline.weight(.semibold))
     }
 
     private func row(_ label: String, @ViewBuilder content: () -> some View) -> some View {

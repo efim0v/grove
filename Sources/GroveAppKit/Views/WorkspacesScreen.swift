@@ -60,7 +60,6 @@ struct WorkspacesScreen: View {
     @State private var expanded: Set<String> = []
     @State private var flatList = false
     @State private var looseExpanded = true
-    @State private var createPrefill: CreatePrefill?
 
     init(state: AppState) {
         _state = ObservedObject(wrappedValue: state)
@@ -94,12 +93,14 @@ struct WorkspacesScreen: View {
                 }
             }
         }
-        // NOT .sheet: a real sheet is a second key window, which auto-hides
-        // the MenuBarExtra(.window) panel (see PanelOverlay.swift).
-        .panelOverlay(item: $createPrefill) { prefill in
-            CreateWorkspaceSheet(state: state, prefill: prefill,
-                                 onClose: { createPrefill = nil })
-        }
+    }
+
+    /// Workspace creation is a full-screen panel state, never an overlay:
+    /// stash the prefill and navigate to the createWorkspace route.
+    private func openCreate(_ prefill: CreatePrefill) {
+        guard let id = state.selectedProjectID else { return }
+        state.createPrefill = prefill
+        state.open(.createWorkspace(id))
     }
 
     /// The whole column, extracted so `content` can swap its container:
@@ -133,7 +134,7 @@ struct WorkspacesScreen: View {
             isExpanded: isExpanded(row.name),
             now: now,
             onToggle: { toggle(row.name) },
-            onCreateChild: { createPrefill = CreatePrefill(forkFrom: row.workspace) }
+            onCreateChild: { openCreate(CreatePrefill(forkFrom: row.workspace)) }
         )
         .padding(.vertical, 3)
         .padding(.leading, connectorWidth)
@@ -160,15 +161,17 @@ struct WorkspacesScreen: View {
         }
     }
 
-    // MARK: - Header row (project name + tree/list toggle)
+    // MARK: - Header row (count + create + tree/list toggle; the project
+    // name lives in ProjectScreen's navigation header now)
 
     private func screenHeader(snapshot: ProjectSnapshot) -> some View {
         HStack {
-            Text(snapshot.project.name)
-                .font(.title3.weight(.semibold))
+            Text("\(snapshot.workspaces.count) workspaces")
+                .font(.callout)
+                .foregroundStyle(.secondary)
             Spacer()
             Button {
-                createPrefill = CreatePrefill()
+                openCreate(CreatePrefill())
             } label: {
                 Label("Workspace", systemImage: "plus")
             }
@@ -178,8 +181,8 @@ struct WorkspacesScreen: View {
         .padding(.vertical, 10)
     }
 
-    /// Pure-SwiftUI tree/list toggle in the capsule style of RootView's tab
-    /// strip (Task 15). NOT Picker(.segmented): segmented controls are
+    /// Pure-SwiftUI tree/list toggle in the capsule style of ProjectScreen's
+    /// tab strip (Task 15). NOT Picker(.segmented): segmented controls are
     /// AppKit-backed and ImageRenderer draws them as a yellow error
     /// placeholder offscreen.
     private var viewToggle: some View {
@@ -385,14 +388,20 @@ struct WorkspacesScreen: View {
 
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: "tree")
-                .font(.largeTitle)
-                .foregroundStyle(.secondary)
-            Text("No project selected")
-                .font(.headline)
-            Text("Add or select a project in the sidebar, then refresh (⌘R).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if state.isScanning {
+                ProgressView()
+                Text("Scanning project…")
+                    .font(.headline)
+            } else {
+                Image(systemName: "tree")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text("No scan data yet")
+                    .font(.headline)
+                Text("Refresh (⌘R) to scan this project's workspaces.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

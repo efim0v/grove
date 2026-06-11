@@ -18,9 +18,10 @@ extension EnvironmentValues {
 
 /// Agent-verifiable UI harness: `GroveApp --snapshot <outDir>` renders the app
 /// with a synthetic fixture state into PNGs and exits without ever starting
-/// NSApplication. Task 18: rich fixture (4 workspaces incl. one stacked child,
-/// all four age buckets, busy/waiting/resumable mixes, 2 loose worktrees) and
-/// all six scenes. Tasks 19-22 re-render these PNGs after each screen lands.
+/// NSApplication. Rich fixture (4 workspaces incl. one stacked child, all four
+/// age buckets, busy/waiting/resumable mixes, 2 loose worktrees); every scene
+/// renders RootView with the scene's ROUTE set (the panel is a state machine
+/// of full-screen views) at that route's adaptive panel size.
 public enum SnapshotMode {
     enum SnapshotError: Error, CustomStringConvertible {
         case renderFailed(String)
@@ -35,6 +36,7 @@ public enum SnapshotMode {
     }
 
     enum SnapshotScene: String, CaseIterable {
+        case projects = "projects"
         case rootWorkspaces = "root-workspaces"
         case workspacesExpanded = "workspaces-expanded"
         case createSheet = "create-sheet"
@@ -43,6 +45,18 @@ public enum SnapshotMode {
         case settings = "settings"
 
         var fileName: String { rawValue + ".png" }
+
+        /// Canvas size = the route's adaptive panel frame (RootView).
+        var size: CGSize {
+            switch self {
+            case .projects: return CGSize(width: 420, height: 440)
+            case .rootWorkspaces, .workspacesExpanded, .graph:
+                return CGSize(width: 760, height: 540)
+            case .createSheet: return CGSize(width: 540, height: 560)
+            case .accounts: return CGSize(width: 560, height: 480)
+            case .settings: return CGSize(width: 560, height: 560)
+            }
+        }
     }
 
     /// True (and never actually returns: exit() inside) when "--snapshot <dir>"
@@ -367,49 +381,64 @@ public enum SnapshotMode {
     static func renderAll(into outDir: URL) throws -> Int {
         try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
         for scene in SnapshotScene.allCases {
-            try writePNG(view(for: scene), to: outDir.appendingPathComponent(scene.fileName))
+            try writePNG(view(for: scene), size: scene.size,
+                         to: outDir.appendingPathComponent(scene.fileName))
         }
         return SnapshotScene.allCases.count
     }
 
-    /// Fresh fixture per scene so scene-specific mutations never leak.
+    /// Fresh fixture per scene with the scene's ROUTE applied. The route is
+    /// set directly (NOT via open()) so no scan/refresh Task ever starts for
+    /// the synthetic project path. SnapshotModeTests asserts the route per
+    /// scene through this seam.
     @MainActor
-    static func view(for scene: SnapshotScene) -> AnyView {
+    static func configuredState(for scene: SnapshotScene) -> AppState {
         let state = fixtureState()
+        // The fixture always has exactly one project selected.
+        let projectID = state.selectedProjectID!
         switch scene {
-        case .rootWorkspaces:
-            return AnyView(RootView(state: state))
-        case .workspacesExpanded:
-            return AnyView(RootView(state: state)
-                .environment(\.snapshotExpandedWorkspaces, ["media-upload"]))
+        case .projects:
+            state.route = .projects
+        case .rootWorkspaces, .workspacesExpanded:
+            state.route = .project(projectID)
         case .createSheet:
-            return AnyView(CreateWorkspaceSheet(state: state, prefill: CreatePrefill(name: "checkout-flow")))
+            state.createPrefill = CreatePrefill(name: "checkout-flow")
+            state.route = .createWorkspace(projectID)
         case .graph:
             state.selectedTab = .graph
-            return AnyView(RootView(state: state))
+            state.route = .project(projectID)
         case .accounts:
-            state.selectedTab = .accounts
-            return AnyView(RootView(state: state))
+            state.route = .accounts
         case .settings:
-            return AnyView(SettingsSheet(state: state))
+            state.route = .projectSettings(projectID)
         }
+        return state
     }
 
-    /// Offscreen render at 760x520 logical points, scale 2 (1520x1040 px).
+    @MainActor
+    static func view(for scene: SnapshotScene) -> AnyView {
+        let root = RootView(state: configuredState(for: scene))
+        if scene == .workspacesExpanded {
+            return AnyView(root.environment(\.snapshotExpandedWorkspaces, ["media-upload"]))
+        }
+        return AnyView(root)
+    }
+
+    /// Offscreen render at the scene's logical size, scale 2.
     /// CAVEAT: ImageRenderer has no window/backdrop, so .glassEffect-modified
     /// views render INVISIBLE offscreen — \.isSnapshotRender makes GlassCard
     /// fall back to a plain translucent card. Snapshots verify LAYOUT and
     /// CONTENT, never glass blur. The dark gradient stands in for the missing
     /// desktop/panel material.
     @MainActor
-    static func writePNG<Content: View>(_ content: Content, to url: URL) throws {
+    static func writePNG<Content: View>(_ content: Content, size: CGSize, to url: URL) throws {
         let wrapped = ZStack {
             LinearGradient(colors: [Color(red: 0.10, green: 0.11, blue: 0.14),
                                     Color(red: 0.16, green: 0.13, blue: 0.20)],
                            startPoint: .top, endPoint: .bottom)
             content
         }
-        .frame(width: 760, height: 520)
+        .frame(width: size.width, height: size.height)
         .environment(\.colorScheme, .dark)
         .environment(\.isSnapshotRender, true)
         // Identity from the fixture, NEVER from ~/.claude.json: offscreen

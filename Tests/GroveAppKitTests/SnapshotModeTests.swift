@@ -21,10 +21,44 @@ final class SnapshotModeTests: XCTestCase {
 
     // MARK: - scenes
 
-    func testSixScenesWithContractFileNames() {
+    func testSevenScenesWithContractFileNames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.allCases.map(\.fileName),
-                       ["root-workspaces.png", "workspaces-expanded.png", "create-sheet.png",
-                        "graph.png", "accounts.png", "settings.png"])
+                       ["projects.png", "root-workspaces.png", "workspaces-expanded.png",
+                        "create-sheet.png", "graph.png", "accounts.png", "settings.png"])
+    }
+
+    /// Every scene is RootView with a ROUTE (the panel is a state machine of
+    /// full-screen views, no overlays); the fixture project anchors the
+    /// project-scoped routes.
+    @MainActor
+    func testScenesConfigureTheRoutePerScreen() throws {
+        func state(_ scene: SnapshotMode.SnapshotScene) -> AppState {
+            SnapshotMode.configuredState(for: scene)
+        }
+        let projectID = try XCTUnwrap(state(.projects).selectedProjectID)
+
+        XCTAssertEqual(state(.projects).route, .projects)
+        XCTAssertEqual(state(.rootWorkspaces).route, .project(projectID))
+        XCTAssertEqual(state(.workspacesExpanded).route, .project(projectID))
+        XCTAssertEqual(state(.graph).route, .project(projectID))
+        XCTAssertEqual(state(.graph).selectedTab, .graph)
+        XCTAssertEqual(state(.accounts).route, .accounts)
+        XCTAssertEqual(state(.settings).route, .projectSettings(projectID))
+
+        let create = state(.createSheet)
+        XCTAssertEqual(create.route, .createWorkspace(projectID))
+        XCTAssertEqual(create.createPrefill?.name, "checkout-flow")
+    }
+
+    /// Canvas sizes mirror RootView's adaptive per-route panel frames.
+    func testSceneSizesFollowTheAdaptivePanelFrames() {
+        XCTAssertEqual(SnapshotMode.SnapshotScene.projects.size, CGSize(width: 420, height: 440))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.rootWorkspaces.size, CGSize(width: 760, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.workspacesExpanded.size, CGSize(width: 760, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.graph.size, CGSize(width: 760, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.createSheet.size, CGSize(width: 540, height: 560))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.accounts.size, CGSize(width: 560, height: 480))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.settings.size, CGSize(width: 560, height: 560))
     }
 
     // MARK: - rich fixture (Task 18)

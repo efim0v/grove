@@ -1,12 +1,12 @@
 import Foundation
 import GroveCore
 
-/// Prefill for CreateWorkspaceSheet. Producers: WorkspacesScreen
-/// ("+ Workspace" -> empty, "+ child workspace" -> forkFrom set) and, in
-/// Task 21, GraphScreen ("create workspace from branch" -> branch = existing
-/// branch name, base = that branch as a display hint). Identifiable so it can
-/// drive `.panelOverlay(item:)` — every request carries a fresh id, which
-/// reopens the sheet with clean @State.
+/// Prefill for CreateWorkspaceScreen, carried in AppState.createPrefill and
+/// consumed by the .createWorkspace route. Producers: WorkspacesScreen
+/// ("+ Workspace" -> empty, "+ child workspace" -> forkFrom set) and
+/// GraphScreen ("create workspace from branch" -> branch = existing branch
+/// name, base = that branch as a display hint). Identifiable: every request
+/// carries a fresh id, so re-entering the route starts with clean @State.
 public struct CreatePrefill: Identifiable {
     public let id = UUID()
     public var name: String
@@ -36,7 +36,7 @@ public func workspaceNameIssue(_ name: String) -> String? {
     return nil
 }
 
-/// "{name}" substitution; the user can still override the result in the sheet.
+/// "{name}" substitution; the user can still override the result in the form.
 public func branchPreview(template: String, name: String) -> String {
     template.replacingOccurrences(of: "{name}", with: name)
 }

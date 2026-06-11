@@ -19,10 +19,11 @@ extension EnvironmentValues {
     }
 }
 
-/// Accounts tab (spec §6.3): identity rows (email · organization · tier via
-/// the injectable identity provider), live/recent-session usage aggregated
-/// across ALL loaded snapshots with a workspace -> project drill-down,
-/// "Add & log in" (config + cmux login workspace) and config-only Remove.
+/// Accounts screen (route .accounts, spec §6.3): back header, identity rows
+/// (email · organization · tier via the injectable identity provider),
+/// live/recent-session usage aggregated across ALL loaded snapshots with a
+/// workspace -> project drill-down, "Add & log in" (config + cmux login
+/// workspace) and config-only Remove.
 struct AccountsScreen: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
@@ -32,10 +33,31 @@ struct AccountsScreen: View {
     @State private var expandedAccounts: Set<String> = []
 
     var body: some View {
-        let content = VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            cardList
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button {
+                state.goBack()
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .buttonStyle(.plain)
+            .help("Back")
             Text("Accounts")
-                .font(.title3.weight(.semibold))
-                .padding(.vertical, 10)
+                .font(.headline)
+            Spacer()
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder private var cardList: some View {
+        let content = VStack(alignment: .leading, spacing: 8) {
             ForEach(state.config.accounts, id: \.name) { account in
                 accountCard(account)
             }
@@ -43,8 +65,7 @@ struct AccountsScreen: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 12)
+        .padding(12)
 
         // ScrollView content is not rendered offscreen -> plain stack in snapshots.
         if isSnapshotRender {

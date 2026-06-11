@@ -1,16 +1,17 @@
 import SwiftUI
 import GroveCore
 
-/// Panel root (spec §6): header with search (⌘F), pure-SwiftUI tab strip,
-/// refresh (⌘R) and settings; error banner with a "Launch cmux" affordance
-/// for cmux failures (spec §7); project sidebar; per-tab screens; footer with
-/// version + Quit. A 15-second refresh loop runs while the panel content is
-/// visible (.task is cancelled when the MenuBarExtra window closes).
+/// Panel root: a state machine of full-screen views switched over
+/// AppState.route (spec: one scope per screen, NEVER overlays). Transitions
+/// slide forward (push) or backward (pop) based on the direction recorded by
+/// open()/goBack(); the panel frame adapts per route and animates together
+/// with the slide. The error banner (spec §7, with the "Launch cmux"
+/// affordance) sits above whatever screen is active. A 15-second refresh loop
+/// runs while the panel content is visible (.task is cancelled when the
+/// MenuBarExtra window closes).
 public struct RootView: View {
     @ObservedObject private var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
-    @FocusState private var searchFocused: Bool
-    @State private var showSettings = false
 
     public init(state: AppState) {
         _state = ObservedObject(wrappedValue: state)
@@ -18,25 +19,10 @@ public struct RootView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
             errorBanner
-            HStack(spacing: 0) {
-                sidebar
-                Divider()
-                content
-            }
-            Divider()
-            footer
+            routedScreen
         }
-        .frame(width: 760, height: 520)
         .background(.black.opacity(0.35))
-        // NOT .sheet: a real sheet is a second key window and the
-        // MenuBarExtra(.window) panel auto-hides when it stops being key —
-        // any click inside the sheet would dismiss the whole panel.
-        .panelOverlay(isPresented: $showSettings) {
-            SettingsSheet(state: state, onClose: { showSettings = false })
-        }
         .task {
             // Refresh now, then every 15 s while the panel stays open. The
             // task is cancelled on disappear (panel closed), pausing the loop.
@@ -50,91 +36,64 @@ public struct RootView: View {
         }
     }
 
-    // MARK: - Header: brand, search (⌘F), tab strip, refresh, settings
+    // MARK: - Route switch with push/pop transitions and per-route size
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Label("Grove", systemImage: "tree")
-                .font(.headline)
-            searchField
-            Spacer()
-            tabStrip
-            Button {
-                Task { await state.refresh() }
-            } label: {
-                if state.isScanning {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut("r")
-            .help("Rescan the selected project (⌘R)")
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
+    /// Preferred panel frame per route; nil height = adaptive (the screen
+    /// sizes to its content, capped at 560 in routedScreen).
+    static func panelSize(for route: Route) -> (width: CGFloat, height: CGFloat?) {
+        switch route {
+        case .projects: return (420, 440)
+        case .project: return (760, 540)
+        case .createWorkspace: return (540, nil)
+        case .projectSettings: return (560, 560)
+        case .accounts: return (560, 480)
+        case .globalSettings: return (480, 420)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
-    /// Filters workspaces/branches (spec §6). The TextField is swapped for a
-    /// static lookalike in snapshots (NSTextField renders as an error
-    /// placeholder offscreen); the hidden button is the ⌘F focus target.
-    private var searchField: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "magnifyingglass")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if isSnapshotRender {
-                Text(state.searchQuery.isEmpty ? "Search" : state.searchQuery)
-                    .font(.callout)
-                    .foregroundStyle(state.searchQuery.isEmpty ? Color.secondary : Color.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                TextField("Search", text: $state.searchQuery)
-                    .textFieldStyle(.plain)
-                    .font(.callout)
-                    .focused($searchFocused)
+    /// The frame/transition pair attaches to the ACTIVE branch (Group
+    /// distributes modifiers), so during a transition the outgoing screen
+    /// keeps ITS size while the incoming one brings the new size — the
+    /// ZStack (and the MenuBarExtra window with it) animates between the two
+    /// inside open()'s withAnimation.
+    @ViewBuilder private var routedScreen: some View {
+        let size = Self.panelSize(for: state.route)
+        ZStack(alignment: .top) {
+            Group {
+                switch state.route {
+                case .projects:
+                    ProjectsScreen(state: state)
+                case .project:
+                    ProjectScreen(state: state)
+                case .createWorkspace:
+                    CreateWorkspaceScreen(state: state,
+                                          prefill: state.createPrefill ?? CreatePrefill(),
+                                          onClose: { state.goBack() })
+                case .projectSettings(let id):
+                    ProjectSettingsScreen(state: state, projectID: id)
+                case .accounts:
+                    AccountsScreen(state: state)
+                case .globalSettings:
+                    GlobalSettingsScreen(state: state)
+                }
             }
+            .frame(width: size.width, height: size.height)
+            .frame(maxHeight: 560)   // caps the height-adaptive createWorkspace
+            .transition(navTransition)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .frame(width: 170)
-        .background(.white.opacity(0.07), in: Capsule())
-        .background(
-            Button("") { searchFocused = true }
-                .keyboardShortcut("f")
-                .opacity(0)
-                .accessibilityHidden(true)
-        )
+        // Slide transitions would otherwise draw outside the panel frame.
+        .clipped()
     }
 
-    // Pure-SwiftUI tab strip. NOT Picker(.segmented): that control is
-    // AppKit-backed and ImageRenderer draws it as an error placeholder offscreen.
-    private var tabStrip: some View {
-        HStack(spacing: 4) {
-            ForEach(MainTab.allCases, id: \.rawValue) { tab in
-                Button {
-                    state.selectedTab = tab
-                } label: {
-                    Text(tab.rawValue.capitalized)
-                        .font(.callout.weight(state.selectedTab == tab ? .semibold : .regular))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(state.selectedTab == tab ? AnyShapeStyle(.white.opacity(0.18))
-                                                             : AnyShapeStyle(.clear),
-                                    in: .capsule)
-                }
-                .buttonStyle(.plain)
-            }
-        }
+    /// Push: new screen slides in from the trailing edge while the old one
+    /// leaves through the leading edge; pop mirrors it. Both combine with
+    /// opacity so the move never looks like a hard wipe.
+    private var navTransition: AnyTransition {
+        state.routeIsForward
+            ? .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
+                          removal: .move(edge: .leading).combined(with: .opacity))
+            : .asymmetric(insertion: .move(edge: .leading).combined(with: .opacity),
+                          removal: .move(edge: .trailing).combined(with: .opacity))
     }
 
     // MARK: - Error banner (spec §7): dismissable; cmux failures get a
@@ -165,73 +124,11 @@ public struct RootView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+            // Pin to the route's width: an unconstrained Text would otherwise
+            // balloon the content-sized panel to the error's full line width.
+            .frame(width: Self.panelSize(for: state.route).width)
             .background(.orange.opacity(0.15))
             Divider()
         }
-    }
-
-    // MARK: - Sidebar
-
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("PROJECTS")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 2)
-            if state.config.projects.isEmpty {
-                Text("No projects yet — add one in Settings (⚙)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(state.config.projects) { project in
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(project.id == state.selectedProjectID ? Color.green : Color.secondary)
-                        .frame(width: 6, height: 6)
-                    Text(project.name)
-                        .font(.callout)
-                        .lineLimit(1)
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { state.selectedProjectID = project.id }
-            }
-            Spacer()
-        }
-        .padding(10)
-        .frame(width: 160, alignment: .leading)
-    }
-
-    // MARK: - Tab content
-
-    @ViewBuilder
-    private var content: some View {
-        switch state.selectedTab {
-        case .workspaces: WorkspacesScreen(state: state)
-        case .graph: GraphScreen(state: state)
-        case .accounts: AccountsScreen(state: state)
-        }
-    }
-
-    // MARK: - Footer
-
-    private var footer: some View {
-        HStack {
-            Text("Grove \(GroveVersion.current)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let issue = state.configIssue {
-                Text(issue)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-            }
-            Spacer()
-            Button("Quit Grove") {
-                NSApp.terminate(nil)
-            }
-            .keyboardShortcut("q")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 }

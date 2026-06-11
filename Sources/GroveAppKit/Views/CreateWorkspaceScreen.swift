@@ -1,17 +1,18 @@
 import SwiftUI
 import GroveCore
 
-/// Workspace creation sheet (spec §5.4/§6.1): name with validation feedback,
+/// Workspace creation screen (spec §5.4/§6.1) — a full-screen panel state
+/// (route .createWorkspace), never an overlay: name with validation feedback,
 /// branch live-preview from the project's branchTemplate, repo checkboxes
 /// (default all), fork-from picker (base or an existing workspace) with
 /// per-repo start-point captions, async creation with an auto-scrolling
 /// progress log, and a strictly-scoped rollback offer on failure.
-struct CreateWorkspaceSheet: View {
+struct CreateWorkspaceScreen: View {
     @ObservedObject var state: AppState
     let prefill: CreatePrefill
-    /// Explicit close callback: this view is presented as a PanelOverlay (not
-    /// a real sheet), so @Environment(\.dismiss) would be a no-op. Defaults to
-    /// {} for the standalone snapshot scene.
+    /// Explicit close callback (RootView passes state.goBack()): the screen
+    /// is a route of the single panel window, so @Environment(\.dismiss)
+    /// would be a no-op.
     let onClose: () -> Void
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
@@ -38,7 +39,7 @@ struct CreateWorkspaceSheet: View {
     @State private var report: CreationReport?
 
     @MainActor
-    init(state: AppState, prefill: CreatePrefill, onClose: @escaping () -> Void = {}) {
+    init(state: AppState, prefill: CreatePrefill, onClose: @escaping () -> Void) {
         _state = ObservedObject(wrappedValue: state)
         self.prefill = prefill
         self.onClose = onClose
@@ -61,7 +62,8 @@ struct CreateWorkspaceSheet: View {
                     .padding(20)
             }
         }
-        .frame(width: 480)
+        // Width comes from RootView's route frame (540); height is adaptive —
+        // fixedSize keeps the form's natural height (RootView caps it at 560).
         .fixedSize(horizontal: false, vertical: true)
         .task {
             // Fill the per-repo branch pickers; until this lands they show
@@ -71,18 +73,18 @@ struct CreateWorkspaceSheet: View {
     }
 
     private var header: some View {
-        HStack {
-            Text("New Workspace")
-                .font(.headline)
-            Spacer()
+        HStack(spacing: 8) {
             Button {
                 onClose()
             } label: {
-                Image(systemName: "xmark.circle.fill")
+                Image(systemName: "chevron.left")
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
             .disabled(phase == .running)
+            .help("Back")
+            Text("New Workspace")
+                .font(.headline)
+            Spacer()
         }
         .padding(12)
     }

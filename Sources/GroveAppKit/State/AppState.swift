@@ -2,10 +2,11 @@ import Foundation
 import SwiftUI
 import GroveCore
 
+/// Capsule tab strip inside the project scope. Accounts left the strip when
+/// it became its own Route (.accounts).
 public enum MainTab: String, CaseIterable {
     case workspaces
     case graph
-    case accounts
 }
 
 /// Single observable source of truth for the app. Owns the config (loaded via

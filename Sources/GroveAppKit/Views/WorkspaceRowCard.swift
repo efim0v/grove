@@ -11,7 +11,7 @@ struct WorkspaceRowCard: View {
     let isExpanded: Bool
     let now: Date
     let onToggle: () -> Void
-    /// Opens the create sheet prefilled with forkFrom = this workspace
+    /// Opens the create screen prefilled with forkFrom = this workspace
     /// ("+ child workspace", spec §6.1 node context).
     var onCreateChild: (() -> Void)? = nil
     /// ImageRenderer landmine (verified in this task's PNGs): SwiftUI `Menu`
