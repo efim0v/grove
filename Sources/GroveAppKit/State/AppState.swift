@@ -166,16 +166,20 @@ extension AppState {
     }
 
     /// Appends the next `git log --all` page (spec §6.2 lazy paging). No-op
-    /// when the previous page was short. KNOWN v1 LIMITATION: commitGraph lays
-    /// lanes out per page, so lane numbers (and colors) restart at each page
-    /// boundary; links inside a page stay correct.
+    /// when the previous page was short. Commits created between page loads
+    /// shift skip-based ordering, so a page can repeat already-loaded hashes —
+    /// those are dropped (graphNodes hashes must stay unique: they are ForEach
+    /// identities and GraphLanesCanvas row keys). KNOWN v1 LIMITATION:
+    /// commitGraph lays lanes out per page, so lane numbers (and colors)
+    /// restart at each page boundary; links inside a page stay correct.
     public func loadMoreGraph() async {
         guard let repoPath = graphRepoPath, graphCanLoadMore else { return }
         do {
             let more = try await GitService().commitGraph(repoPath: repoPath,
                                                           limit: graphPageSize,
                                                           skip: graphNodes.count)
-            graphNodes += more
+            let seen = Set(graphNodes.map(\.hash))
+            graphNodes += more.filter { !seen.contains($0.hash) }
             graphCanLoadMore = more.count == graphPageSize
         } catch {
             actionError = String(describing: error)

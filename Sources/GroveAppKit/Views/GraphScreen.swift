@@ -227,8 +227,11 @@ struct GraphLanesCanvas: View {
 
     var body: some View {
         Canvas { context, _ in
-            let rowOf = Dictionary(uniqueKeysWithValues:
-                nodes.enumerated().map { ($0.element.hash, $0.offset) })
+            // First row wins on duplicate hashes (defense in depth — AppState
+            // dedups pages, but a trap inside Canvas would crash the whole
+            // menu-bar app; same pattern as TreeModel's session map).
+            let rowOf = Dictionary(nodes.enumerated().map { ($0.element.hash, $0.offset) },
+                                   uniquingKeysWith: { first, _ in first })
             func center(lane: Int, row: Int) -> CGPoint {
                 CGPoint(x: GraphScreen.laneOrigin + CGFloat(lane) * GraphScreen.laneSpacing,
                         y: CGFloat(row) * GraphScreen.rowHeight + GraphScreen.rowHeight / 2)

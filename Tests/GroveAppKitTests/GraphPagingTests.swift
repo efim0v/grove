@@ -48,6 +48,26 @@ final class GraphPagingTests: XCTestCase {
         XCTAssertNil(state.actionError)
     }
 
+    func testLoadMoreDropsDuplicatesWhenNewCommitsShiftPaging() async throws {
+        let state = makeState(pageSize: 2)
+        await state.loadGraph(repoPath: repo.path)
+        XCTAssertEqual(state.graphNodes.map(\.subject), ["c4", "c3"])
+
+        // A commit created between page loads (Grove's normal case: agents
+        // committing continuously) shifts `git log --all --topo-order`, so
+        // skip-based paging now returns [c3, c2] — c3 is already loaded and
+        // must be dropped, never appended (duplicate hashes are ForEach
+        // identities and would trap GraphLanesCanvas's row dictionary).
+        try FixtureLite.commit(repo: repo, file: "f5.txt", content: "5\n", message: "c5")
+
+        await state.loadMoreGraph()
+        XCTAssertEqual(state.graphNodes.map(\.subject), ["c4", "c3", "c2"])
+        XCTAssertEqual(Set(state.graphNodes.map(\.hash)).count, state.graphNodes.count,
+                       "graphNodes hashes must stay unique")
+        XCTAssertTrue(state.graphCanLoadMore, "raw page was full — keep paging")
+        XCTAssertNil(state.actionError)
+    }
+
     func testShortFirstPageDisablesLoadMore() async {
         let state = makeState(pageSize: 300)
         await state.loadGraph(repoPath: repo.path)
