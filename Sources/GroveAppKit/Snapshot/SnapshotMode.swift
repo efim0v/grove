@@ -16,26 +16,6 @@ extension EnvironmentValues {
     }
 }
 
-/// Stand-in for sheets that later tasks implement. createSheet -> replaced by
-/// CreateWorkspaceSheet in Task 20; settings -> replaced by SettingsSheet in Task 22.
-struct SheetScenePlaceholder: View {
-    let title: String
-    let note: String
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Text(title)
-                .font(.title2.weight(.semibold))
-            Text(note)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .glassCard()
-        .padding(40)
-    }
-}
-
 /// Agent-verifiable UI harness: `GroveApp --snapshot <outDir>` renders the app
 /// with a synthetic fixture state into PNGs and exits without ever starting
 /// NSApplication. Task 18: rich fixture (4 workspaces incl. one stacked child,
@@ -398,9 +378,7 @@ public enum SnapshotMode {
             state.selectedTab = .accounts
             return AnyView(RootView(state: state))
         case .settings:
-            // Task 22 replaces this with SettingsSheet over the fixture.
-            return AnyView(SheetScenePlaceholder(title: "Settings",
-                                                 note: "SettingsSheet lands in Task 22"))
+            return AnyView(SettingsSheet(state: state))
         }
     }
 
@@ -421,6 +399,9 @@ public enum SnapshotMode {
         .frame(width: 760, height: 520)
         .environment(\.colorScheme, .dark)
         .environment(\.isSnapshotRender, true)
+        // Identity from the fixture, NEVER from ~/.claude.json: offscreen
+        // renders must not read the user's real Claude config.
+        .environment(\.claudeIdentityProvider, { SnapshotMode.fixtureIdentity($0) })
 
         let renderer = ImageRenderer(content: wrapped)
         renderer.scale = 2

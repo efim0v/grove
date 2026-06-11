@@ -1,7 +1,11 @@
 import SwiftUI
 
-/// TextField stand-in for snapshot rendering: a real TextField live, a static
-/// lookalike (showing the bound text or the placeholder) in snapshots.
+/// TextField stand-in for snapshot rendering. EMPIRICAL (this machine,
+/// macOS 26.4): AppKit-backed controls — NSTextField, Picker(.menu/.segmented),
+/// Toggle(.checkbox), Stepper — draw as yellow/crossed error placeholders
+/// under ImageRenderer. Snapshot-asserted screens therefore route text input
+/// through this wrapper: a real TextField live, a static lookalike (showing
+/// the bound text or the placeholder) in snapshots.
 struct SnapshotSafeTextField: View {
     @Environment(\.isSnapshotRender) private var isSnapshotRender
     let title: String

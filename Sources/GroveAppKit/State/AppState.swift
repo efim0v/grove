@@ -204,6 +204,18 @@ extension AppState {
         }
     }
 
+    /// Degraded-mode affordance (spec §7): the error banner's "Launch cmux"
+    /// button. ensureRunning performs `open -b com.cmuxterm.app` and waits for
+    /// a ping answer; success clears the banner, failure replaces it.
+    public func launchCmuxApp() async {
+        do {
+            try await cmux().ensureRunning()
+            actionError = nil
+        } catch {
+            actionError = String(describing: error)
+        }
+    }
+
     public func goToCmux(_ ws: CmuxWorkspace) async {
         do {
             try await cmux().selectWorkspace(ws.id)
