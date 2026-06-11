@@ -41,19 +41,7 @@ struct AccountsScreen: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Button {
-                state.goBack()
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .buttonStyle(.plain)
-            .help("Back")
-            Text("Accounts")
-                .font(.headline)
-            Spacer()
-        }
-        .padding(12)
+        ScopeHeader(title: "Accounts", onBack: { state.goBack() })
     }
 
     @ViewBuilder private var cardList: some View {

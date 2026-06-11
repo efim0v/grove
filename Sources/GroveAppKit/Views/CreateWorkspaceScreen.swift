@@ -73,20 +73,8 @@ struct CreateWorkspaceScreen: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .buttonStyle(.plain)
-            .disabled(phase == .running)
-            .help("Back")
-            Text("New Workspace")
-                .font(.headline)
-            Spacer()
-        }
-        .padding(12)
+        ScopeHeader(title: "New Workspace", backDisabled: phase == .running,
+                    onBack: onClose)
     }
 
     private func form(snapshot: ProjectSnapshot) -> some View {

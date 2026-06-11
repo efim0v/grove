@@ -22,13 +22,7 @@ struct ProjectScreen: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Button {
-                state.goBack()
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .buttonStyle(.plain)
-            .help("Back to projects")
+            BackButton { state.goBack() }
             Text(state.selectedProject?.name ?? "Project")
                 .font(.headline)
                 .lineLimit(1)

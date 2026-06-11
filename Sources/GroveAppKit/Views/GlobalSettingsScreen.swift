@@ -27,22 +27,8 @@ struct GlobalSettingsScreen: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Button {
-                state.goBack()
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .buttonStyle(.plain)
-            .help("Back")
-            Text("Settings")
-                .font(.headline)
-            Text("global")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(12)
+        ScopeHeader(title: "Settings", subtitle: "global",
+                    onBack: { state.goBack() })
     }
 
     private var form: some View {

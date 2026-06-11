@@ -61,25 +61,8 @@ struct ProjectSettingsScreen: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Button {
-                state.goBack()
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .buttonStyle(.plain)
-            .help("Back")
-            Text("Settings")
-                .font(.headline)
-            if let project {
-                Text(project.name)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer()
-        }
-        .padding(12)
+        ScopeHeader(title: "Settings", subtitle: project?.name,
+                    onBack: { state.goBack() })
     }
 
     private func form(_ project: ProjectConfig) -> some View {
