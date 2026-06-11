@@ -429,9 +429,7 @@ public enum SnapshotMode {
     /// views render INVISIBLE offscreen — \.isSnapshotRender makes GlassCard
     /// fall back to a plain translucent card. Snapshots verify LAYOUT and
     /// CONTENT, never glass blur. The dark gradient stands in for the missing
-    /// panel glass material, so it is clipped to the panel's continuous-corner
-    /// silhouette (the live window is now CLEAR and RootView draws its own
-    /// rounded chrome); PNG corners outside the clip stay transparent.
+    /// desktop/panel material.
     @MainActor
     static func writePNG<Content: View>(_ content: Content, size: CGSize, to url: URL) throws {
         let wrapped = ZStack {
@@ -441,7 +439,6 @@ public enum SnapshotMode {
             content
         }
         .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: DesignRadius.panel, style: .continuous))
         .environment(\.colorScheme, .dark)
         .environment(\.isSnapshotRender, true)
         // Identity from the fixture, NEVER from ~/.claude.json: offscreen

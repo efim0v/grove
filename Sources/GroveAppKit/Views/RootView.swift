@@ -11,16 +11,10 @@ import GroveCore
 /// MenuBarExtra window closes).
 public struct RootView: View {
     @ObservedObject private var state: AppState
-    @StateObject private var panelWindow = PanelWindowBridge()
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
     public init(state: AppState) {
         _state = ObservedObject(wrappedValue: state)
-    }
-
-    /// The panel silhouette: Apple 26 large continuous corners.
-    private var panelShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: DesignRadius.panel, style: .continuous)
     }
 
     public var body: some View {
@@ -28,27 +22,14 @@ public struct RootView: View {
             errorBanner
             routedScreen
         }
-        // The hosting NSPanel is made CLEAR (PanelWindowAccessor below), so
-        // this is the panel's ONLY glass — no system chrome to stack against.
-        // The dark scrim over it implements "darkened screens inside a glass
-        // window" (spec §6); both live inside the same continuous-corner clip
-        // so the window silhouette gets the macOS 26 large radius. In snapshot
-        // mode the scrim alone keeps PNGs non-blank (.glassEffect renders
-        // invisible offscreen).
-        .background(.black.opacity(0.35), in: panelShape)
-        .modifier(PanelGlass(shape: panelShape, isSnapshotRender: isSnapshotRender))
-        .clipShape(panelShape)
+        // The MenuBarExtra(.window) panel ALREADY wraps this content in the
+        // system's Liquid Glass chrome; the dark scrim implements "darkened
+        // screens inside a glass window". A root-level .glassEffect here would
+        // stack glass on glass and turn muddy, so the panel keeps the system
+        // material and only declares the Apple 26 container shape for
+        // concentric nesting underneath.
+        .background(.black.opacity(0.35))
         .containerShape(.rect(cornerRadius: DesignRadius.panel, style: .continuous))
-        .background(panelWindowHook)
-        .onChange(of: state.route) {
-            // The panel resizes per route; with a clear window the system
-            // shadow only follows the opaque content after an explicit
-            // invalidate. Once now, once after the slide/resize settles.
-            panelWindow.window?.invalidateShadow()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak panelWindow] in
-                panelWindow?.window?.invalidateShadow()
-            }
-        }
         .task {
             // Refresh now, then every 15 s while the panel stays open. The
             // task is cancelled on disappear (panel closed), pausing the loop.
@@ -59,16 +40,6 @@ public struct RootView: View {
                 if Task.isCancelled { break }
                 await state.refresh()
             }
-        }
-    }
-
-    /// AppKit hook that clears the hosting panel (so our chrome above is the
-    /// visible window) and fills `panelWindow`. Never attached during
-    /// snapshot renders: ImageRenderer has no window and AppKit-backed views
-    /// are placeholder landmines offscreen.
-    @ViewBuilder private var panelWindowHook: some View {
-        if !isSnapshotRender {
-            PanelWindowAccessor(bridge: panelWindow)
         }
     }
 
@@ -135,6 +106,9 @@ public struct RootView: View {
     // MARK: - Error banner (spec §7): dismissable; cmux failures get a
     // "Launch cmux" degraded-mode affordance.
 
+    /// Modest system-like banner: an inset strip on standard material with a
+    /// small continuous radius (DesignRadius.field) so it reads as content,
+    /// not as a second window corner fighting the panel's own chrome.
     @ViewBuilder private var errorBanner: some View {
         if let error = state.actionError {
             HStack(spacing: 8) {
@@ -144,7 +118,7 @@ public struct RootView: View {
                     .font(.caption)
                     .lineLimit(2)
                     .help(error)
-                Spacer()
+                Spacer(minLength: 0)
                 if error.localizedCaseInsensitiveContains("cmux") {
                     Button("Launch cmux") {
                         Task { await state.launchCmuxApp() }
@@ -158,31 +132,16 @@ public struct RootView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
             .padding(.vertical, 6)
+            .background(.regularMaterial,
+                        in: RoundedRectangle(cornerRadius: DesignRadius.field,
+                                             style: .continuous))
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
             // Pin to the route's width: an unconstrained Text would otherwise
             // balloon the content-sized panel to the error's full line width.
             .frame(width: Self.panelSize(for: state.route).width)
-            .background(.orange.opacity(0.15))
-            Divider()
-        }
-    }
-}
-
-/// Liquid Glass for the panel itself — live only. ImageRenderer draws
-/// .glassEffect-modified views fully INVISIBLE offscreen (the GlassCard
-/// landmine), so snapshot renders skip the modifier entirely and rely on the
-/// dark scrim already applied inside the same panel shape.
-private struct PanelGlass: ViewModifier {
-    let shape: RoundedRectangle
-    let isSnapshotRender: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isSnapshotRender {
-            content
-        } else {
-            content.glassEffect(.regular, in: shape)
         }
     }
 }
