@@ -4,6 +4,12 @@ public struct CmuxWorkspace: Sendable, Equatable {
     public let id: String
     public let title: String
     public let currentDirectory: String
+
+    public init(id: String, title: String, currentDirectory: String) {
+        self.id = id
+        self.title = title
+        self.currentDirectory = currentDirectory
+    }
 }
 
 public struct CmuxService: Sendable {

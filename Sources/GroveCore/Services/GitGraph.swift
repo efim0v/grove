@@ -7,6 +7,16 @@ public struct RawCommit: Sendable, Equatable {
     public let date: Date
     public let refs: [String]
     public let subject: String
+
+    public init(hash: String, parents: [String], author: String, date: Date,
+                refs: [String], subject: String) {
+        self.hash = hash
+        self.parents = parents
+        self.author = author
+        self.date = date
+        self.refs = refs
+        self.subject = subject
+    }
 }
 
 public struct CommitNode: Sendable, Equatable {
@@ -17,6 +27,17 @@ public struct CommitNode: Sendable, Equatable {
     public let refs: [String]
     public let subject: String
     public let lane: Int
+
+    public init(hash: String, parents: [String], author: String, date: Date,
+                refs: [String], subject: String, lane: Int) {
+        self.hash = hash
+        self.parents = parents
+        self.author = author
+        self.date = date
+        self.refs = refs
+        self.subject = subject
+        self.lane = lane
+    }
 }
 
 /// Parses `git log --format=%H%x09%P%x09%an%x09%cI%x09%D%x09%s` output.

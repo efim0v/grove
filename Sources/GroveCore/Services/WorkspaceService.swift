@@ -7,6 +7,13 @@ public struct WorkspaceRepoState: Sendable {
     public let entry: WorktreeEntry
     public let meta: WorktreeMeta?
     public let scanError: String?
+
+    public init(repo: RepoInfo, entry: WorktreeEntry, meta: WorktreeMeta?, scanError: String?) {
+        self.repo = repo
+        self.entry = entry
+        self.meta = meta
+        self.scanError = scanError
+    }
 }
 
 public struct FeatureWorkspace: Sendable {
@@ -18,6 +25,18 @@ public struct FeatureWorkspace: Sendable {
     public let sessions: [ClaudeSession]
     public let liveProcesses: [LiveProcess]
     public let cmuxWorkspaces: [CmuxWorkspace]
+
+    public init(name: String, umbrellaPath: String, repos: [WorkspaceRepoState],
+                parentName: String?, sessions: [ClaudeSession],
+                liveProcesses: [LiveProcess], cmuxWorkspaces: [CmuxWorkspace]) {
+        self.name = name
+        self.umbrellaPath = umbrellaPath
+        self.repos = repos
+        self.parentName = parentName
+        self.sessions = sessions
+        self.liveProcesses = liveProcesses
+        self.cmuxWorkspaces = cmuxWorkspaces
+    }
 }
 
 public struct LooseWorktree: Sendable {
@@ -27,6 +46,17 @@ public struct LooseWorktree: Sendable {
     public let sessions: [ClaudeSession]
     public let liveProcesses: [LiveProcess]
     public let cmuxWorkspaces: [CmuxWorkspace]
+
+    public init(repo: RepoInfo, entry: WorktreeEntry, meta: WorktreeMeta?,
+                sessions: [ClaudeSession], liveProcesses: [LiveProcess],
+                cmuxWorkspaces: [CmuxWorkspace]) {
+        self.repo = repo
+        self.entry = entry
+        self.meta = meta
+        self.sessions = sessions
+        self.liveProcesses = liveProcesses
+        self.cmuxWorkspaces = cmuxWorkspaces
+    }
 }
 
 public struct ProjectSnapshot: Sendable {
@@ -35,6 +65,15 @@ public struct ProjectSnapshot: Sendable {
     public let workspaces: [FeatureWorkspace]
     public let loose: [LooseWorktree]
     public let errors: [String]
+
+    public init(project: ProjectConfig, repos: [RepoInfo], workspaces: [FeatureWorkspace],
+                loose: [LooseWorktree], errors: [String]) {
+        self.project = project
+        self.repos = repos
+        self.workspaces = workspaces
+        self.loose = loose
+        self.errors = errors
+    }
 }
 
 public struct CreatedArtifact: Sendable {

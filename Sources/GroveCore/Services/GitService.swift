@@ -211,6 +211,19 @@ public struct WorktreeMeta: Sendable, Equatable {
     public let dirtyCount: Int
     public let lastCommitDate: Date?
     public let lastCommitSubject: String?
+
+    public init(baseBranch: String, forkPoint: String?, forkDate: Date?,
+                ahead: Int, behind: Int, dirtyCount: Int,
+                lastCommitDate: Date?, lastCommitSubject: String?) {
+        self.baseBranch = baseBranch
+        self.forkPoint = forkPoint
+        self.forkDate = forkDate
+        self.ahead = ahead
+        self.behind = behind
+        self.dirtyCount = dirtyCount
+        self.lastCommitDate = lastCommitDate
+        self.lastCommitSubject = lastCommitSubject
+    }
 }
 
 // MARK: - Git ISO8601 date parsing (shared by meta and the commit graph)

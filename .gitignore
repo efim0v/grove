@@ -1,3 +1,4 @@
 .build/
 .DS_Store
 docs/design/plans/.sections/
+dist/
