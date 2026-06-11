@@ -23,6 +23,8 @@ public final class AppState: ObservableObject {
     @Published public var actionError: String?
     @Published public var graphRepoPath: String?
     @Published public var graphNodes: [CommitNode] = []
+    /// True when the last graph page came back full — drives the "Load more" row.
+    @Published public var graphCanLoadMore: Bool = false
 
     private let configStore: ConfigStore
 
@@ -33,6 +35,9 @@ public final class AppState: ObservableObject {
     /// Test seam for CmuxService.claudeSessionWorkspaceMap(hookFile:); nil
     /// means the real ~/.cmuxterm/claude-hook-sessions.json.
     internal var cmuxHookFile: String?
+    /// Graph page size (spec §6.2: 300). Internal so tests can page through a
+    /// tiny fixture repo instead of building 300+ commits.
+    internal var graphPageSize = 300
 
     public init(configStore: ConfigStore) {
         self.configStore = configStore
@@ -151,9 +156,28 @@ extension AppState {
     public func loadGraph(repoPath: String) async {
         graphRepoPath = repoPath
         do {
-            graphNodes = try await GitService().commitGraph(repoPath: repoPath)
+            graphNodes = try await GitService().commitGraph(repoPath: repoPath, limit: graphPageSize)
+            graphCanLoadMore = graphNodes.count == graphPageSize
         } catch {
             graphNodes = []
+            graphCanLoadMore = false
+            actionError = String(describing: error)
+        }
+    }
+
+    /// Appends the next `git log --all` page (spec §6.2 lazy paging). No-op
+    /// when the previous page was short. KNOWN v1 LIMITATION: commitGraph lays
+    /// lanes out per page, so lane numbers (and colors) restart at each page
+    /// boundary; links inside a page stay correct.
+    public func loadMoreGraph() async {
+        guard let repoPath = graphRepoPath, graphCanLoadMore else { return }
+        do {
+            let more = try await GitService().commitGraph(repoPath: repoPath,
+                                                          limit: graphPageSize,
+                                                          skip: graphNodes.count)
+            graphNodes += more
+            graphCanLoadMore = more.count == graphPageSize
+        } catch {
             actionError = String(describing: error)
         }
     }

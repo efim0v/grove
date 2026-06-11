@@ -88,26 +88,9 @@ public struct RootView: View {
     private var content: some View {
         switch state.selectedTab {
         case .workspaces: WorkspacesScreen(state: state)
-        case .graph: graphStub
+        case .graph: GraphScreen(state: state)
         case .accounts: accountsStub
         }
-    }
-
-    private var graphStub: some View {
-        VStack(spacing: 8) {
-            Text("Graph")
-                .font(.title3.weight(.semibold))
-            Text(state.graphRepoPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "no repo selected")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-            Text("\(state.graphNodes.count) commits loaded — GraphScreen lands in Task 21")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        .padding(20)
-        .glassCard()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(14)
     }
 
     private var accountsStub: some View {
