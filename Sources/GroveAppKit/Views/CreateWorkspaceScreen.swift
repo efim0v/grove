@@ -153,12 +153,9 @@ struct CreateWorkspaceScreen: View {
         HStack(spacing: 6) {
             Text("Fork from")
             if isSnapshotRender {
-                Text(forkFromName.map { "workspace \($0)" }
-                     ?? prefill.base.map { "branch \($0)" } ?? "base branches")
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.2)))
+                SnapshotPickerLookalike(text: forkFromName.map { "workspace \($0)" }
+                                            ?? prefill.base.map { "branch \($0)" } ?? "base branches",
+                                        monospaced: false)
             } else {
                 Picker("", selection: $forkFromName) {
                     Text(prefill.base.map { "branch \($0)" } ?? "base branches")
@@ -286,7 +283,8 @@ struct CreateWorkspaceScreen: View {
                     .padding(6)
                 }
                 .frame(height: 120)
-                .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+                .background(.black.opacity(0.25),
+                            in: RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous))
                 .onChange(of: logLines.count) { _, count in
                     if count > 0 { proxy.scrollTo(count - 1, anchor: .bottom) }
                 }

@@ -21,8 +21,10 @@ struct SnapshotSafeTextField: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.2)))
+                .background(.white.opacity(0.06),
+                            in: RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+                    .strokeBorder(.white.opacity(0.2)))
         } else {
             TextField(title, text: $text)
                 .textFieldStyle(.roundedBorder)
@@ -47,10 +49,12 @@ struct SnapshotPickerLookalike: View {
                 .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 7)
+        .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.2)))
+        // Capsule, not RoundedRectangle: it stands in for a Picker(.menu)
+        // button, and macOS 26 menu buttons are pills.
+        .background(.white.opacity(0.06), in: Capsule())
+        .overlay(Capsule().strokeBorder(.white.opacity(0.2)))
     }
 }
 

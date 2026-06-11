@@ -133,7 +133,12 @@ struct WorkspaceRowCard: View {
                 .font(.caption)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
-                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                // Concentric with the card's DesignRadius.card container shape
+                // (GlassCard declares it); the minimum keeps mid-card chips —
+                // too far from any card corner to resolve — at the concentric
+                // radius for the card's 10pt content padding.
+                .background(.white.opacity(0.06), in: ConcentricRectangle(corners: .concentric(
+                    minimum: .fixed(DesignRadius.nested(parent: DesignRadius.card, inset: 10)))))
                 .help(repoState.entry.path)
             }
         }

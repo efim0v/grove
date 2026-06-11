@@ -19,21 +19,30 @@ extension EnvironmentValues {
 /// closest to the content; .glassEffect supplies the glass material behind it.
 /// In snapshot mode the glass is replaced by a hairline border so the card —
 /// and everything inside it — stays visible to the agent reading the PNG.
+/// Corners follow the Apple 26 system (DesignRadius.card, continuous), and the
+/// card declares itself as the container shape so nested ConcentricRectangle
+/// elements (repo chips etc.) resolve concentric radii against it.
 public struct GlassCard: ViewModifier {
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
     public init() {}
 
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: DesignRadius.card, style: .continuous)
+    }
+
     @ViewBuilder
     public func body(content: Content) -> some View {
         if isSnapshotRender {
             content
-                .background(.white.opacity(0.06), in: .rect(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.15)))
+                .background(.white.opacity(0.06), in: shape)
+                .overlay(shape.strokeBorder(.white.opacity(0.15)))
+                .containerShape(shape)
         } else {
             content
-                .background(.black.opacity(0.28), in: .rect(cornerRadius: 12))
-                .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                .background(.black.opacity(0.28), in: shape)
+                .glassEffect(.regular, in: shape)
+                .containerShape(shape)
         }
     }
 }
