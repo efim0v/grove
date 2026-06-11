@@ -5,8 +5,8 @@ import GroveCore
 /// ("+ Workspace" -> empty, "+ child workspace" -> forkFrom set) and, in
 /// Task 21, GraphScreen ("create workspace from branch" -> branch = existing
 /// branch name, base = that branch as a display hint). Identifiable so it can
-/// drive `.sheet(item:)` — every request carries a fresh id, which reopens
-/// the sheet with clean @State.
+/// drive `.panelOverlay(item:)` — every request carries a fresh id, which
+/// reopens the sheet with clean @State.
 public struct CreatePrefill: Identifiable {
     public let id = UUID()
     public var name: String

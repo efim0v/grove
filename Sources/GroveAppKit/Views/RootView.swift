@@ -31,8 +31,11 @@ public struct RootView: View {
         }
         .frame(width: 760, height: 520)
         .background(.black.opacity(0.35))
-        .sheet(isPresented: $showSettings) {
-            SettingsSheet(state: state)
+        // NOT .sheet: a real sheet is a second key window and the
+        // MenuBarExtra(.window) panel auto-hides when it stops being key —
+        // any click inside the sheet would dismiss the whole panel.
+        .panelOverlay(isPresented: $showSettings) {
+            SettingsSheet(state: state, onClose: { showSettings = false })
         }
         .task {
             // Refresh now, then every 15 s while the panel stays open. The

@@ -14,7 +14,10 @@ import GroveCore
 /// case without a second template layer.
 struct SettingsSheet: View {
     @ObservedObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
+    /// Explicit close callback: this view is presented as a PanelOverlay (not
+    /// a real sheet), so @Environment(\.dismiss) would be a no-op. Defaults to
+    /// {} for the standalone snapshot scene.
+    var onClose: () -> Void = {}
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
     @State private var newOverrideRepo = ""
@@ -33,7 +36,9 @@ struct SettingsSheet: View {
                 ScrollView {
                     form.padding(12)
                 }
-                .frame(maxHeight: 440)
+                // 400 keeps header + divider + scroll within the PanelOverlay
+                // card cap (~460) inside the 520-tall panel.
+                .frame(maxHeight: 400)
             }
         }
         .frame(width: 540)
@@ -46,7 +51,7 @@ struct SettingsSheet: View {
                 .font(.headline)
             Spacer()
             Button {
-                dismiss()
+                onClose()
             } label: {
                 Image(systemName: "xmark.circle.fill")
             }

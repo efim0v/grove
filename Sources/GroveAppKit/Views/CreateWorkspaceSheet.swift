@@ -9,7 +9,10 @@ import GroveCore
 struct CreateWorkspaceSheet: View {
     @ObservedObject var state: AppState
     let prefill: CreatePrefill
-    @Environment(\.dismiss) private var dismiss
+    /// Explicit close callback: this view is presented as a PanelOverlay (not
+    /// a real sheet), so @Environment(\.dismiss) would be a no-op. Defaults to
+    /// {} for the standalone snapshot scene.
+    let onClose: () -> Void
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
     private enum Phase: Equatable {
@@ -31,9 +34,10 @@ struct CreateWorkspaceSheet: View {
     @State private var report: CreationReport?
 
     @MainActor
-    init(state: AppState, prefill: CreatePrefill) {
+    init(state: AppState, prefill: CreatePrefill, onClose: @escaping () -> Void = {}) {
         _state = ObservedObject(wrappedValue: state)
         self.prefill = prefill
+        self.onClose = onClose
         _name = State(initialValue: prefill.name)
         _branchOverride = State(initialValue: prefill.branch)
         _forkFromName = State(initialValue: prefill.forkFrom?.name)
@@ -63,7 +67,7 @@ struct CreateWorkspaceSheet: View {
                 .font(.headline)
             Spacer()
             Button {
-                dismiss()
+                onClose()
             } label: {
                 Image(systemName: "xmark.circle.fill")
             }
@@ -257,20 +261,20 @@ struct CreateWorkspaceSheet: View {
             Spacer()
             switch phase {
             case .editing, .running:
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { onClose() }
                     .disabled(phase == .running)
                 Button("Create") { create(snapshot: snapshot, branch: branch, forkFrom: forkFrom) }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canCreate(branch: branch))
             case .succeeded:
-                Button("Done") { dismiss() }
+                Button("Done") { onClose() }
                     .keyboardShortcut(.defaultAction)
             case .failed:
-                Button("Keep as is") { dismiss() }
+                Button("Keep as is") { onClose() }
                 Button("Roll back created artifacts", role: .destructive) { rollback() }
                     .disabled((report?.artifacts.isEmpty) ?? true)
             case .rolledBack:
-                Button("Close") { dismiss() }
+                Button("Close") { onClose() }
                     .keyboardShortcut(.defaultAction)
             }
         }

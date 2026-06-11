@@ -30,8 +30,11 @@ struct GraphScreen: View {
                 graphBody
             }
         }
-        .sheet(item: $createPrefill) { prefill in
-            CreateWorkspaceSheet(state: state, prefill: prefill)
+        // NOT .sheet: a real sheet is a second key window, which auto-hides
+        // the MenuBarExtra(.window) panel (see PanelOverlay.swift).
+        .panelOverlay(item: $createPrefill) { prefill in
+            CreateWorkspaceSheet(state: state, prefill: prefill,
+                                 onClose: { createPrefill = nil })
         }
         .task(id: state.selectedProjectID) {
             // Live default selection only; the snapshot fixture pre-loads nodes.
