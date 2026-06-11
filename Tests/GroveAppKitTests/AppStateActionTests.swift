@@ -26,6 +26,9 @@ final class AppStateActionTests: XCTestCase {
     func testLaunchClaudeCreatesFocusedCmuxWorkspaceWithLaunchCommand() async throws {
         let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
         let state = makeState(runner: runner)
+        // The claude binary resolves to an absolute path on this machine; the
+        // launch command embeds it shell-quoted (PATH-independent by design).
+        let claude = shellQuote(ClaudeService.claudeExecutable())
 
         await state.launchClaude(cwd: "/ws/feat-x", title: "feat-x", account: account, resume: nil)
 
@@ -34,7 +37,7 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertEqual(newCalls.count, 1)
         XCTAssertEqual(newCalls[0].args,
                        ["new-workspace", "--name", "feat-x", "--cwd", "/ws/feat-x",
-                        "--command", "CLAUDE_CONFIG_DIR='/tmp/grove-test-claude' claude",
+                        "--command", "CLAUDE_CONFIG_DIR='/tmp/grove-test-claude' \(claude)",
                         "--focus", "true"])
         // focus=true triggers app activation through the SAME stub runner — never for real
         XCTAssertEqual(runner.calls.filter { $0.executable == "/usr/bin/open" }.count, 1)
@@ -43,13 +46,14 @@ final class AppStateActionTests: XCTestCase {
     func testLaunchClaudeResumeAppendsQuotedSessionId() async throws {
         let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
         let state = makeState(runner: runner)
+        let claude = shellQuote(ClaudeService.claudeExecutable())
 
         await state.launchClaude(cwd: "/ws/feat-x", title: "feat-x", account: account,
                                  resume: "abc-123")
 
         let args = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first).args
         let commandIndex = try XCTUnwrap(args.firstIndex(of: "--command"))
-        XCTAssertTrue(args[commandIndex + 1].hasSuffix(" claude --resume 'abc-123'"),
+        XCTAssertTrue(args[commandIndex + 1].hasSuffix(" \(claude) --resume 'abc-123'"),
                       "got: \(args[commandIndex + 1])")
     }
 

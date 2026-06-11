@@ -312,31 +312,74 @@ final class ClaudeServiceTests: XCTestCase {
 
     // MARK: - launchCommand
 
+    /// Forces bare-"claude" resolution so string expectations are machine-independent.
+    private func withBareClaudeResolution(_ body: () -> Void) {
+        let saved = ClaudeService.claudeCandidatePaths
+        ClaudeService.claudeCandidatePaths = []
+        defer { ClaudeService.claudeCandidatePaths = saved }
+        body()
+    }
+
     func testLaunchCommandDefaultAccountIsPlainClaude() {
-        let def = AccountConfig(name: "default", configDir: "~/.claude")
-        XCTAssertEqual(ClaudeService.launchCommand(account: def), "claude")
+        withBareClaudeResolution {
+            let def = AccountConfig(name: "default", configDir: "~/.claude")
+            XCTAssertEqual(ClaudeService.launchCommand(account: def), "'claude'")
+        }
     }
 
     func testLaunchCommandCustomDirPrefixesQuotedConfigDir() {
-        let custom = AccountConfig(name: "work", configDir: "/Users/dev/.claude-accounts/work")
-        XCTAssertEqual(ClaudeService.launchCommand(account: custom),
-                       "CLAUDE_CONFIG_DIR='/Users/dev/.claude-accounts/work' claude")
+        withBareClaudeResolution {
+            let custom = AccountConfig(name: "work", configDir: "/Users/dev/.claude-accounts/work")
+            XCTAssertEqual(ClaudeService.launchCommand(account: custom),
+                           "CLAUDE_CONFIG_DIR='/Users/dev/.claude-accounts/work' 'claude'")
+        }
     }
 
     func testLaunchCommandAppendsQuotedResumeId() {
-        let custom = AccountConfig(name: "work", configDir: "/Users/dev/.claude-accounts/work")
-        XCTAssertEqual(
-            ClaudeService.launchCommand(account: custom, resume: "0a1b2c3d-0001-4000-8000-000000000001"),
-            "CLAUDE_CONFIG_DIR='/Users/dev/.claude-accounts/work' claude --resume '0a1b2c3d-0001-4000-8000-000000000001'")
-        let def = AccountConfig(name: "default", configDir: "~/.claude")
-        XCTAssertEqual(
-            ClaudeService.launchCommand(account: def, resume: "0a1b2c3d-0001-4000-8000-000000000001"),
-            "claude --resume '0a1b2c3d-0001-4000-8000-000000000001'")
+        withBareClaudeResolution {
+            let custom = AccountConfig(name: "work", configDir: "/Users/dev/.claude-accounts/work")
+            XCTAssertEqual(
+                ClaudeService.launchCommand(account: custom, resume: "0a1b2c3d-0001-4000-8000-000000000001"),
+                "CLAUDE_CONFIG_DIR='/Users/dev/.claude-accounts/work' 'claude' --resume '0a1b2c3d-0001-4000-8000-000000000001'")
+            let def = AccountConfig(name: "default", configDir: "~/.claude")
+            XCTAssertEqual(
+                ClaudeService.launchCommand(account: def, resume: "0a1b2c3d-0001-4000-8000-000000000001"),
+                "'claude' --resume '0a1b2c3d-0001-4000-8000-000000000001'")
+        }
     }
 
     func testLaunchCommandQuotesSingleQuoteInConfigDir() {
-        let odd = AccountConfig(name: "odd", configDir: "/tmp/it's here/claude")
-        XCTAssertEqual(ClaudeService.launchCommand(account: odd),
-                       "CLAUDE_CONFIG_DIR='/tmp/it'\\''s here/claude' claude")
+        withBareClaudeResolution {
+            let odd = AccountConfig(name: "odd", configDir: "/tmp/it's here/claude")
+            XCTAssertEqual(ClaudeService.launchCommand(account: odd),
+                           "CLAUDE_CONFIG_DIR='/tmp/it'\\''s here/claude' 'claude'")
+        }
+    }
+
+    // MARK: - claudeExecutable resolution
+
+    func testClaudeExecutableResolvesFirstExistingCandidate() throws {
+        let dir = try Fixture.tempDir("claude-bin")
+        let fake = dir.appendingPathComponent("claude")
+        try "#!/bin/zsh\n".write(to: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
+
+        let saved = ClaudeService.claudeCandidatePaths
+        defer { ClaudeService.claudeCandidatePaths = saved }
+
+        ClaudeService.claudeCandidatePaths = ["/nonexistent/claude", fake.path]
+        XCTAssertEqual(ClaudeService.claudeExecutable(), fake.path)
+
+        // The resolved absolute path flows into the launch command, quoted —
+        // making it immune to shells whose PATH lacks the install dir.
+        let def = AccountConfig(name: "default", configDir: "~/.claude")
+        XCTAssertEqual(ClaudeService.launchCommand(account: def), shellQuote(fake.path))
+    }
+
+    func testClaudeExecutableFallsBackToBareName() {
+        let saved = ClaudeService.claudeCandidatePaths
+        defer { ClaudeService.claudeCandidatePaths = saved }
+        ClaudeService.claudeCandidatePaths = ["/nonexistent/a", "/nonexistent/b"]
+        XCTAssertEqual(ClaudeService.claudeExecutable(), "claude")
     }
 }

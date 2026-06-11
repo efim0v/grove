@@ -260,13 +260,35 @@ public final class ClaudeService {
 
     // MARK: - Launch commands
 
+    /// Candidate install locations for the claude CLI, checked in order.
+    /// Injectable for tests.
+    static var claudeCandidatePaths: [String] = [
+        NSHomeDirectory() + "/.local/bin/claude",
+        "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude",
+    ]
+
+    /// Absolute path to the claude binary when one of the known install
+    /// locations exists, else bare "claude" (PATH lookup). Resolving an
+    /// absolute path makes launch commands immune to shells whose init files
+    /// never add ~/.local/bin to PATH (fresh cmux workspaces, GUI-spawned
+    /// shells) — the recurring "claude not found in PATH" failure.
+    public static func claudeExecutable() -> String {
+        let fm = FileManager.default
+        for path in claudeCandidatePaths where fm.isExecutableFile(atPath: path) {
+            return path
+        }
+        return "claude"
+    }
+
     /// Shell command string for cmux `--command`. Default account (expanded configDir
     /// == $HOME/.claude) needs no env prefix; custom accounts get CLAUDE_CONFIG_DIR.
-    /// Both the config dir and the resume session id are single-quote shell-quoted.
+    /// The binary path, config dir and resume session id are single-quote shell-quoted.
     public static func launchCommand(account: AccountConfig, resume sessionId: String? = nil) -> String {
         let dir = expandTilde(account.configDir)
         let isDefaultAccount = dir == NSHomeDirectory() + "/.claude"
-        var command = isDefaultAccount ? "claude" : "CLAUDE_CONFIG_DIR=\(shellQuote(dir)) claude"
+        let claude = shellQuote(claudeExecutable())
+        var command = isDefaultAccount ? claude : "CLAUDE_CONFIG_DIR=\(shellQuote(dir)) \(claude)"
         if let sessionId {
             command += " --resume \(shellQuote(sessionId))"
         }
