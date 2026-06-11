@@ -78,6 +78,17 @@ public func sanitizedWorkspaceName(fromBranch branch: String) -> String {
     return sanitized.isEmpty ? "workspace" : sanitized
 }
 
+// MARK: - Graph repo auto-selection
+
+/// Repo the Graph tab should auto-load: the snapshot's first repo when the
+/// current selection is nil or STALE (not among the snapshot's repos — e.g.
+/// left over from a previously selected project, v1.2.1 fix 1); nil when the
+/// selection is still valid or there is nothing to select (no reload needed).
+public func graphAutoSelectRepo(current: String?, repos: [RepoInfo]) -> RepoInfo? {
+    if let current, repos.contains(where: { $0.path == current }) { return nil }
+    return repos.first
+}
+
 // MARK: - Branch -> existing worktree lookup
 
 /// Where a branch is already checked out, for "Open Claude in worktree of this

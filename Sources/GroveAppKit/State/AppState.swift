@@ -79,6 +79,7 @@ public final class AppState: ObservableObject {
     public func open(_ target: Route) {
         routeIsForward = target.depth >= route.depth
         if case .project(let id) = target {
+            if id != selectedProjectID { resetGraph() }
             selectedProjectID = id
             refreshTask = Task { await self.refresh() }
         }
@@ -142,6 +143,7 @@ public final class AppState: ObservableObject {
         snapshots.removeValue(forKey: id)
         if selectedProjectID == id {
             selectedProjectID = config.projects.first?.id
+            resetGraph()
         }
         persist()
     }
@@ -225,6 +227,18 @@ extension AppState {
 // MARK: - Graph
 
 extension AppState {
+    /// Drops the loaded graph page. Called whenever the selected project
+    /// changes (open(.project) with a different id, removeProject of the
+    /// selected one): graphNodes/graphRepoPath belong to ONE project, and
+    /// keeping them across a switch rendered project A's commits under
+    /// project B's repo strip (v1.2.1 fix 1). GraphScreen auto-selects the
+    /// new project's first repo via graphAutoSelectRepo on its next .task.
+    private func resetGraph() {
+        graphNodes = []
+        graphRepoPath = nil
+        graphCanLoadMore = false
+    }
+
     public func loadGraph(repoPath: String) async {
         graphRepoPath = repoPath
         do {

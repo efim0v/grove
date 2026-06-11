@@ -29,12 +29,30 @@ struct GraphScreen: View {
                 graphBody
             }
         }
-        .task(id: state.selectedProjectID) {
-            // Live default selection only; the snapshot fixture pre-loads nodes.
-            guard !isSnapshotRender, state.graphRepoPath == nil,
-                  let repo = state.selectedSnapshot?.repos.first else { return }
+        .task(id: autoSelectKey) {
+            // Live default selection only; the snapshot fixture pre-loads
+            // nodes. Re-runs when the project changes OR its scan lands
+            // (repo paths appear), so a nil/stale selection — cleared by
+            // AppState on project switch (v1.2.1 fix 1) — reloads the graph
+            // for the new project's first repo.
+            guard !isSnapshotRender,
+                  let repo = graphAutoSelectRepo(current: state.graphRepoPath,
+                                                 repos: state.selectedSnapshot?.repos ?? [])
+            else { return }
             await state.loadGraph(repoPath: repo.path)
         }
+    }
+
+    /// .task identity for the auto-select: selected project + the scanned
+    /// repo paths (the snapshot can land AFTER the screen appears).
+    private struct AutoSelectKey: Equatable {
+        let projectID: UUID?
+        let repoPaths: [String]
+    }
+
+    private var autoSelectKey: AutoSelectKey {
+        AutoSelectKey(projectID: state.selectedProjectID,
+                      repoPaths: state.selectedSnapshot?.repos.map(\.path) ?? [])
     }
 
     // MARK: - Repo selector (pure SwiftUI capsules — snapshot-safe; NOT an
