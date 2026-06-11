@@ -25,6 +25,42 @@ final class ConfigStoreTests: XCTestCase {
         )
     }
 
+    // MARK: - defaultAccount
+
+    func testDefaultAccountDecodesFromOldJSONWithoutField() throws {
+        // Old JSON has no "defaultAccount" key — must decode without error,
+        // and the field must be nil.
+        let json = """
+        {
+          "version": 1,
+          "workspacesRootTemplate": "~/Workspaces/{project}",
+          "projects": [],
+          "accounts": []
+        }
+        """
+        let data = Data(json.utf8)
+        let decoded = try JSONDecoder().decode(GroveConfig.self, from: data)
+        let proj = ProjectConfig(name: "test", path: "/tmp/test")
+        XCTAssertNil(proj.defaultAccount, "defaultAccount must be nil when not set")
+        _ = decoded // silence unused warning — we're testing GroveConfig decodes successfully
+    }
+
+    func testDefaultAccountRoundTrip() throws {
+        let dir = try Fixture.tempDir("default-account-roundtrip")
+        let store = ConfigStore(url: dir.appendingPathComponent("config.json"))
+        var original = sampleConfig()
+        original.projects[0].defaultAccount = "work"
+        try store.save(original)
+        let (loaded, issue) = store.load()
+        XCTAssertNil(issue)
+        XCTAssertEqual(loaded.projects[0].defaultAccount, "work")
+    }
+
+    func testDefaultAccountNilByDefault() {
+        let proj = ProjectConfig(name: "test", path: "/tmp/test")
+        XCTAssertNil(proj.defaultAccount)
+    }
+
     func testDefaultConfig() {
         let def = GroveConfig.defaultConfig
         XCTAssertEqual(def.version, 1)

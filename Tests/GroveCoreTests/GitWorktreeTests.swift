@@ -141,6 +141,24 @@ final class GitWorktreeTests: XCTestCase {
         }
     }
 
+    // MARK: - localBranches
+
+    func testLocalBranchesReturnsSortedNames() async throws {
+        let dir = try Fixture.tempDir("local-branches")
+        let repo = try Fixture.makeRepo(in: dir, name: "alpha")
+        // Create two extra branches in non-alphabetical order.
+        try Fixture.sh("git -C \(shellQuote(repo.path)) branch zebra")
+        try Fixture.sh("git -C \(shellQuote(repo.path)) branch apple")
+        // Now repo has: apple, main, zebra
+        let branches = await git.localBranches(repoPath: repo.path)
+        XCTAssertEqual(branches, ["apple", "main", "zebra"])
+    }
+
+    func testLocalBranchesNonexistentPathReturnsEmpty() async {
+        let branches = await git.localBranches(repoPath: "/nonexistent/path/\(UUID().uuidString)")
+        XCTAssertEqual(branches, [])
+    }
+
     func testAddExistingBranchWorktreeThenRemoveAndDeleteBranch() async throws {
         let dir = try Fixture.tempDir("wt-lifecycle")
         let repo = try Fixture.makeRepo(in: dir, name: "alpha")

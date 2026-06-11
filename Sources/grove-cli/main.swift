@@ -150,10 +150,35 @@ func cmdSessions(_ rest: [String]) async -> Int32 {
 }
 
 func cmdCreate(_ rest: [String]) async -> Int32 {
-    guard let parsed = parseArgs(rest, flagNames: ["--json"],
+    // --from-branch is repeatable: we handle it manually before passing to parseArgs.
+    // Collect all --from-branch <repoDir>=<branch> pairs, then remove them from argv.
+    var startPointOverrides: [String: String] = [:]
+    var filteredRest: [String] = []
+    var idx = 0
+    while idx < rest.count {
+        if rest[idx] == "--from-branch" {
+            idx += 1
+            guard idx < rest.count else {
+                eprint("missing value for --from-branch")
+                return 2
+            }
+            let value = rest[idx]
+            let parts = value.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else {
+                eprint("--from-branch value must be <repoDir>=<branch>, got: \(value)")
+                return 2
+            }
+            startPointOverrides[String(parts[0])] = String(parts[1])
+        } else {
+            filteredRest.append(rest[idx])
+        }
+        idx += 1
+    }
+
+    guard let parsed = parseArgs(filteredRest, flagNames: ["--json"],
                                  optionNames: ["--repos", "--branch", "--from"]),
           parsed.positionals.count == 2 else {
-        eprint("usage: grove create <path> <name> [--repos a,b] [--branch x] [--from workspace] [--json]")
+        eprint("usage: grove create <path> <name> [--repos a,b] [--branch x] [--from workspace] [--from-branch <repoDir>=<branch>] [--json]")
         return 2
     }
     let project = adhocProject(path: parsed.positionals[0])
@@ -190,7 +215,8 @@ func cmdCreate(_ rest: [String]) async -> Int32 {
     }
 
     let report = await service.createWorkspace(project: project, name: name, branch: branch,
-                                               repos: repos, forkFrom: parent)
+                                               repos: repos, forkFrom: parent,
+                                               startPointOverrides: startPointOverrides)
     if parsed.flags.contains("--json") {
         printJSON(createJSON(report))
     } else {
@@ -288,9 +314,13 @@ usage:
   grove scan <path> [--json]
   grove workspaces <path> [--json]
   grove sessions <cwd> [--json]
-  grove create <path> <name> [--repos a,b] [--branch x] [--from workspace] [--json]
+  grove create <path> <name> [--repos a,b] [--branch x] [--from workspace] [--from-branch <repoDir>=<branch>] [--json]
   grove graph <repoPath> [--limit N] [--json]
   grove doctor [--json]
+
+create flags:
+  --from-branch <repoDir>=<branch>   Fork a specific repo from <branch> instead of the default
+                                     start point. Repeatable; takes precedence over --from.
 """
 
 let argv = Array(CommandLine.arguments.dropFirst())

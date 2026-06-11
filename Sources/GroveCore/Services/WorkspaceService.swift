@@ -342,7 +342,8 @@ public struct WorkspaceService {
     // MARK: - Creation
 
     public func createWorkspace(project: ProjectConfig, name: String, branch: String,
-                                repos: [RepoInfo], forkFrom parent: FeatureWorkspace?) async -> CreationReport {
+                                repos: [RepoInfo], forkFrom parent: FeatureWorkspace?,
+                                startPointOverrides: [String: String] = [:]) async -> CreationReport {
         var logLines: [String] = []
         var artifacts: [CreatedArtifact] = []
         let fm = FileManager.default
@@ -393,6 +394,11 @@ public struct WorkspaceService {
                let parentState = parent.repos.first(where: { $0.repo.path == repo.path }),
                let parentBranch = parentState.entry.branch {
                 startPoint = parentBranch
+            }
+            // startPointOverrides[dirName] takes highest precedence over both
+            // the base branch and any stacking-parent branch.
+            if let override = startPointOverrides[repo.dirName] {
+                startPoint = override
             }
             let worktreePath = (umbrella as NSString).appendingPathComponent(repo.dirName)
             let exists = await git.branchExists(repoPath: repo.path, branch)

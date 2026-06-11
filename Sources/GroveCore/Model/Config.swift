@@ -10,6 +10,10 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
     public var postCreateHooks: [String: String]
     public var excludedRepos: [String]
     public var scanDepth: Int
+    /// Account NAME from GroveConfig.accounts to use by default for this project.
+    /// nil means "no preference" (fall back to whatever the caller decides).
+    /// Backwards-compatible: old JSON without this key decodes to nil.
+    public var defaultAccount: String?
 
     public init(
         id: UUID = UUID(),
@@ -20,7 +24,8 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         baseBranchOverrides: [String: String] = [:],
         postCreateHooks: [String: String] = [:],
         excludedRepos: [String] = [],
-        scanDepth: Int = 3
+        scanDepth: Int = 3,
+        defaultAccount: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -31,6 +36,7 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         self.postCreateHooks = postCreateHooks
         self.excludedRepos = excludedRepos
         self.scanDepth = scanDepth
+        self.defaultAccount = defaultAccount
     }
 }
 

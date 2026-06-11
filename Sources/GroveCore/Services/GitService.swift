@@ -150,6 +150,21 @@ public struct GitService: Sendable {
         return "main"
     }
 
+    /// Lists all local branches, sorted alphabetically.
+    /// Uses `git for-each-ref refs/heads --format=%(refname:short)`.
+    /// Returns an empty array on any git failure (degrades gracefully, never throws).
+    public func localBranches(repoPath: String) async -> [String] {
+        guard let result = try? await runner.run(
+            "git", ["-C", repoPath, "for-each-ref", "refs/heads", "--format=%(refname:short)"],
+            cwd: nil, env: nil, timeout: 10
+        ), result.exitCode == 0 else { return [] }
+        let names = result.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return names.sorted()
+    }
+
     public func branchExists(repoPath: String, _ branch: String) async -> Bool {
         guard let result = try? await runner.run(
             "git", ["-C", repoPath, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"],

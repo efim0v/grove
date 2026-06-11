@@ -104,6 +104,74 @@ final class WorkspaceCreateTests: XCTestCase {
         XCTAssertEqual(try revParse(r2, "feat/delta-from-alpha"), mainTip2)
     }
 
+    // MARK: - startPointOverrides
+
+    func testStartPointOverrideBeatsBase() async throws {
+        // Create a feature branch "custom-start" in repo-one, one commit ahead of main.
+        let customWt = baseDir.appendingPathComponent("custom-wt")
+        try Fixture.addWorktree(repo: r1, branch: "custom-start", from: "main", at: customWt)
+        try Fixture.commit(repo: customWt, file: "extra.txt", content: "x", message: "extra commit")
+        let customTip = try revParse(customWt, "HEAD")
+        let mainTip1 = try revParse(r1, "main")
+        XCTAssertNotEqual(customTip, mainTip1, "prerequisite: custom-start must diverge from main")
+
+        let report = await makeService().createWorkspace(
+            project: makeProject(), name: "override-test", branch: "feat/override-test",
+            repos: [repo1, repo2], forkFrom: nil,
+            startPointOverrides: ["repo-one": "custom-start"])
+
+        XCTAssertNil(report.failure)
+        // repo-one: forked from custom-start tip.
+        XCTAssertEqual(try revParse(r1, "feat/override-test"), customTip)
+        // repo-two: no override, uses base (main).
+        let mainTip2 = try revParse(r2, "main")
+        XCTAssertEqual(try revParse(r2, "feat/override-test"), mainTip2)
+        // Log must mention the actual start point used.
+        XCTAssertTrue(report.logLines.contains { $0.contains("custom-start") },
+                      "log lines must mention the start point: \(report.logLines)")
+    }
+
+    func testStartPointOverrideBeatsParent() async throws {
+        // Set up parent workspace with a commit in repo-one.
+        let alphaPath = baseDir.appendingPathComponent("alpha-wt2")
+        try Fixture.addWorktree(repo: r1, branch: "feat/alpha2", from: "main", at: alphaPath)
+        try Fixture.commit(repo: alphaPath, file: "alpha.txt", content: "a", message: "alpha work")
+        let alphaTip = try revParse(alphaPath, "HEAD")
+
+        // Also create a "custom-start" branch in repo-one with a different tip.
+        let customWt = baseDir.appendingPathComponent("custom-wt2")
+        try Fixture.addWorktree(repo: r1, branch: "custom-start2", from: "main", at: customWt)
+        try Fixture.commit(repo: customWt, file: "custom.txt", content: "c", message: "custom commit")
+        let customTip = try revParse(customWt, "HEAD")
+        XCTAssertNotEqual(alphaTip, customTip, "prerequisite: tips must differ")
+
+        let alphaEntry = WorktreeEntry(path: alphaPath.path, branch: "feat/alpha2",
+                                       head: alphaTip, isMain: false)
+        let alphaState = WorkspaceRepoState(repo: repo1, entry: alphaEntry, meta: nil, scanError: nil)
+        let alpha = FeatureWorkspace(
+            name: "alpha2", umbrellaPath: alphaPath.path, repos: [alphaState],
+            parentName: nil, sessions: [], liveProcesses: [], cmuxWorkspaces: [])
+
+        // Override for repo-one beats the parent branch.
+        let report = await makeService().createWorkspace(
+            project: makeProject(), name: "override-beats-parent", branch: "feat/override-beats-parent",
+            repos: [repo1, repo2], forkFrom: alpha,
+            startPointOverrides: ["repo-one": "custom-start2"])
+
+        XCTAssertNil(report.failure)
+        // repo-one: override wins over parent branch.
+        XCTAssertEqual(try revParse(r1, "feat/override-beats-parent"), customTip)
+    }
+
+    func testDefaultEmptyOverridesKeepsExistingBehavior() async throws {
+        // Ensure calling without startPointOverrides still works (backward compat).
+        let report = await makeService().createWorkspace(
+            project: makeProject(), name: "compat-check", branch: "feat/compat-check",
+            repos: [repo1, repo2], forkFrom: nil)
+        XCTAssertNil(report.failure)
+        XCTAssertEqual(report.artifacts.count, 2)
+    }
+
     // MARK: - validation, BEFORE any git operation
 
     func testInvalidNamesFailBeforeAnyGitOperation() async throws {
