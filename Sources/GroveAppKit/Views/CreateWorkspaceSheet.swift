@@ -29,6 +29,10 @@ struct CreateWorkspaceSheet: View {
     @State private var branchOverride: String?
     @State private var forkFromName: String?
     @State private var selectedRepoPaths: Set<String>
+    /// Explicit per-repo start-point picks (key = repo.path). Absent = follow
+    /// the resolved default (startPointCaption). Only picks that differ from
+    /// the default become startPointOverrides at create time.
+    @State private var startPointSelections: [String: String] = [:]
     @State private var phase: Phase = .editing
     @State private var logLines: [String] = []
     @State private var report: CreationReport?
@@ -59,6 +63,11 @@ struct CreateWorkspaceSheet: View {
         }
         .frame(width: 480)
         .fixedSize(horizontal: false, vertical: true)
+        .task {
+            // Fill the per-repo branch pickers; until this lands they show
+            // just the resolved default. Never runs under ImageRenderer.
+            await state.loadBranches(for: state.selectedSnapshot?.repos ?? [])
+        }
     }
 
     private var header: some View {
@@ -162,7 +171,7 @@ struct CreateWorkspaceSheet: View {
         }
     }
 
-    // MARK: - Repo checkboxes with per-repo start-point captions
+    // MARK: - Repo checkboxes with per-repo start-point pickers
 
     private func repoList(snapshot: ProjectSnapshot, forkFrom: FeatureWorkspace?) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -170,24 +179,29 @@ struct CreateWorkspaceSheet: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
             // Pure-SwiftUI checkbox row: Toggle(.checkbox) is AppKit-backed and
-            // renders as an error placeholder under ImageRenderer.
+            // renders as an error placeholder under ImageRenderer. The branch
+            // picker sits OUTSIDE the toggle button so clicking it never
+            // flips the checkbox.
             ForEach(snapshot.repos.sorted { $0.dirName < $1.dirName }, id: \.path) { repo in
                 let isOn = repoBinding(repo)
-                Button {
-                    isOn.wrappedValue.toggle()
-                } label: {
-                    HStack {
-                        Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
-                            .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
-                        Text(repo.dirName)
-                        Spacer()
-                        Text("from \(startPointCaption(repo: repo, forkFrom: forkFrom, base: prefill.base, snapshot: snapshot))")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Button {
+                        isOn.wrappedValue.toggle()
+                    } label: {
+                        HStack {
+                            Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+                            Text(repo.dirName)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    Text("from")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    startPointSelector(repo: repo, forkFrom: forkFrom, snapshot: snapshot)
                 }
-                .buttonStyle(.plain)
             }
             if snapshot.repos.isEmpty {
                 Text("No repos found in this project.")
@@ -195,6 +209,41 @@ struct CreateWorkspaceSheet: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// Per-repo start-point control replacing the old static caption: a menu
+    /// Picker over the repo's local branches (resolved default preselected and
+    /// prepended when unlisted; not-yet-loaded lists degrade to just the
+    /// default). Picker(.menu) is AppKit-backed and renders as a yellow error
+    /// placeholder under ImageRenderer, so snapshot mode shows a static
+    /// lookalike with the same resolved value.
+    @ViewBuilder
+    private func startPointSelector(repo: RepoInfo, forkFrom: FeatureWorkspace?,
+                                    snapshot: ProjectSnapshot) -> some View {
+        let resolved = startPointCaption(repo: repo, forkFrom: forkFrom,
+                                         base: prefill.base, snapshot: snapshot)
+        if isSnapshotRender {
+            SnapshotPickerLookalike(text: startPointSelections[repo.path] ?? resolved)
+        } else {
+            Picker("", selection: startPointBinding(repo: repo, resolved: resolved)) {
+                ForEach(startPointOptions(default: resolved,
+                                          branches: state.branchesByRepo[repo.path] ?? []),
+                        id: \.self) { branch in
+                    Text(branch).tag(branch)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+            .fixedSize()
+        }
+    }
+
+    private func startPointBinding(repo: RepoInfo, resolved: String) -> Binding<String> {
+        Binding(
+            get: { startPointSelections[repo.path] ?? resolved },
+            set: { startPointSelections[repo.path] = $0 }
+        )
     }
 
     private func repoBinding(_ repo: RepoInfo) -> Binding<Bool> {
@@ -293,11 +342,18 @@ struct CreateWorkspaceSheet: View {
         let repos = snapshot.repos
             .filter { selectedRepoPaths.contains($0.path) }
             .sorted { $0.dirName < $1.dirName }
+        // Only picks that differ from each repo's resolved default become
+        // overrides — default picks keep creation's normal resolution.
+        let overrides = resolvedStartPointOverrides(repos: repos,
+                                                    selections: startPointSelections,
+                                                    forkFrom: forkFrom, base: prefill.base,
+                                                    snapshot: snapshot)
         phase = .running
         logLines = ["creating \(name) on \(branch) in \(repos.count) repo(s)…"]
         Task {
             let result = await state.createWorkspace(name: name, branch: branch,
-                                                     repos: repos, forkFrom: forkFrom)
+                                                     repos: repos, forkFrom: forkFrom,
+                                                     startPointOverrides: overrides)
             if let result {
                 report = result
                 logLines += result.logLines

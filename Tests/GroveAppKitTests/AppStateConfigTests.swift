@@ -165,6 +165,41 @@ final class AppStateConfigTests: XCTestCase {
         XCTAssertEqual(reloadedConfig().accounts.map { $0.name }, ["default"])
     }
 
+    // MARK: - default launch account (per-project defaultAccount)
+
+    private func saveProjectsAndAccounts(defaultAccount: String?) throws -> ProjectConfig {
+        let project = ProjectConfig(name: "demo", path: "/tmp/demo",
+                                    defaultAccount: defaultAccount)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [project],
+            accounts: [AccountConfig(name: "default", configDir: "~/.claude"),
+                       AccountConfig(name: "work", configDir: "~/.claude-accounts/work")]))
+        return project
+    }
+
+    func testDefaultLaunchAccountResolvesProjectDefaultByName() throws {
+        _ = try saveProjectsAndAccounts(defaultAccount: "work")
+        XCTAssertEqual(makeState().defaultLaunchAccount?.name, "work")
+    }
+
+    func testDefaultLaunchAccountFallsBackToFirstWhenUnset() throws {
+        _ = try saveProjectsAndAccounts(defaultAccount: nil)
+        XCTAssertEqual(makeState().defaultLaunchAccount?.name, "default")
+    }
+
+    func testDefaultLaunchAccountFallsBackToFirstWhenNameUnknown() throws {
+        _ = try saveProjectsAndAccounts(defaultAccount: "ghost")
+        XCTAssertEqual(makeState().defaultLaunchAccount?.name, "default")
+    }
+
+    func testDefaultLaunchAccountNilWithoutAccounts() throws {
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: []))
+        XCTAssertNil(makeState().defaultLaunchAccount)
+    }
+
     // MARK: - selection
 
     func testSelectedSnapshotFollowsSelection() throws {

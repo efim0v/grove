@@ -31,6 +31,29 @@ struct SnapshotSafeTextField: View {
     }
 }
 
+/// Static menu-Picker lookalike for snapshot rendering: Picker(.menu) is
+/// AppKit-backed and draws as a yellow error placeholder under ImageRenderer,
+/// so snapshot-asserted screens show this chip (current value + up/down
+/// chevron) instead. LIVE screens never use it — they render real Pickers.
+struct SnapshotPickerLookalike: View {
+    let text: String
+    var monospaced: Bool = true
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(text)
+                .font(monospaced ? .system(.caption, design: .monospaced) : .caption)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.white.opacity(0.2)))
+    }
+}
+
 /// Pure-SwiftUI stepper (NSStepper renders as an error placeholder offscreen).
 struct SnapshotSafeStepper: View {
     let label: String

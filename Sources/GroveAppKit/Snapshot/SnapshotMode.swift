@@ -84,7 +84,8 @@ public enum SnapshotMode {
             name: "acme.shop",
             path: "/Users/demo/Desktop/acme.shop",
             workspacesRoot: "/Users/demo/Workspaces/acme.shop",
-            baseBranchOverrides: ["acme-server-config-a": "docker"]
+            baseBranchOverrides: ["acme-server-config-a": "docker"],
+            defaultAccount: "work"      // settings.png shows the account picker non-empty
         )
         state.config = GroveConfig(
             version: 1,
@@ -98,6 +99,18 @@ public enum SnapshotMode {
         let now = Date()
         state.snapshots = [project.id: fixtureSnapshot(project: project, now: now)]
         state.selectedProjectID = project.id
+        // What loadBranches would find — offscreen renders must not run git.
+        // Each list contains the repo's resolved default start point, so the
+        // create-sheet/settings pickers show real selections in the PNGs.
+        state.branchesByRepo = [
+            project.path + "/acme_client":
+                ["dev", "feat/folders-followup", "feat/media-pipeline",
+                 "feat/media-upload", "main"],
+            project.path + "/acme_server":
+                ["feat/media-pipeline", "feat/media-upload", "master"],
+            project.path + "/acme-server-config-a":
+                ["docker", "feat/live-tier-redis", "main"],
+        ]
         state.graphRepoPath = project.path + "/acme_client"
         state.graphNodes = fixtureGraphNodes(now: now)
         return state

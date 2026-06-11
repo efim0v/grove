@@ -297,28 +297,24 @@ struct WorkspacesScreen: View {
                 if isSnapshotRender {
                     // ImageRenderer landmine (verified in this task's PNGs):
                     // Menu draws a yellow placeholder offscreen — a plain
-                    // Button stands in with the first-account action.
+                    // Button stands in with the primary (default-account) action.
                     Button("Claude") {
-                        if let account = state.config.accounts.first {
-                            Task {
-                                await state.launchClaude(
-                                    cwd: loose.entry.path,
-                                    title: (loose.entry.path as NSString).lastPathComponent,
-                                    account: account, resume: nil)
-                            }
+                        if let account = state.defaultLaunchAccount {
+                            launchLooseClaude(loose, account: account)
                         }
                     }
                 } else {
                     Menu("Claude") {
                         ForEach(state.config.accounts, id: \.name) { account in
                             Button(account.name) {
-                                Task {
-                                    await state.launchClaude(
-                                        cwd: loose.entry.path,
-                                        title: (loose.entry.path as NSString).lastPathComponent,
-                                        account: account, resume: nil)
-                                }
+                                launchLooseClaude(loose, account: account)
                             }
+                        }
+                    } primaryAction: {
+                        // Single click launches on the project's default
+                        // account (falling back to the first one), spec §6.1.
+                        if let account = state.defaultLaunchAccount {
+                            launchLooseClaude(loose, account: account)
                         }
                     }
                     .menuStyle(.button)
@@ -338,6 +334,14 @@ struct WorkspacesScreen: View {
         .font(.caption)
         .controlSize(.small)
         .help(loose.entry.path)
+    }
+
+    private func launchLooseClaude(_ loose: LooseWorktree, account: AccountConfig) {
+        Task {
+            await state.launchClaude(cwd: loose.entry.path,
+                                     title: (loose.entry.path as NSString).lastPathComponent,
+                                     account: account, resume: nil)
+        }
     }
 
     private func looseSessionRow(_ session: ClaudeSession, loose: LooseWorktree) -> some View {

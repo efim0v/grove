@@ -177,6 +177,32 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertEqual(state.selectedSnapshot?.workspaces.count, 0)
     }
 
+    func testCreateWorkspaceForwardsStartPointOverrides() async throws {
+        let fixture = try saveProjectFixture()
+        // A "dev" branch one commit ahead of main: the override must make the
+        // new worktree start from dev's head, not main's.
+        try FixtureLite.sh("git switch -qc dev", cwd: URL(fileURLWithPath: fixture.repo.path))
+        try FixtureLite.commit(repo: URL(fileURLWithPath: fixture.repo.path),
+                               file: "dev.txt", content: "dev\n", message: "dev work")
+        let devHead = try FixtureLite.sh("git rev-parse dev",
+                                         cwd: URL(fileURLWithPath: fixture.repo.path))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try FixtureLite.sh("git switch -q main", cwd: URL(fileURLWithPath: fixture.repo.path))
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+
+        let maybeReport = await state.createWorkspace(
+            name: "feat-z", branch: "feat/z", repos: [fixture.repo], forkFrom: nil,
+            startPointOverrides: ["alpha": "dev"])
+        let report = try XCTUnwrap(maybeReport)
+
+        XCTAssertNil(report.failure)
+        let worktreePath = fixture.workspacesRoot.appendingPathComponent("feat-z/alpha").path
+        let head = try FixtureLite.sh("git rev-parse HEAD",
+                                      cwd: URL(fileURLWithPath: worktreePath))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(head, devHead)
+    }
+
     func testCreateWorkspaceWithInvalidNameSetsActionError() async throws {
         let fixture = try saveProjectFixture()
         let state = makeState(runner: ScriptedRunner(responses: [:]))

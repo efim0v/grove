@@ -112,6 +112,24 @@ final class SnapshotModeTests: XCTestCase {
     }
 
     @MainActor
+    func testFixturePrefillsBranchesForEveryRepoIncludingResolvedDefaults() {
+        let state = SnapshotMode.fixtureState()
+        let snapshot = state.selectedSnapshot!
+        XCTAssertEqual(Set(state.branchesByRepo.keys), Set(snapshot.repos.map(\.path)))
+        // The create-sheet picker default per repo must be a real option so
+        // the PNGs never show an empty/ghost selection.
+        for repo in snapshot.repos {
+            let resolved = startPointCaption(repo: repo, forkFrom: nil, base: nil,
+                                             snapshot: snapshot)
+            XCTAssertEqual(state.branchesByRepo[repo.path]?.contains(resolved), true,
+                           "\(repo.dirName): \(resolved) missing from fixture branches")
+        }
+        // Per-project default account drives settings.png + New Claude clicks.
+        XCTAssertEqual(state.selectedProject?.defaultAccount, "work")
+        XCTAssertEqual(state.defaultLaunchAccount?.name, "work")
+    }
+
+    @MainActor
     func testFixtureStateTouchesNoRealConfig() {
         let state = SnapshotMode.fixtureState()
         XCTAssertNil(state.configIssue)               // nonexistent temp path -> clean defaults

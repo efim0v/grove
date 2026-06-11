@@ -204,7 +204,7 @@ struct WorkspaceRowCard: View {
                 // Menu draws a yellow placeholder offscreen — a plain Button
                 // (which renders fine) stands in with the primary action.
                 Button("New Claude") {
-                    if let account = state.config.accounts.first { launch(account: account) }
+                    if let account = state.defaultLaunchAccount { launch(account: account) }
                 }
             } else {
                 Menu("New Claude") {
@@ -212,8 +212,9 @@ struct WorkspaceRowCard: View {
                         Button(account.name) { launch(account: account) }
                     }
                 } primaryAction: {
-                    // Single click launches on the first (default) account, spec §6.1.
-                    if let account = state.config.accounts.first { launch(account: account) }
+                    // Single click launches on the project's default account
+                    // (falling back to the first one), spec §6.1.
+                    if let account = state.defaultLaunchAccount { launch(account: account) }
                 }
                 .menuStyle(.button)
                 .fixedSize()

@@ -72,3 +72,32 @@ public func startPointCaption(repo: RepoInfo,
     }
     return "main"
 }
+
+/// Options for a repo's start-point picker: the repo's local branch list with
+/// the resolved default prepended when it is not already listed (the default
+/// can be a parent's feature branch or a not-yet-fetched override). An
+/// empty/not-yet-loaded branch list degrades to just the default.
+public func startPointOptions(default resolved: String, branches: [String]) -> [String] {
+    branches.contains(resolved) ? branches : [resolved] + branches
+}
+
+/// Start-point overrides to pass to createWorkspace, keyed by repo dirName
+/// (the key WorkspaceService expects): only selections that DIFFER from the
+/// repo's resolved default (startPointCaption) count — picking the default is
+/// not an override, so creation keeps its normal resolution for those repos.
+public func resolvedStartPointOverrides(repos: [RepoInfo],
+                                        selections: [String: String],
+                                        forkFrom: FeatureWorkspace?,
+                                        base: String?,
+                                        snapshot: ProjectSnapshot) -> [String: String] {
+    var overrides: [String: String] = [:]
+    for repo in repos {
+        guard let selected = selections[repo.path] else { continue }
+        let resolved = startPointCaption(repo: repo, forkFrom: forkFrom,
+                                         base: base, snapshot: snapshot)
+        if selected != resolved {
+            overrides[repo.dirName] = selected
+        }
+    }
+    return overrides
+}

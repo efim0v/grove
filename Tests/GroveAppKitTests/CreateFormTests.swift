@@ -94,4 +94,57 @@ final class CreateFormTests: XCTestCase {
         XCTAssertEqual(startPointCaption(repo: fresh, forkFrom: nil, base: nil, snapshot: snapshot),
                        "main")
     }
+
+    // MARK: startPointOptions
+
+    func testOptionsKeepBranchListWhenDefaultIsListed() {
+        XCTAssertEqual(startPointOptions(default: "dev", branches: ["dev", "main"]),
+                       ["dev", "main"])
+    }
+
+    func testOptionsPrependUnlistedDefault() {
+        XCTAssertEqual(startPointOptions(default: "feat/parent", branches: ["dev", "main"]),
+                       ["feat/parent", "dev", "main"])
+    }
+
+    func testOptionsDegradeToJustTheDefaultWhenBranchesNotLoaded() {
+        XCTAssertEqual(startPointOptions(default: "docker", branches: []), ["docker"])
+    }
+
+    // MARK: resolvedStartPointOverrides
+
+    func testOverridesOmitSelectionsMatchingTheResolvedDefault() {
+        // server resolves to "dev" (scan meta) — selecting "dev" is not an override.
+        let overrides = resolvedStartPointOverrides(
+            repos: [server], selections: [server.path: "dev"],
+            forkFrom: nil, base: nil, snapshot: snapshot)
+        XCTAssertTrue(overrides.isEmpty)
+    }
+
+    func testOverridesKeyDifferingSelectionsByDirName() {
+        let overrides = resolvedStartPointOverrides(
+            repos: [server, configA],
+            selections: [server.path: "release/1.2", configA.path: "docker"],
+            forkFrom: nil, base: nil, snapshot: snapshot)
+        // configA's selection equals its baseBranchOverrides default -> dropped.
+        XCTAssertEqual(overrides, ["server": "release/1.2"])
+    }
+
+    func testOverridesIgnoreReposWithoutASelection() {
+        let overrides = resolvedStartPointOverrides(
+            repos: [server, client], selections: [client.path: "hotfix/1"],
+            forkFrom: nil, base: nil, snapshot: snapshot)
+        XCTAssertEqual(overrides, ["client": "hotfix/1"])
+    }
+
+    func testOverridesRespectForkFromDefaults() {
+        // Fork-from covers server (default feat/parent): selecting it is no override;
+        // selecting something else is.
+        XCTAssertTrue(resolvedStartPointOverrides(
+            repos: [server], selections: [server.path: "feat/parent"],
+            forkFrom: parent, base: nil, snapshot: snapshot).isEmpty)
+        XCTAssertEqual(resolvedStartPointOverrides(
+            repos: [server], selections: [server.path: "dev"],
+            forkFrom: parent, base: nil, snapshot: snapshot), ["server": "dev"])
+    }
 }

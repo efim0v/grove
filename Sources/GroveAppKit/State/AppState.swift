@@ -25,6 +25,9 @@ public final class AppState: ObservableObject {
     @Published public var graphNodes: [CommitNode] = []
     /// True when the last graph page came back full — drives the "Load more" row.
     @Published public var graphCanLoadMore: Bool = false
+    /// Local branch names per repo (key = repo.path), filled by loadBranches.
+    /// Branch pickers fall back to the resolved default while a repo is absent.
+    @Published public var branchesByRepo: [String: [String]] = [:]
 
     private let configStore: ConfigStore
 
@@ -63,6 +66,17 @@ public final class AppState: ObservableObject {
 
     public var selectedSnapshot: ProjectSnapshot? {
         selectedProjectID.flatMap { snapshots[$0] }
+    }
+
+    /// Account a single-click "New Claude" launches on (spec §6.1): the
+    /// selected project's defaultAccount when it names a configured account,
+    /// else the first account. The account MENUS always list all accounts.
+    public var defaultLaunchAccount: AccountConfig? {
+        if let name = selectedProject?.defaultAccount,
+           let account = config.accounts.first(where: { $0.name == name }) {
+            return account
+        }
+        return config.accounts.first
     }
 
     // MARK: - Persistence
@@ -147,6 +161,28 @@ extension AppState {
         let snapshot = await workspaceService.scan(project: project)
         snapshots[project.id] = snapshot
         isScanning = false
+    }
+
+    /// Refreshes branchesByRepo for `repos`, concurrently (one git call per
+    /// repo). Existing entries for these repos are REPLACED — a deleted branch
+    /// disappears from the pickers on the next load — while entries for other
+    /// repos are left alone. localBranches never throws ([] on failure), so
+    /// non-repos degrade to an empty list and the pickers fall back to the
+    /// resolved default.
+    public func loadBranches(for repos: [RepoInfo]) async {
+        let fresh = await withTaskGroup(of: (String, [String]).self) { group in
+            for repo in repos {
+                group.addTask { [path = repo.path] in
+                    (path, await GitService().localBranches(repoPath: path))
+                }
+            }
+            var collected: [String: [String]] = [:]
+            for await (path, branches) in group {
+                collected[path] = branches
+            }
+            return collected
+        }
+        branchesByRepo.merge(fresh) { _, new in new }
     }
 }
 
@@ -246,12 +282,16 @@ extension AppState {
 extension AppState {
     /// nil = no project selected. A report with a non-nil failure also sets
     /// actionError; the sheet additionally shows report.logLines.
+    /// startPointOverrides (keyed by repo dirName) beat both the resolved base
+    /// branch and any fork-from parent branch — see WorkspaceService.
     public func createWorkspace(name: String, branch: String, repos: [RepoInfo],
-                                forkFrom: FeatureWorkspace?) async -> CreationReport? {
+                                forkFrom: FeatureWorkspace?,
+                                startPointOverrides: [String: String] = [:]) async -> CreationReport? {
         guard let project = selectedProject else { return nil }
         let report = await workspaceService.createWorkspace(project: project, name: name,
                                                             branch: branch, repos: repos,
-                                                            forkFrom: forkFrom)
+                                                            forkFrom: forkFrom,
+                                                            startPointOverrides: startPointOverrides)
         if let failure = report.failure {
             actionError = failure
         }

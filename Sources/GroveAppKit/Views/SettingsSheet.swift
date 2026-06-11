@@ -4,9 +4,11 @@ import GroveCore
 
 /// Settings sheet (spec §6.4). Global: the workspaces-root template.
 /// Per selected project: read-only path, workspacesRoot override,
-/// branchTemplate, baseBranchOverrides and postCreateHooks dictionaries with
-/// add/remove rows, excludedRepos, scanDepth. Add project = NSOpenPanel
-/// (live interaction only — never constructed during snapshot rendering).
+/// branchTemplate, a default-Claude-account picker, repo-aware base-branch
+/// override rows (branch picker per scanned repo, "auto" = detect), the
+/// postCreateHooks dictionary with add/remove rows, excludedRepos, scanDepth.
+/// Add project = NSOpenPanel (live interaction only — never constructed
+/// during snapshot rendering).
 ///
 /// DOCUMENTED DEVIATION from spec §6.4: there is no separate GLOBAL
 /// default-branch-template field — ProjectConfig.branchTemplate already
@@ -20,8 +22,6 @@ struct SettingsSheet: View {
     var onClose: () -> Void = {}
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
-    @State private var newOverrideRepo = ""
-    @State private var newOverrideBranch = ""
     @State private var newHookRepo = ""
     @State private var newHookCommand = ""
     @State private var newExcludedRepo = ""
@@ -43,6 +43,11 @@ struct SettingsSheet: View {
         }
         .frame(width: 540)
         .fixedSize(horizontal: false, vertical: true)
+        .task {
+            // Fill the base-branch-override pickers; rows degrade to text
+            // fields until then. Never runs under ImageRenderer.
+            await state.loadBranches(for: state.selectedSnapshot?.repos ?? [])
+        }
     }
 
     private var header: some View {
@@ -122,14 +127,9 @@ struct SettingsSheet: View {
                                       monospaced: true)
             }
 
-            dictEditor(title: "Base branch overrides",
-                       dict: project.baseBranchOverrides,
-                       keyTitle: "repo dir", valueTitle: "branch",
-                       newKey: $newOverrideRepo, newValue: $newOverrideBranch) { mutated in
-                var updated = project
-                updated.baseBranchOverrides = mutated
-                state.updateProject(updated)
-            }
+            defaultAccountRow(project)
+
+            baseBranchOverridesEditor(project)
 
             dictEditor(title: "Post-create hooks (zsh, run in the new worktree)",
                        dict: project.postCreateHooks,
@@ -185,7 +185,133 @@ struct SettingsSheet: View {
         )
     }
 
-    // MARK: - Dictionary editor (overrides / hooks)
+    // MARK: - Default Claude account (per project)
+
+    /// "New Claude" single-click launches on this account (spec: per-project
+    /// default); "none" = nil = first configured account. The account menus
+    /// everywhere still list all accounts.
+    private func defaultAccountRow(_ project: ProjectConfig) -> some View {
+        row("Default Claude account") {
+            if isSnapshotRender {
+                // Picker(.menu) renders as a yellow placeholder offscreen.
+                SnapshotPickerLookalike(text: currentProject(project).defaultAccount ?? "none",
+                                        monospaced: false)
+            } else {
+                Picker("", selection: defaultAccountBinding(project)) {
+                    Text("none").tag(String?.none)
+                    ForEach(state.config.accounts, id: \.name) { account in
+                        Text(account.name).tag(String?.some(account.name))
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+            }
+            Text("single-click New Claude uses it")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func defaultAccountBinding(_ project: ProjectConfig) -> Binding<String?> {
+        Binding(
+            get: { currentProject(project).defaultAccount },
+            set: { value in
+                var current = currentProject(project)
+                current.defaultAccount = value
+                state.updateProject(current)
+            }
+        )
+    }
+
+    /// Always the CURRENT copy from state.config (the captured `project`
+    /// value goes stale after any edit in the same sheet session).
+    private func currentProject(_ project: ProjectConfig) -> ProjectConfig {
+        state.config.projects.first { $0.id == project.id } ?? project
+    }
+
+    // MARK: - Base branch overrides (repo-aware rows)
+
+    /// One row per repo of the project's scan snapshot (plus override keys the
+    /// scan does not know, so stale entries stay removable): a branch picker
+    /// over the repo's local branches where "auto" removes the override
+    /// (-> GitService auto-detect). Repos without a branch list (not loaded /
+    /// unknown path) degrade to a snapshot-safe text field.
+    private func baseBranchOverridesEditor(_ project: ProjectConfig) -> some View {
+        let overrides = currentProject(project).baseBranchOverrides
+        let rows = overrideEditorRows(snapshot: state.selectedSnapshot, overrides: overrides)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Base branch overrides (auto = detect from origin/HEAD)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(rows) { overrideRow in
+                HStack(spacing: 6) {
+                    Text(overrideRow.dirName)
+                        .font(.system(.caption, design: .monospaced))
+                    Image(systemName: "arrow.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    overrideControl(project: project, row: overrideRow,
+                                    current: overrides[overrideRow.dirName])
+                    Spacer()
+                }
+            }
+            if rows.isEmpty {
+                Text("No repos scanned yet — refresh the project first (⌘R).")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func overrideControl(project: ProjectConfig, row: OverrideEditorRow,
+                                 current: String?) -> some View {
+        let branches = row.repoPath.flatMap { state.branchesByRepo[$0] } ?? []
+        if isSnapshotRender {
+            // Picker(.menu)/TextField both render as yellow placeholders
+            // offscreen — one static lookalike covers either control.
+            SnapshotPickerLookalike(text: current ?? "auto")
+        } else if branches.isEmpty {
+            SnapshotSafeTextField(title: "auto", text: overrideBinding(project, dirName: row.dirName),
+                                  monospaced: true)
+                .frame(width: 180)
+        } else {
+            Picker("", selection: overrideBinding(project, dirName: row.dirName)) {
+                Text("auto").tag("")
+                // An override naming a branch git no longer has still needs a
+                // matching tag, or the Picker shows an empty selection.
+                ForEach(current.map { startPointOptions(default: $0, branches: branches) } ?? branches,
+                        id: \.self) { branch in
+                    Text(branch).tag(branch)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .controlSize(.small)
+            .fixedSize()
+        }
+    }
+
+    /// "" <-> no override (key removed -> auto-detect at scan/create time).
+    private func overrideBinding(_ project: ProjectConfig, dirName: String) -> Binding<String> {
+        Binding(
+            get: { currentProject(project).baseBranchOverrides[dirName] ?? "" },
+            set: { value in
+                var current = currentProject(project)
+                let trimmed = value.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty {
+                    current.baseBranchOverrides.removeValue(forKey: dirName)
+                } else {
+                    current.baseBranchOverrides[dirName] = trimmed
+                }
+                state.updateProject(current)
+            }
+        )
+    }
+
+    // MARK: - Dictionary editor (post-create hooks)
 
     private func dictEditor(title: String, dict: [String: String],
                             keyTitle: String, valueTitle: String,
