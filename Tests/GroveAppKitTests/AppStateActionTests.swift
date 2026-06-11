@@ -211,6 +211,86 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(args[commandIndex + 1].contains("--resume '\(id)'"))
     }
 
+    /// Cross-account resume when the owning account is no longer in config: the
+    /// transcript can't be located to copy, so resuming would only surface "No
+    /// conversation found" in the terminal. resumeSession must abort with an
+    /// actionError and launch nothing (issue 3).
+    func testResumeSessionCrossAccountWithMissingOwnerSetsActionErrorAndDoesNotLaunch() async throws {
+        // config has only the target account; the owner "ghost" is absent.
+        let target = AccountConfig(name: "work", configDir: "/tmp/grove-test-claude")
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [target]))
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        let session = ClaudeSession(id: "sess-ghost", cwd: "/ws/feat-x", title: nil,
+                                    lastActivity: Date(), accountName: "ghost", gitBranch: nil)
+
+        await state.resumeSession(session, as: target)
+
+        let error = try XCTUnwrap(state.actionError)
+        XCTAssertTrue(error.contains("ghost"), "got: \(error)")
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty,
+                      "no launch when the transcript can't be located")
+    }
+
+    /// Cross-account resume when the source jsonl is absent: copySession returns
+    /// false and the target holds no prior copy, so the lookup would fail.
+    /// resumeSession must abort with an actionError and launch nothing (issue 3).
+    func testResumeSessionCrossAccountWithMissingSourceJsonlSetsActionErrorAndDoesNotLaunch() async throws {
+        let srcDir = root.appendingPathComponent("acc-src-empty")
+        let dstDir = root.appendingPathComponent("acc-dst-empty")
+        let source = AccountConfig(name: "owner", configDir: srcDir.path)
+        let target = AccountConfig(name: "work", configDir: dstDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [source, target]))
+        // Neither account has the transcript on disk.
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        let session = ClaudeSession(id: "sess-missing", cwd: "/ws/feat-x", title: nil,
+                                    lastActivity: Date(), accountName: "owner", gitBranch: nil)
+
+        await state.resumeSession(session, as: target)
+
+        let error = try XCTUnwrap(state.actionError)
+        XCTAssertTrue(error.contains("not found"), "got: \(error)")
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)
+    }
+
+    /// When copySession returns false because the target ALREADY holds the
+    /// transcript (a prior resume), that's harmless: the target resumes its own
+    /// copy. resumeSession must launch and set NO actionError (issue 3 guard
+    /// must not over-fire).
+    func testResumeSessionCrossAccountWhenTargetAlreadyHasCopyLaunchesWithoutError() async throws {
+        let cwd = "/ws/feat-x"
+        let id = "sess-existing"
+        let srcDir = root.appendingPathComponent("acc-src-exist")
+        let dstDir = root.appendingPathComponent("acc-dst-exist")
+        let source = AccountConfig(name: "owner", configDir: srcDir.path)
+        let target = AccountConfig(name: "work", configDir: dstDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [source, target]))
+        let mangled = ClaudeService.mangle(cwd)
+        // Both source and target already hold the jsonl -> copySession returns false.
+        for dir in [srcDir, dstDir] {
+            let projects = dir.appendingPathComponent("projects").appendingPathComponent(mangled)
+            try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+            try "transcript".write(to: projects.appendingPathComponent("\(id).jsonl"),
+                                   atomically: true, encoding: .utf8)
+        }
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        let session = ClaudeSession(id: id, cwd: cwd, title: nil,
+                                    lastActivity: Date(), accountName: "owner", gitBranch: nil)
+
+        await state.resumeSession(session, as: target)
+
+        XCTAssertNil(state.actionError, "an existing target copy is valid, not an error")
+        XCTAssertEqual(runner.calls(startingWith: "new-workspace").count, 1)
+    }
+
     // MARK: - createWorkspace / rollback (real git fixture)
 
     private func saveProjectFixture() throws -> (project: ProjectConfig, repo: RepoInfo, workspacesRoot: URL) {

@@ -347,12 +347,32 @@ extension AppState {
     /// copying the transcript into the target account's identical projects path
     /// first — the lookup layer resolves the copied jsonl; auth comes from the
     /// target account's keychain at runtime. Same-account resume copies nothing.
-    /// A copy failure lands in actionError and aborts the launch.
+    /// Any reason the copied transcript wouldn't be resolvable (owning account
+    /// missing from config, source jsonl absent and no prior target copy, or a
+    /// FileManager error) lands in actionError and aborts the launch, rather than
+    /// surfacing only as "No conversation found" inside the spawned terminal.
     public func resumeSession(_ session: ClaudeSession, as account: AccountConfig) async {
-        if account.name != session.accountName,
-           let source = config.accounts.first(where: { $0.name == session.accountName }) {
+        if account.name != session.accountName {
+            guard let source = config.accounts.first(where: { $0.name == session.accountName }) else {
+                // The owning account is gone from config — we can't locate the
+                // transcript to copy, so the spawned terminal would only show
+                // "No conversation found". Surface it here instead.
+                actionError = "Can't resume as \(account.name): the owning account "
+                    + "“\(session.accountName)” is no longer configured."
+                return
+            }
             do {
-                try ClaudeService().copySession(session, from: source, to: account)
+                // false = the source transcript wasn't found (or the target copy
+                // already exists). The "already exists" case is harmless — the
+                // target can resume its own copy — but a missing source means the
+                // lookup will fail in the terminal, so verify before launching.
+                let copied = try ClaudeService().copySession(session, from: source, to: account)
+                if !copied, !targetHasTranscript(session, account: account) {
+                    actionError = "Can't resume as \(account.name): transcript for "
+                        + "session \(session.id.prefix(8)) not found under "
+                        + "“\(session.accountName)”."
+                    return
+                }
             } catch {
                 actionError = String(describing: error)
                 return
@@ -360,6 +380,16 @@ extension AppState {
         }
         let title = session.title ?? (session.cwd as NSString).lastPathComponent
         await launchClaude(cwd: session.cwd, title: title, account: account, resume: session.id)
+    }
+
+    /// Whether `account` already holds the session's transcript at its identical
+    /// projects/<mangle(cwd)>/ path — i.e. a prior copy makes the resume valid
+    /// even when copySession returns false ("already exists").
+    private func targetHasTranscript(_ session: ClaudeSession, account: AccountConfig) -> Bool {
+        let mangled = ClaudeService.mangle(session.cwd)
+        let jsonl = expandTilde(account.configDir)
+            + "/projects/" + mangled + "/" + session.id + ".jsonl"
+        return FileManager.default.fileExists(atPath: jsonl)
     }
 }
 
