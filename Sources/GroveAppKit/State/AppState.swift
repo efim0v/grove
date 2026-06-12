@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 import GroveCore
 
 /// Capsule tab strip inside the project scope (Workspaces | Graph | Claude).
@@ -28,6 +29,10 @@ public final class AppState: ObservableObject {
     @Published public var config: GroveConfig
     @Published public var configIssue: String?
     @Published public var snapshots: [UUID: ProjectSnapshot] = [:]
+    /// Per-account analytics (Task 3) + capture snapshots (Task 6), filled by
+    /// refreshUsage on the scan tick. Empty until the first refresh.
+    @Published public var usageByAccount: [String: AccountUsageAnalytics] = [:]
+    @Published public var snapshotsByAccount: [String: [UsageSnapshot]] = [:]
     @Published public var selectedProjectID: UUID?
     @Published public var selectedTab: MainTab = .workspaces
     /// The panel's current full-screen state. Mutate via open()/goBack() so
@@ -570,6 +575,12 @@ extension AppState {
         statuslineScriptDirOverride
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("Grove/bin").path
+    }
+
+    /// Opens the account's config dir in Finder (`open <configDir>`). Snapshot-safe
+    /// callers gate this off; production reveals the real dir.
+    public func openConfigDir(_ account: AccountConfig) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: expandTilde(account.configDir)))
     }
 
     /// Installs the grove statusline wrapper for `account`, saving its prior

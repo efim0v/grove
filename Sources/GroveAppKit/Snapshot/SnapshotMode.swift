@@ -379,7 +379,8 @@ public enum SnapshotMode {
         guard account.name == "default" else { return nil }
         return AccountIdentity(email: "artem@example.com",
                                organization: "Personal",
-                               tier: "max_20x")
+                               tier: "max_20x",
+                               organizationRateLimitTier: "default_claude_max_20x")
     }
 
     // MARK: - Rendering

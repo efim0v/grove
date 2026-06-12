@@ -84,12 +84,16 @@ struct AccountsScreen: View {
                 Spacer()
                 usageSummary(usage, account: account)
                 sharedStoreControl(account)
+                monitorControl(account)
+                rootDirControl(account)
                 Button("Remove") {
                     state.removeAccount(name: account.name)
                 }
                 .controlSize(.small)
                 .help("Removes the account from Grove's config only — \(account.configDir) is untouched")
             }
+            limitBars(account)
+            usageTable(account)
             if isExpanded && !usage.entries.isEmpty {
                 Divider()
                 drillDown(usage)
@@ -102,10 +106,52 @@ struct AccountsScreen: View {
         .glassCard()
     }
 
+    /// Reveals the account's config dir in Finder. Snapshot-safe: a Button is
+    /// AppKit-backed and draws offscreen, so render a plain Image in snapshot mode.
+    @ViewBuilder
+    private func rootDirControl(_ account: AccountConfig) -> some View {
+        if isSnapshotRender {
+            Image(systemName: "folder").foregroundStyle(.secondary)
+        } else {
+            Button { state.openConfigDir(account) } label: { Image(systemName: "folder") }
+                .controlSize(.small)
+                .help("Reveal \(account.configDir) in Finder")
+        }
+    }
+
+    /// Monitoring toggle: a green "monitoring" label + "Stop" when active, else a
+    /// "Monitor" button. Snapshot-safe plain-label fallback for the buttons.
+    @ViewBuilder
+    private func monitorControl(_ account: AccountConfig) -> some View {
+        if account.monitoring {
+            HStack(spacing: 4) {
+                Label("monitoring", systemImage: "dot.radiowaves.left.and.right")
+                    .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                if isSnapshotRender {
+                    Text("Stop").font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Button("Stop") { state.disableMonitoring(account) }
+                        .controlSize(.small)
+                        .help("Restores the original statusline command")
+                }
+            }
+        } else if isSnapshotRender {
+            Text("Monitor").font(.caption2).foregroundStyle(Color.accentColor)
+        } else {
+            Button("Monitor") { state.installMonitoring(account) }
+                .controlSize(.small)
+                .help("Installs Grove's statusline wrapper to capture usage")
+        }
+    }
+
     private func identityLine(_ account: AccountConfig) -> some View {
         Group {
             if let identity = identityProvider(account) {
-                Text([identity.email, identity.organization, identity.tier]
+                // FIX I2: prefer the CANONICAL organizationRateLimitTier (the namespace
+                // RateLimitModel.tierWeights keys on) so the card's tier matches the
+                // weight table; fall back to the legacy `tier` (userRateLimitTier).
+                let tier = identity.organizationRateLimitTier ?? identity.tier
+                Text([identity.email, identity.organization, tier]
                         .compactMap { $0 }
                         .joined(separator: " · "))
                     .foregroundStyle(.secondary)
@@ -115,6 +161,137 @@ struct AccountsScreen: View {
             }
         }
         .font(.caption)
+    }
+
+    // MARK: - Limit bars (5h / 7d) from the most-recent capture snapshot
+
+    /// Two limit bars (5-hour, 7-day) sourced from the most-recently captured
+    /// snapshot for this account; a hint to enable Monitoring when none exists.
+    @ViewBuilder
+    private func limitBars(_ account: AccountConfig) -> some View {
+        let snapshots = state.snapshotsByAccount[account.name] ?? []
+        if let latest = snapshots.max(by: { ($0.capturedAt ?? .distantPast) < ($1.capturedAt ?? .distantPast) }) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let five = latest.fiveHour {
+                    limitBarRow(title: "5h", window: five)
+                }
+                if let seven = latest.sevenDay {
+                    limitBarRow(title: "7d", window: seven)
+                }
+                if latest.fiveHour == nil && latest.sevenDay == nil {
+                    Text("no rate-limit data in last capture")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.top, 2)
+        } else {
+            Text("no recent capture — enable Monitoring")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .padding(.top, 2)
+        }
+    }
+
+    private func limitBarRow(title: String, window: CapturedWindow) -> some View {
+        let bar = LimitBar(usedPercentage: window.usedPercentage,
+                           resetsAt: window.resetsAt, now: Date())
+        return HStack(spacing: 6) {
+            Text(title)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .frame(width: 22, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.secondary.opacity(0.15))
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(barColor(bar.level))
+                        .frame(width: geo.size.width * min(1, max(0, bar.usedPercentage / 100)))
+                }
+            }
+            .frame(height: 6)
+            Text("\(Int(bar.usedPercentage.rounded()))%")
+                .font(.caption2).foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .trailing)
+            if !bar.resetCaption.isEmpty {
+                Text(bar.resetCaption)
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func barColor(_ level: CapacityLevel) -> Color {
+        switch level {
+        case .plenty: return .green
+        case .tight: return .orange
+        case .critical: return .red
+        case .noData: return .secondary
+        }
+    }
+
+    // MARK: - today / month token+cost table + model breakdown
+
+    /// today / this-month token+cost table plus a model-share breakdown, sourced
+    /// from UsageAnalytics. Renders nothing until the first usage refresh populates
+    /// `usageByAccount`.
+    @ViewBuilder
+    private func usageTable(_ account: AccountConfig) -> some View {
+        if let analytics = state.usageByAccount[account.name] {
+            VStack(alignment: .leading, spacing: 3) {
+                usageRow(label: "today", totals: analytics.today)
+                usageRow(label: "month", totals: analytics.thisMonth)
+                modelBreakdownRow(analytics)
+                if !analytics.unpricedModels.isEmpty {
+                    Text("unpriced: \(analytics.unpricedModels.joined(separator: ", "))")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private func usageRow(label: String, totals: UsageTotals) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .leading)
+            Text("\(compactTokens(totals.inputTokens + totals.outputTokens)) tok")
+                .font(.caption2).foregroundStyle(.secondary)
+            Text(formatUSD(totals.cost))
+                .font(.caption2).foregroundStyle(.secondary)
+            Spacer()
+        }
+    }
+
+    private func modelBreakdownRow(_ analytics: AccountUsageAnalytics) -> some View {
+        // Account-wide token share per model: sum every session's per-model totals.
+        var tokensByModel: [String: Int] = [:]
+        for session in analytics.sessions.values {
+            for (model, tokens) in session.modelBreakdown {
+                tokensByModel[model, default: 0] += tokens
+            }
+        }
+        let percentages = modelBreakdownPercentages(tokensByModel)
+        return Group {
+            if !percentages.isEmpty {
+                Text(percentages.sorted { $0.value > $1.value }
+                        .map { "\($0.key) \(Int($0.value.rounded()))%" }
+                        .joined(separator: " · "))
+                    .font(.caption2).foregroundStyle(.tertiary)
+            } else {
+                EmptyView()
+            }
+        }
+    }
+
+    private func compactTokens(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 { return String(format: "%.1fM", Double(tokens) / 1_000_000) }
+        if tokens >= 1_000 { return String(format: "%.1fk", Double(tokens) / 1_000) }
+        return String(tokens)
+    }
+
+    private func formatUSD(_ amount: Double) -> String {
+        String(format: "$%.2f", amount)
     }
 
     @ViewBuilder

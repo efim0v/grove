@@ -262,6 +262,11 @@ func gitISODate(_ raw: String) -> Date? {
     return isoDatePlain.date(from: s) ?? isoDateWithFractional.date(from: s)
 }
 
+/// Public ISO8601 parse shim forwarding to the package-internal `gitISODate`,
+/// so cross-module callers (GroveAppKit's UsagePresentation) can parse the same
+/// fractional/plain variants without exposing the internal name.
+public func parseISODate(_ raw: String) -> Date? { gitISODate(raw) }
+
 // MARK: - Worktree meta
 
 extension GitService {

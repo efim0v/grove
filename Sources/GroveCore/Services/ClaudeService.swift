@@ -4,11 +4,17 @@ public struct AccountIdentity: Sendable, Equatable {
     public let email: String?
     public let organization: String?
     public let tier: String?
+    /// FIX I2: the CANONICAL tier namespace `RateLimitModel.tierWeights` keys on
+    /// (e.g. `default_claude_max_20x`) — distinct from `tier`'s `userRateLimitTier`
+    /// namespace (e.g. `max_20x`). The accounts card surfaces this one.
+    public let organizationRateLimitTier: String?
 
-    public init(email: String?, organization: String?, tier: String?) {
+    public init(email: String?, organization: String?, tier: String?,
+                organizationRateLimitTier: String? = nil) {
         self.email = email
         self.organization = organization
         self.tier = tier
+        self.organizationRateLimitTier = organizationRateLimitTier
     }
 }
 
@@ -101,7 +107,8 @@ public final class ClaudeService {
         return AccountIdentity(
             email: oauth["emailAddress"] as? String,
             organization: oauth["organizationName"] as? String,
-            tier: oauth["userRateLimitTier"] as? String
+            tier: oauth["userRateLimitTier"] as? String,
+            organizationRateLimitTier: oauth["organizationRateLimitTier"] as? String
         )
     }
 
