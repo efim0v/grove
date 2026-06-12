@@ -20,6 +20,9 @@ struct ProjectSettingsScreen: View {
     @State private var newHookRepo = ""
     @State private var newHookCommand = ""
     @State private var newExcludedRepo = ""
+    @State private var newSeedSource = ""
+    @State private var newSeedMode: SeedMode = .symlink
+    @State private var newSeedDest: SeedDest = .umbrella
 
     /// Always the CURRENT copy in state.config (edits replace it there).
     private var project: ProjectConfig? {
@@ -66,49 +69,60 @@ struct ProjectSettingsScreen: View {
     }
 
     private func form(_ project: ProjectConfig) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            row("Path") {
-                Text(project.path)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            row("Workspaces root") {
-                SnapshotSafeTextField(title: "default (from template)",
-                                      text: workspacesRootBinding(project), monospaced: true)
-            }
-            row("Branch template") {
-                SnapshotSafeTextField(title: "feat/{name}",
-                                      text: binding(\.branchTemplate, of: project),
-                                      monospaced: true)
-            }
-
-            defaultAccountRow(project)
-
-            baseBranchOverridesEditor(project)
-
-            dictEditor(title: "Post-create hooks (zsh, run in the new worktree)",
-                       dict: project.postCreateHooks,
-                       keyTitle: "repo dir", valueTitle: "command",
-                       newKey: $newHookRepo, newValue: $newHookCommand) { mutated in
-                var updated = project
-                updated.postCreateHooks = mutated
-                state.updateProject(updated)
+        VStack(alignment: .leading, spacing: 10) {
+            SettingsSection(title: "General") {
+                LabeledRow(label: "Path") {
+                    Text(project.path)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                LabeledRow(label: "Workspaces root") {
+                    SnapshotSafeTextField(title: "default (from template)",
+                                          text: workspacesRootBinding(project), monospaced: true)
+                }
+                LabeledRow(label: "Branch template") {
+                    SnapshotSafeTextField(title: "feat/{name}",
+                                          text: binding(\.branchTemplate, of: project), monospaced: true)
+                }
+                LabeledRow(label: "Scan depth") {
+                    SnapshotSafeStepper(label: "", value: binding(\.scanDepth, of: project), range: 1...8)
+                }
             }
 
-            excludedReposEditor(project)
-
-            SnapshotSafeStepper(label: "Scan depth",
-                                value: binding(\.scanDepth, of: project),
-                                range: 1...8)
-
-            Button("Remove project from Grove", role: .destructive) {
-                state.removeProject(id: project.id)
-                state.open(.projects)
+            SettingsSection(title: "Workspaces & seeds",
+                            subtitle: "files copied/symlinked into each new workspace") {
+                seedFilesEditor(project)
             }
-            .controlSize(.small)
-            .help("Config only — no repos or worktrees are touched")
+
+            SettingsSection(title: "Claude") {
+                defaultAccountRow(project)
+            }
+
+            SettingsSection(title: "Repos") {
+                baseBranchOverridesEditor(project)
+                excludedReposEditor(project)
+            }
+
+            SettingsSection(title: "Hooks") {
+                dictEditor(title: "Post-create hooks (zsh, run in the new worktree)",
+                           dict: project.postCreateHooks,
+                           keyTitle: "repo dir", valueTitle: "command",
+                           newKey: $newHookRepo, newValue: $newHookCommand) { mutated in
+                    var updated = project
+                    updated.postCreateHooks = mutated
+                    state.updateProject(updated)
+                }
+            }
+
+            SettingsSection(title: "Danger") {
+                Button("Remove project from Grove", role: .destructive) {
+                    state.removeProject(id: project.id)
+                    state.open(.projects)
+                }
+                .controlSize(.small)
+                .help("Config only — no repos or worktrees are touched")
+            }
         }
     }
 
@@ -149,7 +163,7 @@ struct ProjectSettingsScreen: View {
     /// default); "none" = nil = first configured account. The account menus
     /// everywhere still list all accounts.
     private func defaultAccountRow(_ project: ProjectConfig) -> some View {
-        row("Default Claude account") {
+        LabeledRow(label: "Default Claude account") {
             if isSnapshotRender {
                 // Picker(.menu) renders as a yellow placeholder offscreen.
                 SnapshotPickerLookalike(text: currentProject(project).defaultAccount ?? "none",
@@ -320,6 +334,57 @@ struct ProjectSettingsScreen: View {
         }
     }
 
+    // MARK: - Seed files
+
+    private func seedFilesEditor(_ project: ProjectConfig) -> some View {
+        let seeds = currentProject(project).seedFiles
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(seeds.enumerated()), id: \.offset) { index, seed in
+                HStack(spacing: 6) {
+                    Text(seed.source)
+                        .font(.system(.caption, design: .monospaced))
+                    Text("· \(seed.mode.rawValue) → \(seed.dest.rawValue)")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    Spacer()
+                    Button {
+                        var updated = currentProject(project)
+                        updated.seedFiles.remove(at: index)
+                        state.updateProject(updated)
+                    } label: { Image(systemName: "minus.circle") }
+                    .buttonStyle(.plain)
+                }
+            }
+            if seeds.isEmpty {
+                Text("Nothing seeded — e.g. add CLAUDE.md to share it with every workspace.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            HStack(spacing: 6) {
+                SnapshotSafeTextField(title: "path in project (e.g. CLAUDE.md)",
+                                      text: $newSeedSource, monospaced: true)
+                if !isSnapshotRender {
+                    Picker("", selection: $newSeedMode) {
+                        Text("symlink").tag(SeedMode.symlink)
+                        Text("copy").tag(SeedMode.copy)
+                    }.pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
+                    Picker("", selection: $newSeedDest) {
+                        Text("umbrella").tag(SeedDest.umbrella)
+                        Text("each repo").tag(SeedDest.eachRepo)
+                    }.pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
+                }
+                Button("Add") {
+                    let src = newSeedSource.trimmingCharacters(in: .whitespaces)
+                    guard !src.isEmpty else { return }
+                    var updated = currentProject(project)
+                    guard !updated.seedFiles.contains(where: { $0.source == src }) else { return }
+                    updated.seedFiles.append(SeedFile(source: src, mode: newSeedMode, dest: newSeedDest))
+                    state.updateProject(updated)
+                    newSeedSource = ""
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
     // MARK: - Excluded repos
 
     private func excludedReposEditor(_ project: ProjectConfig) -> some View {
@@ -360,12 +425,4 @@ struct ProjectSettingsScreen: View {
         }
     }
 
-    private func row(_ label: String, @ViewBuilder content: () -> some View) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.callout)
-                .frame(width: 130, alignment: .leading)
-            content()
-        }
-    }
 }
