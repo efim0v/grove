@@ -112,6 +112,24 @@ public final class ClaudeService {
         )
     }
 
+    /// The account's `organizationRateLimitTier` (e.g. "default_claude_max_20x")
+    /// from `oauthAccount` in `<configDir>/.claude.json` (or `$HOME/.claude.json`
+    /// for the default account). This is the canonical tier the rate-limit weight
+    /// table (RateLimitModel.tierWeights) keys on — distinct from
+    /// `userRateLimitTier` (identity().tier). nil = not logged in / field absent.
+    public func organizationRateLimitTier(account: AccountConfig) -> String? {
+        let dir = expandTilde(account.configDir)
+        let home = NSHomeDirectory()
+        let jsonPath = (dir == home + "/.claude") ? home + "/.claude.json"
+                                                  : dir + "/.claude.json"
+        guard
+            let data = FileManager.default.contents(atPath: jsonPath),
+            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let oauth = object["oauthAccount"] as? [String: Any]
+        else { return nil }
+        return oauth["organizationRateLimitTier"] as? String
+    }
+
     // MARK: - Sessions
 
     /// Sessions of `account` whose transcript belongs to `cwd`:

@@ -87,6 +87,10 @@ public final class AppState: ObservableObject {
     /// temp dir so install never writes under the real app-support tree.
     internal var statuslineScriptDirOverride: String?
 
+    /// Test seam: account tiers (organizationRateLimitTier). nil = read from each
+    /// account's .claude.json oauthAccount. TESTS inject so aggregate math is hermetic.
+    internal var tierOverride: [String: String]?
+
     public init(configStore: ConfigStore) {
         self.configStore = configStore
         let loaded = configStore.load()
@@ -226,6 +230,10 @@ extension AppState {
     /// Scans the selected project; no-op when nothing is selected. scan() itself
     /// never throws (per-repo/cmux failures degrade into snapshot.errors).
     public func refresh() async {
+        // Usage refresh iterates accounts and is independent of the selected
+        // project; it MUST run for the Accounts route / menu-bar badge even when
+        // nothing is selected, so it goes BEFORE the early-return guard below.
+        refreshUsage(now: Date())
         guard let project = selectedProject else { return }
         isScanning = true
         let snapshot = await workspaceService.scan(project: project)
@@ -602,6 +610,54 @@ extension AppState {
         statuslineScriptDirOverride
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("Grove/bin").path
+    }
+
+    public enum LimitWindow { case fiveHour, sevenDay }
+
+    /// Reads capture snapshots + analytics across accounts (called on the scan tick).
+    /// `now` injected; defaults to Date() ONLY at the production call site.
+    public func refreshUsage(now: Date) {
+        let reader = UsageReader()
+        let analytics = UsageAnalytics()
+        var snaps: [String: [UsageSnapshot]] = [:]
+        var byAcc: [String: AccountUsageAnalytics] = [:]
+        for account in config.accounts {
+            let dir = expandTilde(account.configDir)
+            snaps[account.name] = reader.read(configDir: dir, accountName: account.name)
+            byAcc[account.name] = analytics.account(configDir: dir, accountName: account.name,
+                                                    claudeJSONPath: claudeJSONPath(for: account),
+                                                    now: now)
+        }
+        snapshotsByAccount = snaps
+        usageByAccount = byAcc
+    }
+
+    private func tier(for account: AccountConfig) -> String? {
+        if let t = tierOverride?[account.name] { return t }
+        // Production: the weight table keys on organizationRateLimitTier (e.g.
+        // "default_claude_max_20x"), NOT identity().tier (which is the often-nil
+        // userRateLimitTier). Read the canonical field directly.
+        return ClaudeService().organizationRateLimitTier(account: account)
+    }
+
+    private func claudeJSONPath(for account: AccountConfig) -> String {
+        let dir = expandTilde(account.configDir)
+        return dir == NSHomeDirectory() + "/.claude"
+            ? NSHomeDirectory() + "/.claude.json" : dir + "/.claude.json"
+    }
+
+    /// Aggregate remaining capacity for a window across accounts (spec §C.3): each
+    /// account weighted by tier, combined with its most-recent capture's used%.
+    public func aggregateRemaining(window: LimitWindow, now: Date) -> RateLimitModel.Aggregate {
+        let accounts: [RateLimitModel.AccountWindow] = config.accounts.compactMap { account in
+            guard let latest = snapshotsByAccount[account.name]?
+                .max(by: { ($0.capturedAt ?? .distantPast) < ($1.capturedAt ?? .distantPast) })
+            else { return nil }
+            let captured = window == .fiveHour ? latest.fiveHour : latest.sevenDay
+            guard let used = captured?.usedPercentage else { return nil }
+            return RateLimitModel.AccountWindow(tier: tier(for: account), usedPercentage: used)
+        }
+        return RateLimitModel.aggregateRemaining(accounts)
     }
 
     /// Opens the account's config dir in Finder (`open <configDir>`). Snapshot-safe

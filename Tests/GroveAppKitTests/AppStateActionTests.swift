@@ -690,4 +690,67 @@ final class AppStateActionTests: XCTestCase {
         let line = obj?["statusLine"] as? [String: Any]
         XCTAssertEqual(line?["command"] as? String, original)
     }
+
+    // MARK: - aggregate remaining capacity
+
+    @MainActor
+    func testAggregateRemainingWeightsAccountsByTierFromCaptureSnapshots() async throws {
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+        // Two accounts with tiers + a most-recent 5h capture each.
+        state.config = GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}", projects: [],
+            accounts: [AccountConfig(name: "a", configDir: "/tmp/a"),
+                       AccountConfig(name: "b", configDir: "/tmp/b")])
+        // Inject tiers + capture snapshots directly (no disk).
+        state.tierOverride = ["a": "default_claude_max_20x", "b": "default_claude_max_5x"]
+        state.snapshotsByAccount = [
+            "a": [makeSnapshot(session: "sa", fiveHourUsed: 50)],
+            "b": [makeSnapshot(session: "sb", fiveHourUsed: 0)],
+        ]
+        let agg = state.aggregateRemaining(window: .fiveHour, now: Date())
+        // 20*(1-0.5) + 5*(1-0) = 15 of 25.
+        XCTAssertEqual(agg.remaining, 15, accuracy: 1e-9)
+        XCTAssertEqual(agg.total, 25, accuracy: 1e-9)
+    }
+
+    /// refresh() must populate usage on the Accounts route / menu-bar badge even
+    /// when NO project is selected — refreshUsage runs BEFORE the
+    /// `guard let project = selectedProject` early-return (it iterates accounts).
+    @MainActor
+    func testRefreshPopulatesUsageWithNoSelectedProject() async throws {
+        let accDir = root.appendingPathComponent("acc-no-project")
+        try FileManager.default.createDirectory(at: accDir, withIntermediateDirectories: true)
+        // A capture snapshot the account-scoped reader will pick up.
+        let usageDir = accDir.appendingPathComponent("grove/usage")
+        try FileManager.default.createDirectory(at: usageDir, withIntermediateDirectories: true)
+        try #"""
+        {"capturedAt":"2025-06-15T10:00:00Z","raw":{"session_id":"s1",
+          "workspace":{"current_dir":"/ws/x"},
+          "rate_limits":{"five_hour":{"used_percentage":40,"resets_at":"2025-06-15T13:00:00Z"}}}}
+        """#.write(to: usageDir.appendingPathComponent("s1.json"),
+                   atomically: true, encoding: .utf8)
+        let work = AccountConfig(name: "work", configDir: accDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [work]))
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+        // No project selected — the early-return path.
+        state.selectedProjectID = nil
+
+        await state.refresh()
+
+        XCTAssertNil(state.actionError)
+        // Usage populated despite no selected project (refreshUsage ran first).
+        XCTAssertNotNil(state.snapshotsByAccount["work"])
+        XCTAssertEqual(state.snapshotsByAccount["work"]?.first?.fiveHour?.usedPercentage, 40)
+        XCTAssertNotNil(state.usageByAccount["work"])
+    }
+
+    private func makeSnapshot(session: String, fiveHourUsed: Double) -> UsageSnapshot {
+        UsageSnapshot(accountName: "", sessionId: session, capturedAt: Date(), cwd: nil,
+                      modelId: nil, modelDisplayName: nil, effort: nil,
+                      contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
+                      fiveHour: CapturedWindow(usedPercentage: fiveHourUsed, resetsAt: nil),
+                      sevenDay: nil)
+    }
 }

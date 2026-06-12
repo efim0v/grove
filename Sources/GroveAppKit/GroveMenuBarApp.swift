@@ -8,8 +8,17 @@ public struct GroveMenuBarApp: App {
 
     public init() {}
 
+    /// Remaining 5h capacity across accounts, surfaced in the menu-bar title so the
+    /// burn-down goal is visible without opening the panel. FIX I4: before any
+    /// capture exists the aggregate has total == 0 — show "—", NOT "0%".
+    @MainActor private static var menuBarTitle: String {
+        let agg = sharedState.aggregateRemaining(window: .fiveHour, now: Date())
+        let badge = AggregateBadge(agg)
+        return badge.hasData ? "\(Int((agg.fraction * 100).rounded()))%" : "—"
+    }
+
     public var body: some Scene {
-        MenuBarExtra("Grove", systemImage: "tree") {
+        MenuBarExtra(Self.menuBarTitle, systemImage: "tree") {
             RootView(state: Self.sharedState)
         }
         .menuBarExtraStyle(.window)

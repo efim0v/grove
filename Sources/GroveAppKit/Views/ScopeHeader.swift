@@ -1,4 +1,5 @@
 import SwiftUI
+import GroveCore
 
 /// v1.2.1 fix 4: the back affordance in scope headers is a REAL button — a
 /// 28x28pt hit target (was a bare ~13pt glyph) with a hover highlight — and
@@ -40,6 +41,9 @@ struct ScopeHeader: View {
     /// CreateWorkspaceScreen disables back (and with it Esc) while a creation
     /// run is in flight — leaving mid-run would orphan the progress log.
     var backDisabled = false
+    /// Global remaining-capacity badge for the 5h window. nil = don't show a badge.
+    /// Typed (not AnyView): the header owns the chip rendering + color grade.
+    var aggregate: RateLimitModel.Aggregate? = nil
     let onBack: () -> Void
 
     var body: some View {
@@ -56,8 +60,41 @@ struct ScopeHeader: View {
                     .lineLimit(1)
             }
             Spacer()
+            if let aggregate {
+                AggregateChip(window: "5h", aggregate: aggregate)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+}
+
+/// Global remaining-capacity chip: "5h 60%" color-graded by AggregateBadge.level.
+/// FIX I4: when there are ZERO usage captures the aggregate has total == 0; render
+/// a NEUTRAL gray "no data" chip ("5h —"), NOT a red .critical chip, so existing
+/// snapshot scenes (no fixture captures) don't all turn red.
+/// Internal (not private) so ProjectScreen's CUSTOM header — which doesn't use
+/// ScopeHeader — can render the same chip directly in its HStack.
+struct AggregateChip: View {
+    let window: String
+    let aggregate: RateLimitModel.Aggregate
+    var body: some View {
+        let badge = AggregateBadge(aggregate)   // .noData when aggregate.total == 0
+        let color: Color = {
+            switch badge.level {
+            case .noData:   return .gray
+            case .plenty:   return .green
+            case .tight:    return .orange
+            case .critical: return .red
+            }
+        }()
+        let label = badge.hasData ? "\(Int((aggregate.fraction * 100).rounded()))%" : "—"
+        return Text("\(window) \(label)")
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundStyle(color)
+            .help(badge.hasData ? "Remaining 5h capacity across accounts"
+                                : "No usage captures yet — enable Monitoring")
     }
 }

@@ -28,6 +28,7 @@ struct GlobalSettingsScreen: View {
 
     private var header: some View {
         ScopeHeader(title: "Settings", subtitle: "global",
+                    aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()),
                     onBack: { state.goBack() })
     }
 

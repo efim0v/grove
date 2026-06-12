@@ -28,6 +28,8 @@ struct ProjectScreen: View {
                 .lineLimit(1)
             searchField
             Spacer()
+            AggregateChip(window: "5h",
+                          aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()))
             tabStrip
             Button {
                 Task { await state.refresh() }

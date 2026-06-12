@@ -4,6 +4,11 @@ import Foundation
 public struct CapturedWindow: Sendable, Equatable {
     public let usedPercentage: Double
     public let resetsAt: String?   // raw ISO8601; RateLimitModel parses it
+    // Public init so cross-module callers/tests can construct a window directly.
+    public init(usedPercentage: Double, resetsAt: String?) {
+        self.usedPercentage = usedPercentage
+        self.resetsAt = resetsAt
+    }
 }
 
 /// A trimmed statusline capture snapshot for one session (spec §C.1). All optional
@@ -21,6 +26,24 @@ public struct UsageSnapshot: Sendable, Equatable {
     public let totalCostUSD: Double?
     public let fiveHour: CapturedWindow?
     public let sevenDay: CapturedWindow?
+    // Public init so cross-module callers/tests can construct a snapshot directly.
+    public init(accountName: String, sessionId: String, capturedAt: Date?, cwd: String?,
+                modelId: String?, modelDisplayName: String?, effort: String?,
+                contextUsedPercentage: Double?, totalInputTokens: Int?, totalCostUSD: Double?,
+                fiveHour: CapturedWindow?, sevenDay: CapturedWindow?) {
+        self.accountName = accountName
+        self.sessionId = sessionId
+        self.capturedAt = capturedAt
+        self.cwd = cwd
+        self.modelId = modelId
+        self.modelDisplayName = modelDisplayName
+        self.effort = effort
+        self.contextUsedPercentage = contextUsedPercentage
+        self.totalInputTokens = totalInputTokens
+        self.totalCostUSD = totalCostUSD
+        self.fiveHour = fiveHour
+        self.sevenDay = sevenDay
+    }
 }
 
 /// Reads `<configDir>/grove/usage/*.json` capture snapshots for one account.

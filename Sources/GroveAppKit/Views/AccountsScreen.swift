@@ -45,7 +45,9 @@ struct AccountsScreen: View {
     }
 
     private var header: some View {
-        ScopeHeader(title: "Accounts", onBack: { state.goBack() })
+        ScopeHeader(title: "Accounts",
+                    aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()),
+                    onBack: { state.goBack() })
     }
 
     @ViewBuilder private var cardList: some View {

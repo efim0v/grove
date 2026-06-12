@@ -65,6 +65,7 @@ struct ProjectSettingsScreen: View {
 
     private var header: some View {
         ScopeHeader(title: "Settings", subtitle: project?.name,
+                    aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()),
                     onBack: { state.goBack() })
     }
 
