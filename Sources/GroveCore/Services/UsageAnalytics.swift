@@ -55,6 +55,21 @@ public struct AccountUsageAnalytics: Sendable, Equatable {
     /// models seen with no price (e.g. "<synthetic>") -> surfaced, never crash.
     public var unpricedModels: [String]
     public var unpricedCost: Double   // always 0 by definition; kept explicit for the UI
+
+    public init(accountName: String, today: UsageTotals, thisMonth: UsageTotals,
+                last7d: UsageTotals, sessions: [String: SessionUsage],
+                costByModel: [String: Double], byCwd: [String: UsageTotals],
+                unpricedModels: [String], unpricedCost: Double) {
+        self.accountName = accountName
+        self.today = today
+        self.thisMonth = thisMonth
+        self.last7d = last7d
+        self.sessions = sessions
+        self.costByModel = costByModel
+        self.byCwd = byCwd
+        self.unpricedModels = unpricedModels
+        self.unpricedCost = unpricedCost
+    }
 }
 
 /// Sums per-message usage across an account's transcripts against ModelPricing.

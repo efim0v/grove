@@ -74,3 +74,26 @@ public func accountUsage(account: AccountConfig,
                         sessionCount: entries.reduce(0) { $0 + $1.sessionCount },
                         entries: entries)
 }
+
+public struct WorkspaceUsage: Equatable, Sendable {
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let cost: Double
+    public let activeAccounts: [String]   // accounts with usage at this workspace's cwd
+}
+
+/// Aggregates per-account analytics for ONE workspace by its umbrella cwd.
+public func workspaceUsage(workspace: FeatureWorkspace,
+                           analyticsByAccount: [String: AccountUsageAnalytics]) -> WorkspaceUsage {
+    let cwd = workspace.umbrellaPath
+    var input = 0, output = 0; var cost = 0.0; var accounts: Set<String> = []
+    for (name, a) in analyticsByAccount {
+        // match the umbrella cwd OR any cwd nested under it (sessions can be in subdirs).
+        for (c, t) in a.byCwd where c == cwd || c.hasPrefix(cwd + "/") {
+            input += t.inputTokens; output += t.outputTokens; cost += t.cost
+            accounts.insert(name)
+        }
+    }
+    return WorkspaceUsage(inputTokens: input, outputTokens: output, cost: cost,
+                          activeAccounts: accounts.sorted())
+}

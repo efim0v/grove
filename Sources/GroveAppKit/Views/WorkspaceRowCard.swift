@@ -22,6 +22,7 @@ struct WorkspaceRowCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
+            usageCaption
             if isExpanded {
                 Divider()
                 repoChips
@@ -100,6 +101,48 @@ struct WorkspaceRowCard: View {
         }
         .font(.caption)
         .labelStyle(.titleAndIcon)
+    }
+
+    // MARK: - Usage caption (aggregate tokens + cost + active-account chips)
+
+    /// Per-row caption summarizing this workspace's aggregate transcript usage
+    /// across accounts (Task 11). Pure SwiftUI text/chips — snapshot-safe with no
+    /// gating. Omitted entirely when there's no usage yet (empty `usageByAccount`
+    /// pre-refresh / snapshot without fixture data => zero tokens => render
+    /// nothing, so existing PNGs don't regress).
+    @ViewBuilder
+    private var usageCaption: some View {
+        let usage = workspaceUsage(workspace: workspace,
+                                   analyticsByAccount: state.usageByAccount)
+        if usage.inputTokens + usage.outputTokens > 0 {
+            HStack(spacing: 8) {
+                Label("\(compactTokens(usage.inputTokens + usage.outputTokens)) tok",
+                      systemImage: "number")
+                    .foregroundStyle(.secondary)
+                Text(formatUSD(usage.cost))
+                    .foregroundStyle(.secondary)
+                ForEach(usage.activeAccounts, id: \.self) { account in
+                    Text(account)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.white.opacity(0.06), in: Capsule())
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .font(.caption2)
+            .labelStyle(.titleAndIcon)
+        }
+    }
+
+    private func compactTokens(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 { return String(format: "%.1fM", Double(tokens) / 1_000_000) }
+        if tokens >= 1_000 { return String(format: "%.1fk", Double(tokens) / 1_000) }
+        return String(tokens)
+    }
+
+    private func formatUSD(_ amount: Double) -> String {
+        String(format: "$%.2f", amount)
     }
 
     // MARK: - Repo chips (branch, start point, +ahead/−behind, dirty; path as tooltip)
