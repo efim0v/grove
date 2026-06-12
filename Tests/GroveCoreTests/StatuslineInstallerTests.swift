@@ -1,0 +1,121 @@
+import XCTest
+@testable import GroveCore
+
+final class StatuslineInstallerTests: XCTestCase {
+    private let fm = FileManager.default
+    private var configDir: URL!     // temp CLAUDE_CONFIG_DIR
+    private var supportBin: URL!    // temp app-support bin (NOT ~/Library/.../Grove)
+    private var installer: StatuslineInstaller!
+
+    override func setUpWithError() throws {
+        configDir = try Fixture.tempDir("statusline-config")
+        supportBin = try Fixture.tempDir("statusline-support")
+        installer = StatuslineInstaller(scriptDir: supportBin.path)
+    }
+
+    private func settingsPath() -> String {
+        configDir.appendingPathComponent("settings.json").path
+    }
+
+    private func readSettings() throws -> [String: Any] {
+        let data = try Data(contentsOf: URL(fileURLWithPath: settingsPath()))
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    // MARK: - install points settings at the wrapper and saves the original
+
+    func testInstallShipsWrapperAndRepointsSettingsSavingOriginal() throws {
+        // Pre-existing settings with a user's own statusLine command.
+        let original = "~/.claude/statusline-command.sh"
+        try #"{"statusLine":{"type":"command","command":"\#(original)"}}"#
+            .write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+
+        let saved = try installer.install(configDir: configDir.path)
+
+        // The wrapper script exists and is executable under the injected scriptDir.
+        let script = supportBin.appendingPathComponent("grove-statusline.sh").path
+        XCTAssertTrue(fm.isExecutableFile(atPath: script))
+        // settings.json now points at the wrapper.
+        let s = try readSettings()
+        let line = try XCTUnwrap(s["statusLine"] as? [String: Any])
+        XCTAssertEqual(line["command"] as? String, script)
+        // The prior command was returned for AccountConfig.savedStatusline.
+        XCTAssertEqual(saved, original)
+    }
+
+    func testInstallWithNoPriorStatusLineSavesNil() throws {
+        try "{}".write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+        let saved = try installer.install(configDir: configDir.path)
+        XCTAssertNil(saved, "no prior statusLine -> nothing to restore")
+        let line = try readSettings()["statusLine"] as? [String: Any]
+        XCTAssertEqual(line?["command"] as? String,
+                       supportBin.appendingPathComponent("grove-statusline.sh").path)
+    }
+
+    func testInstallIsIdempotentAndDoesNotOverwriteSavedOriginal() throws {
+        let original = "/bin/echo hi"
+        try #"{"statusLine":{"type":"command","command":"\#(original)"}}"#
+            .write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+        _ = try installer.install(configDir: configDir.path)
+        // Second install: settings already points at the wrapper -> savedOriginal must
+        // NOT become the wrapper path (that would lose the user's real command).
+        let saved = try installer.install(configDir: configDir.path)
+        XCTAssertEqual(saved, original, "re-install keeps the user's original, not the wrapper")
+    }
+
+    // MARK: - uninstall restores the saved original
+
+    func testUninstallRestoresTheSavedOriginalCommand() throws {
+        let original = "/usr/local/bin/my-statusline"
+        try #"{"statusLine":{"type":"command","command":"\#(original)"}}"#
+            .write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+        _ = try installer.install(configDir: configDir.path)
+
+        try installer.uninstall(configDir: configDir.path, savedStatusline: original)
+
+        let line = try XCTUnwrap(try readSettings()["statusLine"] as? [String: Any])
+        XCTAssertEqual(line["command"] as? String, original)
+    }
+
+    func testUninstallWithNilSavedRemovesTheStatusLineKey() throws {
+        try "{}".write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+        _ = try installer.install(configDir: configDir.path)
+        try installer.uninstall(configDir: configDir.path, savedStatusline: nil)
+        XCTAssertNil(try readSettings()["statusLine"], "no original -> statusLine removed")
+    }
+
+    // MARK: - the wrapper SCRIPT writes a snapshot then calls through (end-to-end)
+
+    func testWrapperScriptTeesStdinToUsageSnapshotThenExecsOriginal() throws {
+        // Install with a stub "original" that writes a marker so we prove pass-through.
+        let marker = configDir.appendingPathComponent("passthrough.txt").path
+        let stubOriginal = "/bin/sh -c 'cat > /dev/null; echo CALLED > \(marker)'"
+        try #"{"statusLine":{"type":"command","command":"\#(stubOriginal)"}}"#
+            .write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+        _ = try installer.install(configDir: configDir.path)
+        let script = supportBin.appendingPathComponent("grove-statusline.sh").path
+
+        // Feed the wrapper a realistic statusline stdin JSON via the injected
+        // CLAUDE_CONFIG_DIR + saved-original env the installer bakes in.
+        let stdin = #"{"session_id":"sess-xyz","model":{"display_name":"Opus"},"#
+            + #""workspace":{"current_dir":"/ws/x"},"cost":{"total_cost_usd":1.5}}"#
+        try Fixture.sh("printf %s \(shellQuoteForTest(stdin)) | /bin/sh \(shellQuoteForTest(script))")
+
+        // The wrapper wrote <configDir>/grove/usage/<session_id>.json ...
+        let snap = configDir.appendingPathComponent("grove/usage/sess-xyz.json")
+        XCTAssertTrue(fm.fileExists(atPath: snap.path), "capture snapshot written")
+        let obj = try JSONSerialization.jsonObject(with: Data(contentsOf: snap)) as? [String: Any]
+        // The wrapper wraps the raw render under a capturedAt envelope (Task 6's
+        // UsageReader reads `raw.session_id`); the raw keys stay readable there.
+        let raw = obj?["raw"] as? [String: Any]
+        XCTAssertEqual((raw?["session_id"]) as? String, "sess-xyz")
+        // ... and called through to the original (marker written).
+        XCTAssertEqual(try String(contentsOf: URL(fileURLWithPath: marker), encoding: .utf8)
+                        .trimmingCharacters(in: .whitespacesAndNewlines), "CALLED")
+    }
+
+    /// Local POSIX single-quote shell quoting (tests must not depend on GroveCore's).
+    private func shellQuoteForTest(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
