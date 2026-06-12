@@ -324,6 +324,27 @@ extension AppState {
         }
     }
 
+    public func setProjectModel(projectID: UUID, model: String?) {
+        guard let i = config.projects.firstIndex(where: { $0.id == projectID }) else { return }
+        config.projects[i].defaultModel = (model?.isEmpty == true) ? nil : model
+        persist()
+    }
+    public func setProjectEffort(projectID: UUID, effort: String?) {
+        guard let i = config.projects.firstIndex(where: { $0.id == projectID }) else { return }
+        config.projects[i].defaultEffort = (effort?.isEmpty == true) ? nil : effort
+        persist()
+    }
+
+    /// Relaunches a session under `account` with an EXPLICIT model/effort (a session
+    /// card's "Relaunch with model X"). Cross-account still link-on-demands via
+    /// resumeSession's path; here we go straight to launch with the override.
+    public func relaunchSession(_ session: ClaudeSession, as account: AccountConfig,
+                                model: String?, effort: String?) async {
+        let title = session.title ?? (session.cwd as NSString).lastPathComponent
+        await launchClaude(cwd: session.cwd, title: title, account: account,
+                           resume: session.id, model: model, effort: effort)
+    }
+
     /// The project that owns `cwd` (its path or workspacesRoot is a prefix), if any.
     /// Used so a session's launch picks up the right project defaults.
     private func project(forCwd cwd: String) -> ProjectConfig? {
@@ -333,6 +354,12 @@ extension AppState {
                 .filter { !$0.isEmpty }.map(canonicalPath)
             return roots.contains { canon == $0 || canon.hasPrefix($0 + "/") }
         }
+    }
+
+    /// Public resolver for the session cards: the project owning a session's cwd,
+    /// so the model/effort pickers write that project's default (`setProjectModel`).
+    public func owningProject(forCwd cwd: String) -> ProjectConfig? {
+        project(forCwd: cwd)
     }
 
     /// Effective default model for a launch: project.defaultModel beats

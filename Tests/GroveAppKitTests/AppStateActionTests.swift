@@ -420,6 +420,38 @@ final class AppStateActionTests: XCTestCase {
                       "a live session under another account blocks the launch")
     }
 
+    // MARK: - model/effort defaults + relaunch
+
+    func testSetProjectModelAndEffortPersist() async throws {
+        let project = ProjectConfig(name: "p", path: "/proj")
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [project], accounts: [account]))
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+        state.setProjectModel(projectID: project.id, model: "claude-opus-4-6")
+        state.setProjectEffort(projectID: project.id, effort: "high")
+        XCTAssertEqual(state.config.projects[0].defaultModel, "claude-opus-4-6")
+        XCTAssertEqual(state.config.projects[0].defaultEffort, "high")
+        // Reload from disk -> persisted.
+        let reloaded = ConfigStore(url: configURL).load().config
+        XCTAssertEqual(reloaded.projects[0].defaultModel, "claude-opus-4-6")
+    }
+
+    func testRelaunchSessionWithModelResumesWithThatModel() async throws {
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [account]))
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        let session = ClaudeSession(id: "s1", cwd: "/ws/x", title: "T",
+                                    lastActivity: Date(), accountName: "work", gitBranch: nil)
+        await state.relaunchSession(session, as: account, model: "claude-opus-4-6", effort: nil)
+        let call = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first)
+        let i = try XCTUnwrap(call.args.firstIndex(of: "--command"))
+        XCTAssertTrue(call.args[i + 1].contains("--resume 's1'"))
+        XCTAssertTrue(call.args[i + 1].contains("--model 'claude-opus-4-6'"))
+    }
+
     // MARK: - createWorkspace / rollback (real git fixture)
 
     private func saveProjectFixture() throws -> (project: ProjectConfig, repo: RepoInfo, workspacesRoot: URL) {
