@@ -88,10 +88,27 @@ public struct SeedFile: Codable, Sendable, Equatable {
 public struct AccountConfig: Codable, Sendable, Equatable {
     public var name: String
     public var configDir: String
+    /// True when this account's session stores are symlinked into the canonical
+    /// (default `~/.claude`) account. The canonical/default account is implicitly
+    /// canonical and is never marked shared. Back-compat: absent from old JSON
+    /// decodes to false (see init(from:)).
+    public var sharedStore: Bool
 
-    public init(name: String, configDir: String) {
+    public init(name: String, configDir: String, sharedStore: Bool = false) {
         self.name = name
         self.configDir = configDir
+        self.sharedStore = sharedStore
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, configDir, sharedStore
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        configDir = try c.decode(String.self, forKey: .configDir)
+        sharedStore = try c.decodeIfPresent(Bool.self, forKey: .sharedStore) ?? false
     }
 }
 
