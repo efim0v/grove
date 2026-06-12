@@ -45,20 +45,23 @@ public enum SessionRowAction: Equatable, Sendable {
 
 /// One row of the Claude Sessions table.
 ///
-/// `id` is a composite of accountName + sessionId, NOT the raw session id: a
-/// cross-account resume copies one session jsonl into a second account's
-/// identical projects path, and the scanner flatMaps every account, so the same
-/// `sessionId` legitimately appears twice in one container under two accounts.
-/// Keying the Identifiable id on (accountName, sessionId) keeps SwiftUI's
-/// ForEach well-defined and lets `findSession` resolve the right account's copy.
+/// `id` is a composite of cwd + sessionId, NOT the raw session id: with a shared
+/// store the SAME sessionId at one cwd is listed under EVERY linked account, so
+/// the scanner flatMaps the same `(cwd, sessionId)` once per account. Collapsing
+/// on (cwd, sessionId) makes a shared session ONE row whose `accounts` set carries
+/// every account it is reachable under, keeping SwiftUI's ForEach well-defined.
 public struct SessionRow: Identifiable, Equatable, Sendable {
-    /// Stable, unique per (accountName, sessionId). See type doc.
+    /// Stable, unique per (cwd, sessionId). See type doc.
     public let id: String
     /// The raw Claude session id (NOT unique across accounts).
     public let sessionId: String
     public let title: String           // session title, or sessionId prefix(8)
     public let location: String        // workspace name / loose worktree leaf
     public let accountName: String
+    /// Every account this session is reachable under (a shared session is listed
+    /// under every linked account). Sorted for determinism; always contains
+    /// `accountName`. Single-account sessions hold exactly `[accountName]`.
+    public let accounts: [String]
     public let cwd: String
     /// nil = no live process (resumable). Otherwise the live status bucket.
     public let liveStatus: SessionLiveStatus?
@@ -72,20 +75,23 @@ public struct SessionRow: Identifiable, Equatable, Sendable {
     /// path, instead of relaunching --resume in a fresh workspace.
     public let cmuxWorkspaceId: String?
 
-    /// Composite Identifiable id from (accountName, sessionId). The NUL joiner
-    /// can't appear in either field, so the pair maps injectively to a string.
-    public static func rowID(account: String, session: String) -> String {
-        account + "\u{0}" + session
+    /// Stable Identifiable id for a collapsed session: (cwd, sessionId). A shared
+    /// session at one cwd is ONE row no matter how many accounts list it. The NUL
+    /// joiner can't appear in either field, so the pair maps injectively.
+    public static func rowID(cwd: String, session: String) -> String {
+        cwd + "\u{0}" + session
     }
 
     public init(sessionId: String, title: String, location: String, accountName: String,
+                accounts: [String] = [],
                 cwd: String, liveStatus: SessionLiveStatus?, startedAt: Date?,
                 lastActivity: Date, action: SessionRowAction, cmuxWorkspaceId: String? = nil) {
-        self.id = SessionRow.rowID(account: accountName, session: sessionId)
+        self.id = SessionRow.rowID(cwd: cwd, session: sessionId)
         self.sessionId = sessionId
         self.title = title
         self.location = location
         self.accountName = accountName
+        self.accounts = accounts.isEmpty ? [accountName] : accounts
         self.cwd = cwd
         self.liveStatus = liveStatus
         self.startedAt = startedAt
@@ -95,6 +101,15 @@ public struct SessionRow: Identifiable, Equatable, Sendable {
     }
 
     public var isLive: Bool { liveStatus != nil }
+}
+
+/// Distinct account names of a session group, in first-seen order then sorted
+/// for a stable chip layout. Always non-empty.
+private func orderedUniqueAccounts(_ sessions: [ClaudeSession]) -> [String] {
+    var seen: Set<String> = []
+    var result: [String] = []
+    for s in sessions where seen.insert(s.accountName).inserted { result.append(s.accountName) }
+    return result.sorted()
 }
 
 /// Builds the Claude Sessions table for one project snapshot.
@@ -108,57 +123,95 @@ public struct SessionRow: Identifiable, Equatable, Sendable {
 /// `.resume`. Rows sort live-first (busy, waiting, idle), then resumable by
 /// lastActivity descending; ties break on title then id for determinism.
 ///
-/// Dedup: a row is keyed by (accountName, sessionId). After a cross-account
-/// resume the SAME sessionId exists under two accounts at one cwd, and the
-/// scanner flatMaps every account, so a container can list it twice. Distinct
-/// accounts both survive (two rows, unique ids); an exact (account, session)
-/// repeat collapses to its first occurrence.
+/// Collapse: a row is keyed by (cwd, sessionId). With a shared store the SAME
+/// sessionId at one cwd is listed under EVERY linked account, and the scanner
+/// flatMaps every account, so the same (cwd, sessionId) occurs once per account
+/// AND possibly in more than one container. Those occurrences collapse GLOBALLY
+/// into ONE row whose `accounts` set carries every account it is reachable under;
+/// the primary `accountName` is the live owner if any occurrence is live, else
+/// first-seen.
 public func buildSessionRows(snapshot: ProjectSnapshot,
                              cmuxMap: [String: String]) -> [SessionRow] {
     var rows: [SessionRow] = []
-    var seen: Set<String> = []          // (accountName, sessionId) composite ids
 
-    func append(sessions: [ClaudeSession], live: [LiveProcess],
-                cmux: [CmuxWorkspace], location: String) {
-        // cmux workspaces in this container, keyed by the cwd they sit in.
-        var cmuxByCwd: [String: String] = [:]
-        for ws in cmux where cmuxByCwd[ws.currentDirectory] == nil {
-            cmuxByCwd[ws.currentDirectory] = ws.id
-        }
+    /// One flattened occurrence of a session in some container, carrying the
+    /// container's live processes and location label so global grouping keeps them.
+    struct Occurrence {
+        let session: ClaudeSession
+        let live: [LiveProcess]
+        let cmux: [CmuxWorkspace]
+        let location: String
+    }
+
+    // 1) Flatten EVERY occurrence across all containers (workspaces + loose) first.
+    var occurrences: [Occurrence] = []
+    func collect(sessions: [ClaudeSession], live: [LiveProcess],
+                 cmux: [CmuxWorkspace], location: String) {
         for session in sessions {
-            let key = SessionRow.rowID(account: session.accountName, session: session.id)
-            guard seen.insert(key).inserted else { continue }   // dedup (account, session)
-            let process = live.first { $0.sessionId == session.id }
-            let liveStatus = process.map { SessionLiveStatus(rawStatus: $0.status) }
-            // Resolve the cmux workspace to jump to: hook registry first, then a
-            // cmux workspace already sitting in the session's cwd.
-            let workspaceId = cmuxMap[session.id] ?? cmuxByCwd[session.cwd]
-            let isGo = process != nil && workspaceId != nil
-            let action: SessionRowAction = isGo ? .go : .resume
-            let title = session.title.flatMap { $0.isEmpty ? nil : $0 }
-                ?? String(session.id.prefix(8))
-            rows.append(SessionRow(
-                sessionId: session.id,
-                title: title,
-                location: location,
-                accountName: session.accountName,
-                cwd: session.cwd,
-                liveStatus: liveStatus,
-                startedAt: process?.startedAt,
-                lastActivity: session.lastActivity,
-                action: action,
-                cmuxWorkspaceId: isGo ? workspaceId : nil))
+            occurrences.append(Occurrence(session: session, live: live, cmux: cmux, location: location))
         }
     }
 
     for workspace in snapshot.workspaces {
-        append(sessions: workspace.sessions, live: workspace.liveProcesses,
-               cmux: workspace.cmuxWorkspaces, location: workspace.name)
+        collect(sessions: workspace.sessions, live: workspace.liveProcesses,
+                cmux: workspace.cmuxWorkspaces, location: workspace.name)
     }
     for loose in snapshot.loose {
-        append(sessions: loose.sessions, live: loose.liveProcesses,
-               cmux: loose.cmuxWorkspaces,
-               location: (loose.entry.path as NSString).lastPathComponent)
+        collect(sessions: loose.sessions, live: loose.liveProcesses,
+                cmux: loose.cmuxWorkspaces,
+                location: (loose.entry.path as NSString).lastPathComponent)
+    }
+
+    // 2) Group GLOBALLY by (cwd, sessionId), preserving first-seen order. The account
+    //    of EVERY occurrence is merged into the row's set — no container is dropped.
+    var order: [String] = []
+    var grouped: [String: [Occurrence]] = [:]
+    for occ in occurrences {
+        let key = SessionRow.rowID(cwd: occ.session.cwd, session: occ.session.id)
+        if grouped[key] == nil { order.append(key) }
+        grouped[key, default: []].append(occ)
+    }
+
+    // 3) One row per key. Primary account = the live owner if any occurrence is live,
+    //    else first-seen. accounts = the merged set across ALL occurrences/containers.
+    for key in order {
+        let group = grouped[key]!
+        let firstOcc = group[0]
+        let first = firstOcc.session
+        // First live process for this session across any occurrence in the group.
+        let liveOcc = group.first { occ in occ.live.contains { $0.sessionId == first.id } }
+        let process = liveOcc?.live.first { $0.sessionId == first.id }
+        // Primary account: the live owner if its account is among the group, else first-seen.
+        let liveOwner = process.flatMap { p in
+            group.map(\.session).first { $0.accountName == p.accountName }
+        }
+        let primary = liveOwner ?? first
+        let accounts = orderedUniqueAccounts(group.map(\.session))
+        // Location/cmux come from the occurrence that owns the live process if any,
+        // else the first occurrence (stable).
+        let owningOcc = liveOcc ?? firstOcc
+        var cmuxByCwd: [String: String] = [:]
+        for ws in owningOcc.cmux where cmuxByCwd[ws.currentDirectory] == nil {
+            cmuxByCwd[ws.currentDirectory] = ws.id
+        }
+        let liveStatus = process.map { SessionLiveStatus(rawStatus: $0.status) }
+        let workspaceId = cmuxMap[first.id] ?? cmuxByCwd[first.cwd]
+        let isGo = process != nil && workspaceId != nil
+        let action: SessionRowAction = isGo ? .go : .resume
+        let title = first.title.flatMap { $0.isEmpty ? nil : $0 }
+            ?? String(first.id.prefix(8))
+        rows.append(SessionRow(
+            sessionId: first.id,
+            title: title,
+            location: owningOcc.location,
+            accountName: primary.accountName,
+            accounts: accounts,
+            cwd: first.cwd,
+            liveStatus: liveStatus,
+            startedAt: process?.startedAt,
+            lastActivity: first.lastActivity,
+            action: action,
+            cmuxWorkspaceId: isGo ? workspaceId : nil))
     }
 
     rows.sort { lhs, rhs in

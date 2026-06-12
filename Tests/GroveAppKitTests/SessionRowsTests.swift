@@ -136,6 +136,7 @@ final class SessionRowsTests: XCTestCase {
         ])
         let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
         XCTAssertEqual(rows.map(\.accountName), ["work"])
+        XCTAssertEqual(rows.map(\.accounts), [["work"]])
     }
 
     // MARK: - sorting
@@ -164,31 +165,47 @@ final class SessionRowsTests: XCTestCase {
         XCTAssertEqual(Set(rows.map(\.sessionId)), ["a", "b"])
     }
 
-    // MARK: - cross-account duplicate dedup (issue 1)
+    // MARK: - cross-account collapse (shared store)
 
-    /// After a cross-account resume the same session id exists under two accounts
-    /// at one cwd; the scanner flatMaps all accounts, so the same container can
-    /// list the session twice with identical ids but DIFFERENT accountNames.
-    /// buildSessionRows must keep BOTH (distinct accounts) and give each a stable,
-    /// unique Identifiable id so SwiftUI's ForEach is well-defined.
-    func testSameSessionIdUnderTwoAccountsYieldsTwoRowsWithUniqueIds() {
+    /// With a shared store the SAME sessionId at one cwd is listed under every
+    /// linked account; the scanner flatMaps all accounts. buildSessionRows must
+    /// COLLAPSE those into ONE row whose `accounts` set carries every account it
+    /// is reachable under, with a single stable Identifiable id.
+    func testSameSessionIdUnderMultipleAccountsCollapsesToOneRowWithAccountSet() {
         let snap = snapshot(workspaces: [
             workspace("w", sessions: [
-                session("dup", account: "default", title: "Owner copy"),
-                session("dup", account: "work", title: "Resumed copy"),
+                session("dup", account: "default", title: "Shared"),
+                session("dup", account: "work", title: "Shared"),
             ]),
         ])
         let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
-        XCTAssertEqual(rows.count, 2, "both accounts' copies survive")
-        XCTAssertEqual(Set(rows.map(\.sessionId)), ["dup"])
-        XCTAssertEqual(Set(rows.map(\.accountName)), ["default", "work"])
-        XCTAssertEqual(Set(rows.map(\.id)).count, 2, "row ids are unique per (account, session)")
+        XCTAssertEqual(rows.count, 1, "one collapsed row for the shared session")
+        XCTAssertEqual(rows[0].sessionId, "dup")
+        XCTAssertEqual(Set(rows[0].accounts), ["default", "work"],
+                       "the row carries every account the session is reachable under")
     }
 
-    /// An exact duplicate (same id AND same account) — e.g. the same session
-    /// reachable via both a live process source and a transcript scan within one
-    /// container — must collapse to a single row, never a duplicate Identifiable.
-    func testExactDuplicateSessionInOneContainerIsDeduped() {
+    /// The collapsed row's PRIMARY accountName is the LIVE owner when one account
+    /// holds a live process (that's the account `--resume` should run under by
+    /// default); ties otherwise break on first-seen.
+    func testCollapsedRowPrimaryAccountIsTheLiveOwner() {
+        let snap = snapshot(workspaces: [
+            workspace("w",
+                      sessions: [session("dup", account: "default"),
+                                 session("dup", account: "work")],
+                      live: [live(1, session: "dup", status: "busy", account: "work")]),
+        ])
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].accountName, "work", "the live account is the primary")
+        XCTAssertEqual(rows[0].liveStatus, .busy)
+        XCTAssertEqual(Set(rows[0].accounts), ["default", "work"])
+    }
+
+    /// An exact duplicate (same id AND same account) within one container collapses
+    /// to a single row with a single account entry (no duplicate Identifiable, no
+    /// duplicate account chip).
+    func testExactDuplicateSessionInOneContainerCollapsesToOneRow() {
         let snap = snapshot(workspaces: [
             workspace("w", sessions: [
                 session("same", account: "default", title: "First"),
@@ -196,8 +213,30 @@ final class SessionRowsTests: XCTestCase {
             ]),
         ])
         let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
-        XCTAssertEqual(rows.count, 1, "identical (account, session) collapses to one row")
-        XCTAssertEqual(rows[0].title, "First", "first occurrence wins")
+        XCTAssertEqual(rows.count, 1, "identical (account, session) collapses")
+        XCTAssertEqual(rows[0].accounts, ["default"], "account appears once")
+        XCTAssertEqual(rows[0].title, "First", "first occurrence wins for stable fields")
+    }
+
+    /// The SAME (cwd, sessionId) can be reachable in two DIFFERENT containers — a
+    /// workspace under one account AND a loose worktree under another — because the
+    /// shared store makes the transcript visible from every linked account. Collapse
+    /// must group GLOBALLY across all containers so the row's `accounts` set carries
+    /// BOTH accounts; neither container's account may be dropped.
+    func testSameSessionAcrossWorkspaceAndLooseContainersMergesBothAccounts() {
+        let cwd = "/ws/shared-cwd"
+        let snap = snapshot(
+            workspaces: [
+                workspace("w", sessions: [session("dup", account: "default", title: "Shared", cwd: cwd)]),
+            ],
+            loose: [
+                loose("loose", sessions: [session("dup", account: "work", title: "Shared", cwd: cwd)]),
+            ])
+        let rows = buildSessionRows(snapshot: snap, cmuxMap: [:])
+        XCTAssertEqual(rows.count, 1, "one collapsed row across both containers")
+        XCTAssertEqual(rows[0].sessionId, "dup")
+        XCTAssertEqual(Set(rows[0].accounts), ["default", "work"],
+                       "both containers' accounts are merged; none is dropped")
     }
 
     // MARK: - Go carries the matched cmux workspace id (issue 2)

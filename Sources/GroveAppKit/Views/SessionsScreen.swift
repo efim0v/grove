@@ -188,7 +188,16 @@ struct SessionsScreen: View {
     /// offscreen (Menu is AppKit-backed), a real Menu live.
     @ViewBuilder
     private func resumeAsMenu(_ row: SessionRow) -> some View {
-        let others = state.config.accounts.filter { $0.name != row.accountName }
+        // Offer every account the session is reachable under, plus any other
+        // configured account (link-on-demand), minus the row's primary account.
+        let reachable = Set(row.accounts)
+        let everyOther = state.config.accounts.map(\.name)
+        let candidateNames = Array(Set(everyOther).union(reachable))
+            .filter { $0 != row.accountName }
+            .sorted()
+        let others = candidateNames.compactMap { name in
+            state.config.accounts.first { $0.name == name }
+        }
         if !others.isEmpty {
             if isSnapshotRender {
                 Image(systemName: "chevron.down")
@@ -245,21 +254,18 @@ struct SessionsScreen: View {
             ?? AccountConfig(name: "default", configDir: "~/.claude")
     }
 
-    /// Resolves the exact ClaudeSession a row stands for. Account-aware: after a
-    /// cross-account resume two sessions share an id under different accounts, so
-    /// matching on id alone could return the WRONG account's copy and resume it
-    /// under the wrong identity. Match on (id, accountName).
+    /// Resolves the exact ClaudeSession a row stands for. A collapsed row keys on
+    /// (cwd, sessionId), not a single owning account, so match on (cwd, sessionId)
+    /// and prefer the session whose `accountName == row.accountName`, falling back
+    /// to any match (any account's copy resolves the same shared transcript).
     private func findSession(_ row: SessionRow, in snapshot: ProjectSnapshot) -> ClaudeSession? {
-        func match(_ s: ClaudeSession) -> Bool {
-            s.id == row.sessionId && s.accountName == row.accountName
+        func candidates(_ sessions: [ClaudeSession]) -> [ClaudeSession] {
+            sessions.filter { $0.id == row.sessionId && $0.cwd == row.cwd }
         }
-        for workspace in snapshot.workspaces {
-            if let s = workspace.sessions.first(where: match) { return s }
-        }
-        for loose in snapshot.loose {
-            if let s = loose.sessions.first(where: match) { return s }
-        }
-        return nil
+        var all: [ClaudeSession] = []
+        for workspace in snapshot.workspaces { all += candidates(workspace.sessions) }
+        for loose in snapshot.loose { all += candidates(loose.sessions) }
+        return all.first { $0.accountName == row.accountName } ?? all.first
     }
 
     // MARK: - Empty state
