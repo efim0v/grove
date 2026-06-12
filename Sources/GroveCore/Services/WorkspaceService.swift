@@ -424,6 +424,44 @@ public struct WorkspaceService {
             }
         }
 
+        // 3.5 Seed files from the project's containing dir into the new workspace.
+        //     Non-fatal: missing sources / failures are logged, never abort creation.
+        //     Never overwrites an existing destination.
+        for seed in project.seedFiles {
+            let src = (expandTilde(project.path) as NSString).appendingPathComponent(seed.source)
+            guard fm.fileExists(atPath: src) else {
+                logLines.append("[seed] source not found: \(seed.source)")
+                continue
+            }
+            let base = (seed.source as NSString).lastPathComponent
+            let destinations: [String]
+            switch seed.dest {
+            case .umbrella:
+                destinations = [(umbrella as NSString).appendingPathComponent(base)]
+            case .eachRepo:
+                destinations = artifacts.map {
+                    ($0.worktreePath as NSString).appendingPathComponent(base)
+                }
+            }
+            for dst in destinations {
+                if fm.fileExists(atPath: dst) {
+                    logLines.append("[seed] exists, skipped: \(dst)")
+                    continue
+                }
+                do {
+                    try fm.createDirectory(atPath: (dst as NSString).deletingLastPathComponent,
+                                           withIntermediateDirectories: true)
+                    switch seed.mode {
+                    case .copy:    try fm.copyItem(atPath: src, toPath: dst)
+                    case .symlink: try fm.createSymbolicLink(atPath: dst, withDestinationPath: src)
+                    }
+                    logLines.append("[seed] \(seed.mode.rawValue) \(seed.source) -> \(dst)")
+                } catch {
+                    logLines.append("[seed] failed \(seed.source): \(error.localizedDescription)")
+                }
+            }
+        }
+
         // 4. Post-create hooks, concurrently; failures are logged, never fatal.
         let hooks = project.postCreateHooks
         let hookJobs: [(dirName: String, command: String, cwd: String)] = artifacts.compactMap { artifact in
