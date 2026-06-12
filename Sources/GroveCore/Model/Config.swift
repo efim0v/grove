@@ -17,6 +17,8 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
     /// Files copied/symlinked from project.path into each new workspace.
     /// Back-compat: absent from old JSON decodes to [] (see init(from:)).
     public var seedFiles: [SeedFile]
+    public var defaultModel: String?
+    public var defaultEffort: String?
 
     public init(
         id: UUID = UUID(),
@@ -29,7 +31,9 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         excludedRepos: [String] = [],
         scanDepth: Int = 3,
         defaultAccount: String? = nil,
-        seedFiles: [SeedFile] = []
+        seedFiles: [SeedFile] = [],
+        defaultModel: String? = nil,
+        defaultEffort: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -42,11 +46,14 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         self.scanDepth = scanDepth
         self.defaultAccount = defaultAccount
         self.seedFiles = seedFiles
+        self.defaultModel = defaultModel
+        self.defaultEffort = defaultEffort
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, path, workspacesRoot, branchTemplate, baseBranchOverrides
         case postCreateHooks, excludedRepos, scanDepth, defaultAccount, seedFiles
+        case defaultModel, defaultEffort
     }
 
     public init(from decoder: Decoder) throws {
@@ -62,6 +69,8 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         scanDepth = try c.decodeIfPresent(Int.self, forKey: .scanDepth) ?? 3
         defaultAccount = try c.decodeIfPresent(String.self, forKey: .defaultAccount)
         seedFiles = try c.decodeIfPresent([SeedFile].self, forKey: .seedFiles) ?? []
+        defaultModel = try c.decodeIfPresent(String.self, forKey: .defaultModel)
+        defaultEffort = try c.decodeIfPresent(String.self, forKey: .defaultEffort)
     }
 }
 
@@ -85,6 +94,27 @@ public struct SeedFile: Codable, Sendable, Equatable {
     }
 }
 
+/// Global usage subsystem settings (spec §6). `refreshSeconds` is the scan-tick
+/// cadence for reading capture snapshots / analytics; `oauthLiveEnabled` gates
+/// the fragile, undocumented OAuth usage poll (§C.4) — OFF by default.
+public struct UsageSettings: Codable, Sendable, Equatable {
+    public var refreshSeconds: Int
+    public var oauthLiveEnabled: Bool
+
+    public init(refreshSeconds: Int = 15, oauthLiveEnabled: Bool = false) {
+        self.refreshSeconds = refreshSeconds
+        self.oauthLiveEnabled = oauthLiveEnabled
+    }
+
+    enum CodingKeys: String, CodingKey { case refreshSeconds, oauthLiveEnabled }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        refreshSeconds = try c.decodeIfPresent(Int.self, forKey: .refreshSeconds) ?? 15
+        oauthLiveEnabled = try c.decodeIfPresent(Bool.self, forKey: .oauthLiveEnabled) ?? false
+    }
+}
+
 public struct AccountConfig: Codable, Sendable, Equatable {
     public var name: String
     public var configDir: String
@@ -93,15 +123,32 @@ public struct AccountConfig: Codable, Sendable, Equatable {
     /// canonical and is never marked shared. Back-compat: absent from old JSON
     /// decodes to false (see init(from:)).
     public var sharedStore: Bool
+    public var monitoring: Bool
+    public var savedStatusline: String?
+    public var defaultModel: String?
+    public var defaultEffort: String?
 
-    public init(name: String, configDir: String, sharedStore: Bool = false) {
+    public init(
+        name: String,
+        configDir: String,
+        sharedStore: Bool = false,
+        monitoring: Bool = false,
+        savedStatusline: String? = nil,
+        defaultModel: String? = nil,
+        defaultEffort: String? = nil
+    ) {
         self.name = name
         self.configDir = configDir
         self.sharedStore = sharedStore
+        self.monitoring = monitoring
+        self.savedStatusline = savedStatusline
+        self.defaultModel = defaultModel
+        self.defaultEffort = defaultEffort
     }
 
     enum CodingKeys: String, CodingKey {
         case name, configDir, sharedStore
+        case monitoring, savedStatusline, defaultModel, defaultEffort
     }
 
     public init(from decoder: Decoder) throws {
@@ -109,6 +156,10 @@ public struct AccountConfig: Codable, Sendable, Equatable {
         name = try c.decode(String.self, forKey: .name)
         configDir = try c.decode(String.self, forKey: .configDir)
         sharedStore = try c.decodeIfPresent(Bool.self, forKey: .sharedStore) ?? false
+        monitoring = try c.decodeIfPresent(Bool.self, forKey: .monitoring) ?? false
+        savedStatusline = try c.decodeIfPresent(String.self, forKey: .savedStatusline)
+        defaultModel = try c.decodeIfPresent(String.self, forKey: .defaultModel)
+        defaultEffort = try c.decodeIfPresent(String.self, forKey: .defaultEffort)
     }
 }
 
@@ -117,17 +168,35 @@ public struct GroveConfig: Codable, Sendable, Equatable {
     public var workspacesRootTemplate: String
     public var projects: [ProjectConfig]
     public var accounts: [AccountConfig]
+    /// Usage subsystem settings (spec §6). Back-compat: absent from old JSON
+    /// decodes to UsageSettings() defaults (see init(from:)).
+    public var usage: UsageSettings
 
     public init(
         version: Int,
         workspacesRootTemplate: String,
         projects: [ProjectConfig],
-        accounts: [AccountConfig]
+        accounts: [AccountConfig],
+        usage: UsageSettings = UsageSettings()
     ) {
         self.version = version
         self.workspacesRootTemplate = workspacesRootTemplate
         self.projects = projects
         self.accounts = accounts
+        self.usage = usage
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case version, workspacesRootTemplate, projects, accounts, usage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        workspacesRootTemplate = try c.decode(String.self, forKey: .workspacesRootTemplate)
+        projects = try c.decode([ProjectConfig].self, forKey: .projects)
+        accounts = try c.decode([AccountConfig].self, forKey: .accounts)
+        usage = try c.decodeIfPresent(UsageSettings.self, forKey: .usage) ?? UsageSettings()
     }
 
     public static let defaultConfig = GroveConfig(
