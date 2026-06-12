@@ -10,5 +10,5 @@ import GroveCore
 // when the flag is present.
 let handledSnapshot = MainActor.assumeIsolated { SnapshotMode.runIfRequested() }
 if !handledSnapshot && !CmuxProbe.runIfRequested() {
-    GroveMenuBarApp.main()
+    MainActor.assumeIsolated { GroveMenuBarApp.run() }
 }
