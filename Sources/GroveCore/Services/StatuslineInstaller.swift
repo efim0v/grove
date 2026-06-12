@@ -12,10 +12,15 @@ public struct StatuslineInstaller: Sendable {
     public let scriptDir: String
     public init(scriptDir: String) { self.scriptDir = scriptDir }
 
-    /// Filename of the shipped wrapper inside `scriptDir`.
-    public static let scriptName = "grove-statusline.sh"
-
-    public var scriptPath: String { scriptDir + "/" + StatuslineInstaller.scriptName }
+    /// Per-account wrapper path inside `scriptDir`: ONE script per
+    /// `CLAUDE_CONFIG_DIR`, keyed by the canonicalized config dir, so every
+    /// account's `settings.json` points at its OWN wrapper carrying its own baked
+    /// `GROVE_USAGE_DIR`/`GROVE_ORIG`. A single shared script would have its baked
+    /// env clobbered whenever a second account installs — breaking multi-account
+    /// monitoring (account A would write to B's usage dir and run B's original).
+    public func scriptPath(forConfigDir configDir: String) -> String {
+        scriptDir + "/grove-statusline-" + ClaudeService.mangle(canonicalPath(configDir)) + ".sh"
+    }
 
     /// Writes the wrapper (idempotent, chmod +x), reads `<configDir>/settings.json`,
     /// SAVES the prior `statusLine.command` (nil when absent OR already the wrapper),
@@ -30,6 +35,7 @@ public struct StatuslineInstaller: Sendable {
         // `GROVE_ORIG='…'`. On first install the existing command itself is the
         // original.
         let settingsPath = configDir + "/settings.json"
+        let scriptPath = self.scriptPath(forConfigDir: configDir)
         var settings = StatuslineInstaller.readSettings(at: settingsPath)
         let currentCommand = (settings["statusLine"] as? [String: Any])?["command"] as? String
 

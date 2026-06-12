@@ -33,7 +33,7 @@ final class StatuslineInstallerTests: XCTestCase {
         let saved = try installer.install(configDir: configDir.path)
 
         // The wrapper script exists and is executable under the injected scriptDir.
-        let script = supportBin.appendingPathComponent("grove-statusline.sh").path
+        let script = installer.scriptPath(forConfigDir: configDir.path)
         XCTAssertTrue(fm.isExecutableFile(atPath: script))
         // settings.json now points at the wrapper.
         let s = try readSettings()
@@ -49,7 +49,7 @@ final class StatuslineInstallerTests: XCTestCase {
         XCTAssertNil(saved, "no prior statusLine -> nothing to restore")
         let line = try readSettings()["statusLine"] as? [String: Any]
         XCTAssertEqual(line?["command"] as? String,
-                       supportBin.appendingPathComponent("grove-statusline.sh").path)
+                       installer.scriptPath(forConfigDir: configDir.path))
     }
 
     func testInstallIsIdempotentAndDoesNotOverwriteSavedOriginal() throws {
@@ -93,7 +93,7 @@ final class StatuslineInstallerTests: XCTestCase {
         try #"{"statusLine":{"type":"command","command":"\#(stubOriginal)"}}"#
             .write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
         _ = try installer.install(configDir: configDir.path)
-        let script = supportBin.appendingPathComponent("grove-statusline.sh").path
+        let script = installer.scriptPath(forConfigDir: configDir.path)
 
         // Feed the wrapper a realistic statusline stdin JSON via the injected
         // CLAUDE_CONFIG_DIR + saved-original env the installer bakes in.
@@ -112,6 +112,44 @@ final class StatuslineInstallerTests: XCTestCase {
         // ... and called through to the original (marker written).
         XCTAssertEqual(try String(contentsOf: URL(fileURLWithPath: marker), encoding: .utf8)
                         .trimmingCharacters(in: .whitespacesAndNewlines), "CALLED")
+    }
+
+    // MARK: - multi-account: each account gets its own wrapper (no clobber)
+
+    func testTwoAccountsGetIndependentWrappersWithOwnBakedEnv() throws {
+        // Account A and B share one installer (one scriptDir) but have distinct
+        // CLAUDE_CONFIG_DIRs. Installing B must NOT clobber A's wrapper or baked env
+        // (the multi-account regression a single shared script would cause).
+        let dirA = try Fixture.tempDir("statusline-A")
+        let dirB = try Fixture.tempDir("statusline-B")
+        try #"{"statusLine":{"type":"command","command":"A-orig"}}"#
+            .write(to: dirA.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+        try #"{"statusLine":{"type":"command","command":"B-orig"}}"#
+            .write(to: dirB.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+
+        let savedA = try installer.install(configDir: dirA.path)
+        let savedB = try installer.install(configDir: dirB.path)
+        XCTAssertEqual(savedA, "A-orig")
+        XCTAssertEqual(savedB, "B-orig")
+
+        let scriptA = installer.scriptPath(forConfigDir: dirA.path)
+        let scriptB = installer.scriptPath(forConfigDir: dirB.path)
+        XCTAssertNotEqual(scriptA, scriptB, "each account gets its own wrapper file")
+        XCTAssertTrue(fm.isExecutableFile(atPath: scriptA))
+        XCTAssertTrue(fm.isExecutableFile(atPath: scriptB))
+
+        // Each account's settings point at its OWN wrapper.
+        func command(in dir: URL) throws -> String? {
+            let data = try Data(contentsOf: dir.appendingPathComponent("settings.json"))
+            let s = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            return (s["statusLine"] as? [String: Any])?["command"] as? String
+        }
+        XCTAssertEqual(try command(in: dirA), scriptA)
+        XCTAssertEqual(try command(in: dirB), scriptB)
+
+        // B's install did NOT clobber A's baked original.
+        XCTAssertEqual(StatuslineInstaller.bakedOriginal(inScriptAt: scriptA), "A-orig")
+        XCTAssertEqual(StatuslineInstaller.bakedOriginal(inScriptAt: scriptB), "B-orig")
     }
 
     /// Local POSIX single-quote shell quoting (tests must not depend on GroveCore's).
