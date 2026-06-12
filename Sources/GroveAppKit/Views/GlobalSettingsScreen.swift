@@ -33,25 +33,19 @@ struct GlobalSettingsScreen: View {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: 10) {
-            rootTemplateSection
-            Divider()
-            projectsSection
+            SettingsSection(title: "Workspaces") {
+                SnapshotSafeTextField(title: "~/Workspaces/{project}",
+                                      text: rootTemplateBinding, monospaced: true)
+                Text("{project} is replaced by the project name; a per-project override wins.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            SettingsSection(title: "Projects") {
+                projectsList
+            }
         }
     }
 
     // MARK: - Workspaces root template
-
-    private var rootTemplateSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Workspaces root template")
-                .font(.subheadline.weight(.semibold))
-            SnapshotSafeTextField(title: "~/Workspaces/{project}",
-                                  text: rootTemplateBinding, monospaced: true)
-            Text("{project} is replaced by the project name; a per-project override wins.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-    }
 
     private var rootTemplateBinding: Binding<String> {
         Binding(get: { state.config.workspacesRootTemplate },
@@ -60,10 +54,8 @@ struct GlobalSettingsScreen: View {
 
     // MARK: - Projects list (add / remove)
 
-    private var projectsSection: some View {
+    private var projectsList: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Projects")
-                .font(.subheadline.weight(.semibold))
             if state.config.projects.isEmpty {
                 Text("No projects yet.")
                     .font(.caption)
