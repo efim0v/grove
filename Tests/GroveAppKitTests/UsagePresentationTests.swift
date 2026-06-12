@@ -19,10 +19,10 @@ final class UsagePresentationTests: XCTestCase {
         XCTAssertEqual(LimitBar(usedPercentage: 50, resetsAt: nil, now: now).resetCaption, "")
     }
 
-    func testModelBreakdownPercentagesSumTo100ForKnownTokens() {
+    func testModelBreakdownPercentagesSumTo100ForKnownTokens() throws {
         let breakdown = modelBreakdownPercentages(["a": 750, "b": 250])
-        XCTAssertEqual(breakdown["a"] ?? 0, 75, accuracy: 0.01)
-        XCTAssertEqual(breakdown["b"] ?? 0, 25, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(breakdown["a"]), 75, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(breakdown["b"]), 25, accuracy: 0.01)
         XCTAssertTrue(modelBreakdownPercentages([:]).isEmpty, "no tokens -> empty, no NaN")
     }
 
