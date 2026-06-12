@@ -266,48 +266,6 @@ public final class ClaudeService {
         return command.contains("claude")
     }
 
-    // MARK: - Cross-account session copy
-
-    /// Makes `session` resumable under `target` by copying its transcript into
-    /// the target account's identical `projects/<mangle(cwd)>/` path. The
-    /// feasibility experiment proved the session-lookup layer resolves a copied
-    /// jsonl (it reached the auth gate, not "No conversation found") — auth then
-    /// comes from the target account's keychain at runtime.
-    ///
-    /// Copies the `<id>.jsonl` and, when present, its sidecar `<id>/` directory
-    /// (subagents/workflows). NEVER overwrites: returns false (and copies
-    /// nothing) when the target jsonl already exists. Returns true when it
-    /// actually copied the jsonl. Throws only on unexpected FileManager errors.
-    @discardableResult
-    public func copySession(_ session: ClaudeSession,
-                            from source: AccountConfig,
-                            to target: AccountConfig) throws -> Bool {
-        let fm = FileManager.default
-        let mangled = ClaudeService.mangle(session.cwd)
-        let srcProjects = expandTilde(source.configDir) + "/projects/" + mangled
-        let dstProjects = expandTilde(target.configDir) + "/projects/" + mangled
-        let jsonlName = session.id + ".jsonl"
-        let srcJsonl = srcProjects + "/" + jsonlName
-        let dstJsonl = dstProjects + "/" + jsonlName
-
-        guard fm.fileExists(atPath: srcJsonl) else { return false }
-        guard !fm.fileExists(atPath: dstJsonl) else { return false }   // no overwrite
-
-        try fm.createDirectory(atPath: dstProjects, withIntermediateDirectories: true)
-        try fm.copyItem(atPath: srcJsonl, toPath: dstJsonl)
-
-        // Sidecar <id>/ dir (subagents, workflows) — copy when present and not
-        // already there. Its absence is normal (most sessions have none).
-        let srcSidecar = srcProjects + "/" + session.id
-        let dstSidecar = dstProjects + "/" + session.id
-        var isDir: ObjCBool = false
-        if fm.fileExists(atPath: srcSidecar, isDirectory: &isDir), isDir.boolValue,
-           !fm.fileExists(atPath: dstSidecar) {
-            try fm.copyItem(atPath: srcSidecar, toPath: dstSidecar)
-        }
-        return true
-    }
-
     // MARK: - Launch commands
 
     /// Candidate install locations for the claude CLI, checked in order.

@@ -15,9 +15,14 @@ final class AppStateActionTests: XCTestCase {
         configURL = root.appendingPathComponent("config.json")
     }
 
+    /// Builds an AppState wired to the test runner/config. ALWAYS points
+    /// canonicalDirOverride at a per-state temp dir so linking can never touch the
+    /// real ~/.claude — tests that need a specific canonical dir re-point it after.
     private func makeState(runner: ScriptedRunner) -> AppState {
         let state = AppState(configStore: ConfigStore(url: configURL))
         state.cmuxOverride = stubbedCmux(runner)
+        // Fail-safe: default the canonical store to a temp dir, NEVER $HOME/.claude.
+        state.canonicalDirOverride = root.appendingPathComponent("canonical-default").path
         return state
     }
 
@@ -153,7 +158,7 @@ final class AppStateActionTests: XCTestCase {
 
     // MARK: - resumeSession (cross-account, feasibility verdict: FEASIBLE)
 
-    /// Same-account resume copies nothing and just launches --resume in the
+    /// Same-account resume links nothing and just launches --resume in the
     /// session's own cwd under its owning account.
     func testResumeSessionSameAccountLaunchesWithoutCopying() async throws {
         let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
@@ -171,58 +176,99 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(args[commandIndex + 1].contains("--resume 'sess-same'"))
     }
 
-    /// Cross-account resume copies the source jsonl into the target account's
-    /// identical projects/<mangle(cwd)>/ path, then launches --resume under the
-    /// target account's CLAUDE_CONFIG_DIR.
-    func testResumeSessionCrossAccountCopiesJsonlThenLaunchesUnderTarget() async throws {
+    /// Cross-account resume LINKS both the owning and the target account into the
+    /// canonical default (`~/.claude`) store, then launches --resume under the
+    /// target's CLAUDE_CONFIG_DIR. No copy: the transcript physically lives in
+    /// canonical and is visible to the target through the symlinked projects dir.
+    func testResumeSessionCrossAccountLinksBothAccountsThenLaunchesUnderTarget() async throws {
+        let home = NSHomeDirectory()
         let cwd = "/ws/feat-x"
         let id = "sess-cross"
-        // Two real config dirs; source owns the transcript.
-        let srcDir = root.appendingPathComponent("acc-src")
-        let dstDir = root.appendingPathComponent("acc-dst")
-        let source = AccountConfig(name: "owner", configDir: srcDir.path)
-        let target = AccountConfig(name: "work", configDir: dstDir.path)
+        // Canonical = the default account at $HOME/.claude (the real canonical
+        // path; we never write into it — the owner OWNS the transcript under it,
+        // staged below in a temp dir we point configDir at). To keep tests off the
+        // real ~/.claude, the default account's configDir is a TEMP dir we treat
+        // as canonical, and AppState's canonical check matches on configDir, so we
+        // make the default account point at a temp "canonical" dir.
+        let canonicalDir = root.appendingPathComponent("canonical")   // default account dir
+        let ownerDir = root.appendingPathComponent("acc-owner")        // owning, non-canonical
+        let targetDir = root.appendingPathComponent("acc-target")      // target, non-canonical
+        try FileManager.default.createDirectory(at: canonicalDir, withIntermediateDirectories: true)
+
+        // The owning account holds the transcript at its projects/<mangled> path.
+        let mangled = ClaudeService.mangle(cwd)
+        let ownerProjects = ownerDir.appendingPathComponent("projects").appendingPathComponent(mangled)
+        try FileManager.default.createDirectory(at: ownerProjects, withIntermediateDirectories: true)
+        try "transcript".write(to: ownerProjects.appendingPathComponent("\(id).jsonl"),
+                               atomically: true, encoding: .utf8)
+
+        // Config: the canonical/default account FIRST (its configDir is treated as
+        // canonical because AppState resolves canonical = the account whose expanded
+        // configDir is the default account dir; see canonicalAccount). Mark it by
+        // pointing the default account at canonicalDir via a test seam.
+        let defaultAccount = AccountConfig(name: "default", configDir: canonicalDir.path)
+        let owner = AccountConfig(name: "owner", configDir: ownerDir.path)
+        let target = AccountConfig(name: "work", configDir: targetDir.path)
         try ConfigStore(url: configURL).save(GroveConfig(
             version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
-            projects: [], accounts: [source, target]))
-
-        let mangled = ClaudeService.mangle(cwd)
-        let srcProjects = srcDir.appendingPathComponent("projects").appendingPathComponent(mangled)
-        try FileManager.default.createDirectory(at: srcProjects, withIntermediateDirectories: true)
-        try "transcript".write(to: srcProjects.appendingPathComponent("\(id).jsonl"),
-                               atomically: true, encoding: .utf8)
+            projects: [], accounts: [defaultAccount, owner, target]))
 
         let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
         let state = makeState(runner: runner)
-        let session = ClaudeSession(id: id, cwd: cwd, title: nil,
+        state.canonicalDirOverride = canonicalDir.path   // test seam: treat this as ~/.claude
+        let session = ClaudeSession(id: id, cwd: cwd, title: "Tidy",
                                     lastActivity: Date(), accountName: "owner", gitBranch: nil)
 
         await state.resumeSession(session, as: target)
 
         XCTAssertNil(state.actionError)
-        // Copied into target's projects dir.
-        let dstJsonl = dstDir.appendingPathComponent("projects")
-            .appendingPathComponent(mangled).appendingPathComponent("\(id).jsonl")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: dstJsonl.path))
-        // Launched under the TARGET account's config dir.
+        // Owner's wholesale dirs are symlinked into canonical.
+        for name in SharedSessionStore.wholesaleDirs {
+            let link = ownerDir.appendingPathComponent(name).path
+            XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link),
+                           canonicalDir.appendingPathComponent(name).path, "owner \(name)")
+            let tlink = targetDir.appendingPathComponent(name).path
+            XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: tlink),
+                           canonicalDir.appendingPathComponent(name).path, "target \(name)")
+        }
+        // Owner's projects/<mangled> is symlinked; the transcript migrated into canonical.
+        let ownerLink = ownerDir.appendingPathComponent("projects/\(mangled)").path
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: ownerLink),
+                       canonicalDir.appendingPathComponent("projects/\(mangled)").path)
+        XCTAssertEqual(try String(contentsOf: canonicalDir
+            .appendingPathComponent("projects/\(mangled)/\(id).jsonl"), encoding: .utf8), "transcript")
+        // Target's projects/<mangled> is a symlink into canonical → transcript visible.
+        let targetLink = targetDir.appendingPathComponent("projects/\(mangled)").path
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: targetLink),
+                       canonicalDir.appendingPathComponent("projects/\(mangled)").path)
+        // Both accounts are now marked sharedStore in config.
+        XCTAssertEqual(state.config.accounts.first { $0.name == "owner" }?.sharedStore, true)
+        XCTAssertEqual(state.config.accounts.first { $0.name == "work" }?.sharedStore, true)
+        XCTAssertEqual(state.config.accounts.first { $0.name == "default" }?.sharedStore, false,
+                       "the canonical account is never marked shared")
+        // Launched under the TARGET account's config dir with --resume.
         let args = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first).args
         let commandIndex = try XCTUnwrap(args.firstIndex(of: "--command"))
-        XCTAssertTrue(args[commandIndex + 1].contains("CLAUDE_CONFIG_DIR=\(shellQuote(dstDir.path))"))
+        XCTAssertTrue(args[commandIndex + 1].contains("CLAUDE_CONFIG_DIR=\(shellQuote(targetDir.path))"))
         XCTAssertTrue(args[commandIndex + 1].contains("--resume '\(id)'"))
+        _ = home
     }
 
-    /// Cross-account resume when the owning account is no longer in config: the
-    /// transcript can't be located to copy, so resuming would only surface "No
-    /// conversation found" in the terminal. resumeSession must abort with an
-    /// actionError and launch nothing (issue 3).
+    /// Cross-account resume when the owning account is no longer in config: we
+    /// can't locate/link the transcript, so resuming would only surface "No
+    /// conversation found". resumeSession must abort with an actionError and
+    /// launch nothing.
     func testResumeSessionCrossAccountWithMissingOwnerSetsActionErrorAndDoesNotLaunch() async throws {
-        // config has only the target account; the owner "ghost" is absent.
-        let target = AccountConfig(name: "work", configDir: "/tmp/grove-test-claude")
+        let canonicalDir = root.appendingPathComponent("canonical-missing-owner")
+        try FileManager.default.createDirectory(at: canonicalDir, withIntermediateDirectories: true)
+        let defaultAccount = AccountConfig(name: "default", configDir: canonicalDir.path)
+        let target = AccountConfig(name: "work", configDir: root.appendingPathComponent("t").path)
         try ConfigStore(url: configURL).save(GroveConfig(
             version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
-            projects: [], accounts: [target]))
+            projects: [], accounts: [defaultAccount, target]))
         let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
         let state = makeState(runner: runner)
+        state.canonicalDirOverride = canonicalDir.path
         let session = ClaudeSession(id: "sess-ghost", cwd: "/ws/feat-x", title: nil,
                                     lastActivity: Date(), accountName: "ghost", gitBranch: nil)
 
@@ -231,64 +277,73 @@ final class AppStateActionTests: XCTestCase {
         let error = try XCTUnwrap(state.actionError)
         XCTAssertTrue(error.contains("ghost"), "got: \(error)")
         XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty,
-                      "no launch when the transcript can't be located")
+                      "no launch when the owning account can't be linked")
     }
 
-    /// Cross-account resume when the source jsonl is absent: copySession returns
-    /// false and the target holds no prior copy, so the lookup would fail.
-    /// resumeSession must abort with an actionError and launch nothing (issue 3).
-    func testResumeSessionCrossAccountWithMissingSourceJsonlSetsActionErrorAndDoesNotLaunch() async throws {
-        let srcDir = root.appendingPathComponent("acc-src-empty")
-        let dstDir = root.appendingPathComponent("acc-dst-empty")
-        let source = AccountConfig(name: "owner", configDir: srcDir.path)
-        let target = AccountConfig(name: "work", configDir: dstDir.path)
+    /// Cross-account resume with NO canonical/default account in config: sharing
+    /// is impossible without a canonical `~/.claude`. Abort with a clear error,
+    /// launch nothing.
+    func testResumeSessionCrossAccountWithoutCanonicalAccountAborts() async throws {
+        // Two non-canonical accounts, neither pointing at the canonical dir.
+        let owner = AccountConfig(name: "owner", configDir: root.appendingPathComponent("o").path)
+        let target = AccountConfig(name: "work", configDir: root.appendingPathComponent("t2").path)
         try ConfigStore(url: configURL).save(GroveConfig(
             version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
-            projects: [], accounts: [source, target]))
-        // Neither account has the transcript on disk.
+            projects: [], accounts: [owner, target]))
         let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
         let state = makeState(runner: runner)
-        let session = ClaudeSession(id: "sess-missing", cwd: "/ws/feat-x", title: nil,
+        state.canonicalDirOverride = root.appendingPathComponent("nonexistent-canonical").path
+        let session = ClaudeSession(id: "sess-x", cwd: "/ws/feat-x", title: nil,
                                     lastActivity: Date(), accountName: "owner", gitBranch: nil)
 
         await state.resumeSession(session, as: target)
 
         let error = try XCTUnwrap(state.actionError)
-        XCTAssertTrue(error.contains("not found"), "got: \(error)")
+        XCTAssertTrue(error.lowercased().contains("canonical") || error.contains("~/.claude"),
+                      "got: \(error)")
         XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)
     }
 
-    /// When copySession returns false because the target ALREADY holds the
-    /// transcript (a prior resume), that's harmless: the target resumes its own
-    /// copy. resumeSession must launch and set NO actionError (issue 3 guard
-    /// must not over-fire).
-    func testResumeSessionCrossAccountWhenTargetAlreadyHasCopyLaunchesWithoutError() async throws {
-        let cwd = "/ws/feat-x"
-        let id = "sess-existing"
-        let srcDir = root.appendingPathComponent("acc-src-exist")
-        let dstDir = root.appendingPathComponent("acc-dst-exist")
-        let source = AccountConfig(name: "owner", configDir: srcDir.path)
-        let target = AccountConfig(name: "work", configDir: dstDir.path)
+    /// Resuming the canonical (default) account's OWN session under another
+    /// account: the canonical account is never linked to itself, only the TARGET
+    /// is linked. Still launches under the target.
+    func testResumeSessionFromCanonicalOwnerLinksOnlyTheTarget() async throws {
+        let cwd = "/ws/feat-z"
+        let id = "sess-canon"
+        let canonicalDir = root.appendingPathComponent("canon-owner")
+        let targetDir = root.appendingPathComponent("acc-target-2")
+        try FileManager.default.createDirectory(at: canonicalDir, withIntermediateDirectories: true)
+        let mangled = ClaudeService.mangle(cwd)
+        let canonProjects = canonicalDir.appendingPathComponent("projects").appendingPathComponent(mangled)
+        try FileManager.default.createDirectory(at: canonProjects, withIntermediateDirectories: true)
+        try "t".write(to: canonProjects.appendingPathComponent("\(id).jsonl"),
+                      atomically: true, encoding: .utf8)
+        let defaultAccount = AccountConfig(name: "default", configDir: canonicalDir.path)
+        let target = AccountConfig(name: "work", configDir: targetDir.path)
         try ConfigStore(url: configURL).save(GroveConfig(
             version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
-            projects: [], accounts: [source, target]))
-        let mangled = ClaudeService.mangle(cwd)
-        // Both source and target already hold the jsonl -> copySession returns false.
-        for dir in [srcDir, dstDir] {
-            let projects = dir.appendingPathComponent("projects").appendingPathComponent(mangled)
-            try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
-            try "transcript".write(to: projects.appendingPathComponent("\(id).jsonl"),
-                                   atomically: true, encoding: .utf8)
-        }
+            projects: [], accounts: [defaultAccount, target]))
         let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
         let state = makeState(runner: runner)
+        state.canonicalDirOverride = canonicalDir.path
         let session = ClaudeSession(id: id, cwd: cwd, title: nil,
-                                    lastActivity: Date(), accountName: "owner", gitBranch: nil)
+                                    lastActivity: Date(), accountName: "default", gitBranch: nil)
 
         await state.resumeSession(session, as: target)
 
-        XCTAssertNil(state.actionError, "an existing target copy is valid, not an error")
-        XCTAssertEqual(runner.calls(startingWith: "new-workspace").count, 1)
+        XCTAssertNil(state.actionError)
+        // Canonical owner is NOT symlinked to itself (its file-history stays absent/real).
+        XCTAssertFalse((try? FileManager.default.destinationOfSymbolicLink(
+            atPath: canonicalDir.appendingPathComponent("file-history").path)) != nil,
+            "the canonical account is never symlinked to itself")
+        // Target is linked.
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(
+            atPath: targetDir.appendingPathComponent("file-history").path),
+            canonicalDir.appendingPathComponent("file-history").path)
+        XCTAssertEqual(state.config.accounts.first { $0.name == "work" }?.sharedStore, true)
+        let args = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first).args
+        let commandIndex = try XCTUnwrap(args.firstIndex(of: "--command"))
+        XCTAssertTrue(args[commandIndex + 1].contains("--resume '\(id)'"))
     }
 
     // MARK: - createWorkspace / rollback (real git fixture)

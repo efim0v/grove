@@ -66,6 +66,12 @@ public final class AppState: ObservableObject {
     /// tiny fixture repo instead of building 300+ commits.
     internal var graphPageSize = 300
 
+    /// Test seam: the canonical store directory (the default `~/.claude`). nil
+    /// means the real default — `$HOME/.claude`. PRODUCTION resolves the canonical
+    /// dir to the real default account (`~/.claude`); TESTS MUST set this override
+    /// (done in the suite's makeState/setUp) so linking never touches the real home.
+    internal var canonicalDirOverride: String?
+
     public init(configStore: ConfigStore) {
         self.configStore = configStore
         let loaded = configStore.load()
@@ -341,55 +347,78 @@ extension AppState {
         await launchClaude(cwd: fallbackCwd, title: fallbackTitle, account: account, resume: s.id)
     }
 
-    /// Resumes `session` under `account` (Sessions tab "Resume" / "Resume as
-    /// <name>"). When `account` differs from the session's owning account, the
-    /// feasibility experiment (verdict: FEASIBLE) lets us make it resumable by
-    /// copying the transcript into the target account's identical projects path
-    /// first — the lookup layer resolves the copied jsonl; auth comes from the
-    /// target account's keychain at runtime. Same-account resume copies nothing.
-    /// Any reason the copied transcript wouldn't be resolvable (owning account
-    /// missing from config, source jsonl absent and no prior target copy, or a
-    /// FileManager error) lands in actionError and aborts the launch, rather than
-    /// surfacing only as "No conversation found" inside the spawned terminal.
+    /// The canonical store directory: the default account's `~/.claude` (or the
+    /// test override). Linking roots here; it is never symlinked.
+    private var canonicalDir: String {
+        canonicalDirOverride ?? (NSHomeDirectory() + "/.claude")
+    }
+
+    /// The account whose expanded configDir IS the canonical dir, if configured.
+    /// Sharing is impossible without it (nothing to root the symlinks at).
+    private var canonicalAccount: AccountConfig? {
+        config.accounts.first { expandTilde($0.configDir) == canonicalDir }
+    }
+
+    /// Links `account` into the canonical store unless it IS the canonical account
+    /// (never linked to itself). Marks it sharedStore=true and persists. Returns
+    /// nil on success, or an error message describing the failure (caller aborts).
+    private func ensureLinkedForResume(_ account: AccountConfig, mangledCwd: String) -> String? {
+        guard expandTilde(account.configDir) != canonicalDir else { return nil }  // canonical: skip
+        let store = SharedSessionStore()
+        let dir = expandTilde(account.configDir)
+        // The account's CLAUDE_CONFIG_DIR must exist before its wholesale dirs can
+        // be symlinked into canonical (createSymbolicLink needs a real parent).
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        do {
+            _ = try store.ensureLinked(accountDir: dir, canonicalDir: canonicalDir)
+            _ = try store.ensureWorkspaceLinked(accountDir: dir, canonicalDir: canonicalDir,
+                                                mangledCwd: mangledCwd)
+        } catch {
+            return "Couldn't link “\(account.name)” to the shared store: \(error.localizedDescription)"
+        }
+        if let index = config.accounts.firstIndex(where: { $0.name == account.name }),
+           !config.accounts[index].sharedStore {
+            config.accounts[index].sharedStore = true
+            persist()
+        }
+        return nil
+    }
+
+    /// Resumes `session` under `account`. Same-account: links nothing, just
+    /// launches `--resume` in the session's cwd. Cross-account (D7, no copy): links
+    /// BOTH the owning and the target account into the canonical store, so the
+    /// transcript physically lives in canonical and is visible to the target, then
+    /// launches `CLAUDE_CONFIG_DIR=<target> claude --resume <id>`. Aborts with an
+    /// actionError (and launches nothing) when: there is no canonical/default
+    /// account to root the share, the owning account is gone from config, linking
+    /// fails, or the same session is live under a DIFFERENT account (concurrency
+    /// guard, added in Task 4).
     public func resumeSession(_ session: ClaudeSession, as account: AccountConfig) async {
         if account.name != session.accountName {
-            guard let source = config.accounts.first(where: { $0.name == session.accountName }) else {
-                // The owning account is gone from config — we can't locate the
-                // transcript to copy, so the spawned terminal would only show
-                // "No conversation found". Surface it here instead.
+            guard canonicalAccount != nil else {
+                actionError = "Can't share sessions without a canonical account: add an "
+                    + "account whose config dir is ~/.claude (the default account)."
+                return
+            }
+            guard let owner = config.accounts.first(where: { $0.name == session.accountName }) else {
                 actionError = "Can't resume as \(account.name): the owning account "
                     + "“\(session.accountName)” is no longer configured."
                 return
             }
-            do {
-                // false = the source transcript wasn't found (or the target copy
-                // already exists). The "already exists" case is harmless — the
-                // target can resume its own copy — but a missing source means the
-                // lookup will fail in the terminal, so verify before launching.
-                let copied = try ClaudeService().copySession(session, from: source, to: account)
-                if !copied, !targetHasTranscript(session, account: account) {
-                    actionError = "Can't resume as \(account.name): transcript for "
-                        + "session \(session.id.prefix(8)) not found under "
-                        + "“\(session.accountName)”."
-                    return
-                }
-            } catch {
-                actionError = String(describing: error)
+            let mangled = ClaudeService.mangle(session.cwd)
+            // Link the owner first (so the transcript migrates into canonical),
+            // then the target (so the symlinked store makes it visible).
+            if let error = ensureLinkedForResume(owner, mangledCwd: mangled) {
+                actionError = error
+                return
+            }
+            if let error = ensureLinkedForResume(account, mangledCwd: mangled) {
+                actionError = error
                 return
             }
         }
         let title = session.title ?? (session.cwd as NSString).lastPathComponent
         await launchClaude(cwd: session.cwd, title: title, account: account, resume: session.id)
-    }
-
-    /// Whether `account` already holds the session's transcript at its identical
-    /// projects/<mangle(cwd)>/ path — i.e. a prior copy makes the resume valid
-    /// even when copySession returns false ("already exists").
-    private func targetHasTranscript(_ session: ClaudeSession, account: AccountConfig) -> Bool {
-        let mangled = ClaudeService.mangle(session.cwd)
-        let jsonl = expandTilde(account.configDir)
-            + "/projects/" + mangled + "/" + session.id + ".jsonl"
-        return FileManager.default.fileExists(atPath: jsonl)
     }
 }
 
