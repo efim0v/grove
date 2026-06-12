@@ -77,6 +77,11 @@ public final class AppState: ObservableObject {
     /// set { _ in true } so a fixture sessions/<pid>.json counts as live.
     internal var liveProcessValidatorOverride: ((Int32) -> Bool)?
 
+    /// Test seam: the app-support dir the statusline wrapper script is shipped
+    /// into. nil = the real ~/Library/Application Support/Grove/bin. TESTS set a
+    /// temp dir so install never writes under the real app-support tree.
+    internal var statuslineScriptDirOverride: String?
+
     public init(configStore: ConfigStore) {
         self.configStore = configStore
         let loaded = configStore.load()
@@ -555,5 +560,42 @@ extension AppState {
         } catch {
             actionError = String(describing: error)
         }
+    }
+}
+
+// MARK: - Usage monitoring
+
+extension AppState {
+    private var statuslineScriptDir: String {
+        statuslineScriptDirOverride
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Grove/bin").path
+    }
+
+    /// Installs the grove statusline wrapper for `account`, saving its prior
+    /// command into AccountConfig.savedStatusline and marking monitoring=true.
+    /// Failures land in actionError; nothing is mutated on failure.
+    public func installMonitoring(_ account: AccountConfig) {
+        let installer = StatuslineInstaller(scriptDir: statuslineScriptDir)
+        let dir = expandTilde(account.configDir)
+        let saved: String?
+        do { saved = try installer.install(configDir: dir) }
+        catch { actionError = "Couldn't enable monitoring for “\(account.name)”: \(error.localizedDescription)"; return }
+        guard let i = config.accounts.firstIndex(where: { $0.name == account.name }) else { return }
+        config.accounts[i].monitoring = true
+        config.accounts[i].savedStatusline = saved
+        persist()
+    }
+
+    /// Restores the saved original statusline command and clears monitoring.
+    public func disableMonitoring(_ account: AccountConfig) {
+        let installer = StatuslineInstaller(scriptDir: statuslineScriptDir)
+        let dir = expandTilde(account.configDir)
+        do { try installer.uninstall(configDir: dir, savedStatusline: account.savedStatusline) }
+        catch { actionError = "Couldn't disable monitoring for “\(account.name)”: \(error.localizedDescription)"; return }
+        guard let i = config.accounts.firstIndex(where: { $0.name == account.name }) else { return }
+        config.accounts[i].monitoring = false
+        config.accounts[i].savedStatusline = nil
+        persist()
     }
 }

@@ -608,4 +608,54 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(error.lowercased().contains("canonical") || error.contains("~/.claude"))
         XCTAssertEqual(state.config.accounts.first { $0.name == "work" }?.sharedStore, false)
     }
+
+    // MARK: - monitoring (statusline capture)
+
+    func testInstallMonitoringRepointsSettingsAndMarksMonitoringWithSavedOriginal() async throws {
+        let accDir = root.appendingPathComponent("acc-monitor")
+        try FileManager.default.createDirectory(at: accDir, withIntermediateDirectories: true)
+        let original = "/bin/echo hi"
+        try #"{"statusLine":{"type":"command","command":"\#(original)"}}"#
+            .write(to: accDir.appendingPathComponent("settings.json"),
+                   atomically: true, encoding: .utf8)
+        let work = AccountConfig(name: "work", configDir: accDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [work]))
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+        state.statuslineScriptDirOverride = root.appendingPathComponent("support-bin").path
+
+        state.installMonitoring(work)
+
+        XCTAssertNil(state.actionError)
+        let saved = state.config.accounts.first { $0.name == "work" }
+        XCTAssertEqual(saved?.monitoring, true)
+        XCTAssertEqual(saved?.savedStatusline, original)
+    }
+
+    func testDisableMonitoringRestoresOriginalAndClearsFlag() async throws {
+        let accDir = root.appendingPathComponent("acc-monitor-off")
+        try FileManager.default.createDirectory(at: accDir, withIntermediateDirectories: true)
+        let original = "/bin/echo hi"
+        try #"{"statusLine":{"type":"command","command":"\#(original)"}}"#
+            .write(to: accDir.appendingPathComponent("settings.json"),
+                   atomically: true, encoding: .utf8)
+        var work = AccountConfig(name: "work", configDir: accDir.path)
+        work.monitoring = true
+        work.savedStatusline = original
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [work]))
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+        state.statuslineScriptDirOverride = root.appendingPathComponent("support-bin2").path
+
+        state.disableMonitoring(work)
+
+        XCTAssertEqual(state.config.accounts.first { $0.name == "work" }?.monitoring, false)
+        XCTAssertNil(state.config.accounts.first { $0.name == "work" }?.savedStatusline)
+        let data = try Data(contentsOf: accDir.appendingPathComponent("settings.json"))
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let line = obj?["statusLine"] as? [String: Any]
+        XCTAssertEqual(line?["command"] as? String, original)
+    }
 }
