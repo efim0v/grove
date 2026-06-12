@@ -43,6 +43,7 @@ public enum SnapshotMode {
         case graph = "graph"
         case sessions = "sessions"
         case accounts = "accounts"
+        case accountsUsage = "accounts-usage"
         case settings = "settings"
         case errorBanner = "error-banner"
 
@@ -57,7 +58,7 @@ public enum SnapshotMode {
             case .rootWorkspaces, .workspacesExpanded, .graph, .sessions:
                 return CGSize(width: 760, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)
-            case .accounts: return CGSize(width: 560, height: 480)
+            case .accounts, .accountsUsage: return CGSize(width: 560, height: 480)
             case .settings: return CGSize(width: 560, height: 560)
             case .errorBanner: return CGSize(width: 420, height: 504)
             }
@@ -132,7 +133,143 @@ public enum SnapshotMode {
         ]
         state.graphRepoPath = project.path + "/acme_client"
         state.graphNodes = fixtureGraphNodes(now: now)
+
+        // Usage fixture (Task 12): deterministic analytics + captures so the
+        // accounts-usage scene renders bars/cards/token+cost tables/breakdown
+        // and every header chip shows a real aggregate. Reset countdowns use
+        // the fixture `now`, so they stay stable across renders.
+        state.snapshotsByAccount = fixtureSnapshotsByAccount(now: now)
+        state.usageByAccount = fixtureUsageByAccount(now: now)
+        // Internally-consistent tier namespace (FIX I2): the SAME canonical
+        // strings the Accounts card (organizationRateLimitTier) and
+        // RateLimitModel.tierWeights key on, so the aggregate badge weights
+        // correctly and accounts.png / accounts-usage.png never show a
+        // max_20x vs default_claude_max_20x mismatch.
+        state.tierOverride = ["default": "default_claude_max_20x",
+                              "work": "default_claude_max_5x"]
         return state
+    }
+
+    // MARK: - Usage fixtures (Task 12)
+
+    /// ISO8601 (`.withInternetDateTime`) string for a reset instant relative to
+    /// the fixture `now`, so `RateLimitModel.window` parses a stable countdown.
+    private static let isoReset: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    /// Most-recent statusline captures per account. The accounts-usage scene
+    /// renders 5h/weekly bars from these; `aggregateRemaining` reads the latest
+    /// capture's `fiveHour`/`sevenDay` used% for the header chip.
+    ///   default: 5h 30% (resets in 2h), weekly 45%
+    ///   work:    5h 70% (resets in 1h), weekly 60%
+    static func fixtureSnapshotsByAccount(now: Date) -> [String: [UsageSnapshot]] {
+        func reset(_ seconds: TimeInterval) -> String {
+            isoReset.string(from: now.addingTimeInterval(seconds))
+        }
+        let defaultSnap = UsageSnapshot(
+            accountName: "default", sessionId: "s-mp-1",
+            capturedAt: now.addingTimeInterval(-900),
+            cwd: "/Users/demo/Workspaces/acme.shop/media-pipeline",
+            modelId: "claude-opus-4-8", modelDisplayName: "Opus 4.8",
+            effort: "high", contextUsedPercentage: 42,
+            totalInputTokens: 184_300, totalCostUSD: 6.42,
+            fiveHour: CapturedWindow(usedPercentage: 30, resetsAt: reset(2 * 3_600)),
+            sevenDay: CapturedWindow(usedPercentage: 45, resetsAt: reset(3 * 86_400)))
+        let workSnap = UsageSnapshot(
+            accountName: "work", sessionId: "s-mu-1",
+            capturedAt: now.addingTimeInterval(-120),
+            cwd: "/Users/demo/Workspaces/acme.shop/media-upload",
+            modelId: "claude-sonnet-4-6", modelDisplayName: "Sonnet 4.6",
+            effort: "medium", contextUsedPercentage: 18,
+            totalInputTokens: 92_100, totalCostUSD: 1.87,
+            fiveHour: CapturedWindow(usedPercentage: 70, resetsAt: reset(1 * 3_600)),
+            sevenDay: CapturedWindow(usedPercentage: 60, resetsAt: reset(4 * 86_400)))
+        return ["default": [defaultSnap], "work": [workSnap]]
+    }
+
+    /// Per-account analytics: today/month token+cost rollups, per-model cost for
+    /// the breakdown %, and a `sessions` entry per fixture session id so the
+    /// session cards show real numbers. Account-of-record matches each fixture
+    /// ClaudeSession's `accountName`.
+    static func fixtureUsageByAccount(now: Date) -> [String: AccountUsageAnalytics] {
+        let root = "/Users/demo/Workspaces/acme.shop"
+        let opus = "claude-opus-4-8"
+        let sonnet = "claude-sonnet-4-6"
+
+        // default account: media-pipeline (s-mp-1), folders-followup (s-ff-1),
+        // group-chats loose (s-gc-1), media-upload retry (s-mu-2).
+        let defaultSessions: [String: SessionUsage] = [
+            "s-mp-1": SessionUsage(sessionId: "s-mp-1", cwd: root + "/media-pipeline",
+                inputTokens: 184_300, outputTokens: 38_900, cost: 6.42,
+                modelBreakdown: [opus: 170_000, sonnet: 53_200],
+                lastActivity: now.addingTimeInterval(-900)),
+            "s-ff-1": SessionUsage(sessionId: "s-ff-1", cwd: root + "/folders-followup",
+                inputTokens: 42_100, outputTokens: 9_800, cost: 1.31,
+                modelBreakdown: [sonnet: 51_900],
+                lastActivity: now.addingTimeInterval(-20 * 86_400)),
+            "s-gc-1": SessionUsage(sessionId: "s-gc-1",
+                cwd: "/Users/demo/Desktop/acme.shop/acme_client/.worktrees/group-chats",
+                inputTokens: 17_400, outputTokens: 4_100, cost: 0.58,
+                modelBreakdown: [sonnet: 21_500],
+                lastActivity: now.addingTimeInterval(-9 * 86_400)),
+            "s-mu-2": SessionUsage(sessionId: "s-mu-2", cwd: root + "/media-upload",
+                inputTokens: 8_900, outputTokens: 2_300, cost: 0.27,
+                modelBreakdown: [sonnet: 11_200],
+                lastActivity: now.addingTimeInterval(-1 * 86_400)),
+        ]
+        let defaultAnalytics = AccountUsageAnalytics(
+            accountName: "default",
+            today: UsageTotals(inputTokens: 184_300, outputTokens: 38_900,
+                               cacheReadTokens: 920_000, cacheWrite5mTokens: 41_000,
+                               cacheWrite1hTokens: 6_000, cost: 6.42),
+            thisMonth: UsageTotals(inputTokens: 1_640_500, outputTokens: 312_400,
+                                   cacheReadTokens: 8_900_000, cacheWrite5mTokens: 410_000,
+                                   cacheWrite1hTokens: 52_000, cost: 58.71),
+            last7d: UsageTotals(inputTokens: 612_300, outputTokens: 121_900,
+                                cacheReadTokens: 3_100_000, cacheWrite5mTokens: 150_000,
+                                cacheWrite1hTokens: 18_000, cost: 22.18),
+            sessions: defaultSessions,
+            costByModel: [opus: 51.90, sonnet: 6.81],
+            byCwd: [
+                root + "/media-pipeline": UsageTotals(inputTokens: 184_300, cost: 6.42),
+                root + "/folders-followup": UsageTotals(inputTokens: 42_100, cost: 1.31),
+            ],
+            unpricedModels: [], unpricedCost: 0)
+
+        // work account: media-upload endpoint (s-mu-1), migration dry-run (s-ff-2).
+        let workSessions: [String: SessionUsage] = [
+            "s-mu-1": SessionUsage(sessionId: "s-mu-1", cwd: root + "/media-upload",
+                inputTokens: 92_100, outputTokens: 21_400, cost: 1.87,
+                modelBreakdown: [sonnet: 113_500],
+                lastActivity: now.addingTimeInterval(-120)),
+            "s-ff-2": SessionUsage(sessionId: "s-ff-2", cwd: root + "/folders-followup",
+                inputTokens: 14_200, outputTokens: 3_600, cost: 0.41,
+                modelBreakdown: [sonnet: 17_800],
+                lastActivity: now.addingTimeInterval(-21 * 86_400)),
+        ]
+        let workAnalytics = AccountUsageAnalytics(
+            accountName: "work",
+            today: UsageTotals(inputTokens: 92_100, outputTokens: 21_400,
+                               cacheReadTokens: 430_000, cacheWrite5mTokens: 22_000,
+                               cacheWrite1hTokens: 3_000, cost: 1.87),
+            thisMonth: UsageTotals(inputTokens: 740_200, outputTokens: 158_700,
+                                   cacheReadTokens: 3_900_000, cacheWrite5mTokens: 190_000,
+                                   cacheWrite1hTokens: 24_000, cost: 19.44),
+            last7d: UsageTotals(inputTokens: 281_500, outputTokens: 61_200,
+                                cacheReadTokens: 1_500_000, cacheWrite5mTokens: 72_000,
+                                cacheWrite1hTokens: 9_000, cost: 7.92),
+            sessions: workSessions,
+            costByModel: [sonnet: 19.44],
+            byCwd: [
+                root + "/media-upload": UsageTotals(inputTokens: 92_100, cost: 1.87),
+                root + "/folders-followup": UsageTotals(inputTokens: 14_200, cost: 0.41),
+            ],
+            unpricedModels: [], unpricedCost: 0)
+
+        return ["default": defaultAnalytics, "work": workAnalytics]
     }
 
     /// Ages are relative to `now` (real clock at render time) because the
@@ -418,7 +555,10 @@ public enum SnapshotMode {
         case .sessions:
             state.selectedTab = .sessions
             state.route = .project(projectID)
-        case .accounts:
+        case .accounts, .accountsUsage:
+            // Both route to .accounts; the fixture already carries the usage
+            // data (usageByAccount/snapshotsByAccount/tierOverride), so the
+            // accounts-usage scene renders bars/cards/tables/breakdown.
             state.route = .accounts
         case .settings:
             state.route = .projectSettings(projectID)

@@ -39,6 +39,18 @@ public struct SessionUsage: Sendable, Equatable {
     /// total tokens per model id (for the breakdown %).
     public var modelBreakdown: [String: Int]
     public var lastActivity: Date?
+    // Public init so cross-module callers (the snapshot fixture, Task 12) can
+    // construct a session rollup directly.
+    public init(sessionId: String, cwd: String, inputTokens: Int = 0, outputTokens: Int = 0,
+                cost: Double = 0, modelBreakdown: [String: Int] = [:], lastActivity: Date? = nil) {
+        self.sessionId = sessionId
+        self.cwd = cwd
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cost = cost
+        self.modelBreakdown = modelBreakdown
+        self.lastActivity = lastActivity
+    }
 }
 
 /// Account-wide analytics across one CLAUDE_CONFIG_DIR's transcripts.
