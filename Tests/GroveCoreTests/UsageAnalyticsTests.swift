@@ -34,6 +34,22 @@ final class UsageAnalyticsTests: XCTestCase {
         """.replacingOccurrences(of: "\n", with: "")
     }
 
+    /// One assistant record whose usage carries the API's NESTED `cache_creation`
+    /// TTL breakdown (ephemeral_5m_input_tokens / ephemeral_1h_input_tokens) plus
+    /// the flat sum, mirroring a real Anthropic `usage` block.
+    private func assistantTieredCache(id: String, model: String, inTok: Int, outTok: Int,
+                                      cacheWrite5m: Int, cacheWrite1h: Int,
+                                      ts: String) -> String {
+        """
+        {"type":"assistant","timestamp":"\(ts)","message":{"id":"\(id)","model":"\(model)",
+        "usage":{"input_tokens":\(inTok),"output_tokens":\(outTok),
+        "cache_read_input_tokens":0,
+        "cache_creation_input_tokens":\(cacheWrite5m + cacheWrite1h),
+        "cache_creation":{"ephemeral_5m_input_tokens":\(cacheWrite5m),
+        "ephemeral_1h_input_tokens":\(cacheWrite1h)}}}}
+        """.replacingOccurrences(of: "\n", with: "")
+    }
+
     // MARK: - price math, table lookup/normalization, and $0 degradation
 
     /// Cost math asserted DIRECTLY against an explicit Price — does NOT depend on
@@ -84,6 +100,45 @@ final class UsageAnalyticsTests: XCTestCase {
         // Unknown models contribute tokens but zero priced cost (degrades, no crash).
         XCTAssertEqual(acc.today.cost, 0, accuracy: 1e-9)
         XCTAssertEqual(acc.today.inputTokens, 200)
+    }
+
+    // MARK: - cache-write TTL tiers (5m vs 1h) parsed and priced separately
+
+    /// The nested `cache_creation` breakdown is read into separate 5m/1h tiers
+    /// and each is priced with its own multiplier (5m=1.25x, 1h=2x) — the 1-hour
+    /// tier is NOT hardcoded to zero. UsageTotals keeps the two tiers distinct.
+    func testNestedCacheCreationTiersAreParsedAndPricedSeparately() throws {
+        let m = "claude-opus-4-8"   // the 5/25 row
+        try writeTranscript(cwd: "/ws/x", id: "u", lines: [
+            assistantTieredCache(id: "a", model: m, inTok: 0, outTok: 0,
+                                 cacheWrite5m: 1000, cacheWrite1h: 1000,
+                                 ts: "2025-06-15T10:00:00.000Z"),
+        ])
+        let acc = analytics.account(configDir: configDir.path, accountName: "a", now: now)
+        XCTAssertEqual(acc.today.cacheWrite5mTokens, 1000)
+        XCTAssertEqual(acc.today.cacheWrite1hTokens, 1000)
+        XCTAssertEqual(acc.today.cacheWriteTokens, 2000)   // summed convenience
+        // 1000 tokens at 5/MTok: 5m=1.25x, 1h=2x. (price input = 5)
+        let mTok = 0.001
+        let expected = 5 * ModelPricing.cacheWrite5mMultiplier * mTok
+            + 5 * ModelPricing.cacheWrite1hMultiplier * mTok
+        XCTAssertEqual(acc.today.cost, expected, accuracy: 1e-9)
+    }
+
+    /// Back-compat: a usage block with only the FLAT cache_creation_input_tokens
+    /// (no nested breakdown) attributes the whole total to the 5-minute tier —
+    /// the documented default-TTL fallback, never the 1-hour tier.
+    func testFlatCacheCreationFallsBackToFiveMinuteTier() throws {
+        let m = "claude-opus-4-8"
+        try writeTranscript(cwd: "/ws/x", id: "u", lines: [
+            assistant(id: "a", model: m, inTok: 0, outTok: 0,
+                      cacheWrite5m: 800, ts: "2025-06-15T10:00:00.000Z"),
+        ])
+        let acc = analytics.account(configDir: configDir.path, accountName: "a", now: now)
+        XCTAssertEqual(acc.today.cacheWrite5mTokens, 800)
+        XCTAssertEqual(acc.today.cacheWrite1hTokens, 0)
+        let expected = 5 * ModelPricing.cacheWrite5mMultiplier * 0.0008
+        XCTAssertEqual(acc.today.cost, expected, accuracy: 1e-9)
     }
 
     // MARK: - dedup by message.id; skip records without usage

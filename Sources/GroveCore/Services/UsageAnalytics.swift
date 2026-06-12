@@ -1,16 +1,30 @@
 import Foundation
 
 /// One window's rolled-up usage (today / this-month / last-7-days, or a session).
+///
+/// Cache writes are kept as two SEPARATE tiers — the Anthropic API prices a
+/// 5-minute ephemeral write at 1.25x input and a 1-hour write at 2x input
+/// (spec §C.2, "the #1 source of wrong numbers"), so a single conflated field
+/// can't be costed or audited correctly. `cacheWriteTokens` is the sum of both,
+/// kept only for callers that want the total. See `UsageAnalytics.parseFile`
+/// for how the two tiers are extracted from the transcript.
 public struct UsageTotals: Sendable, Equatable {
     public var inputTokens: Int
     public var outputTokens: Int
     public var cacheReadTokens: Int
-    public var cacheWriteTokens: Int
+    /// 5-minute ephemeral cache writes (1.25x input).
+    public var cacheWrite5mTokens: Int
+    /// 1-hour ephemeral cache writes (2x input).
+    public var cacheWrite1hTokens: Int
     public var cost: Double
+    /// Total cache-write tokens across both TTL tiers (5m + 1h).
+    public var cacheWriteTokens: Int { cacheWrite5mTokens + cacheWrite1hTokens }
     public init(inputTokens: Int = 0, outputTokens: Int = 0, cacheReadTokens: Int = 0,
-                cacheWriteTokens: Int = 0, cost: Double = 0) {
+                cacheWrite5mTokens: Int = 0, cacheWrite1hTokens: Int = 0, cost: Double = 0) {
         self.inputTokens = inputTokens; self.outputTokens = outputTokens
-        self.cacheReadTokens = cacheReadTokens; self.cacheWriteTokens = cacheWriteTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWrite5mTokens = cacheWrite5mTokens
+        self.cacheWrite1hTokens = cacheWrite1hTokens
         self.cost = cost
     }
 }
@@ -54,6 +68,11 @@ public final class UsageAnalytics {
     public private(set) var cacheHitCount = 0
 
     /// One assistant-record's parsed usage (a single deduped message).
+    ///
+    /// Cache writes are split into the two API-priced TTL tiers (5-minute and
+    /// 1-hour) rather than one conflated field, so the cost function gets the
+    /// right multiplier for each (spec §C.2). See `parseFile` for how the tiers
+    /// are read from the transcript.
     private struct ParsedRecord {
         let messageId: String
         let model: String
@@ -61,7 +80,8 @@ public final class UsageAnalytics {
         let inputTokens: Int
         let outputTokens: Int
         let cacheReadTokens: Int
-        let cacheWriteTokens: Int
+        let cacheWrite5mTokens: Int
+        let cacheWrite1hTokens: Int
         let sessionId: String
         let cwd: String
     }
@@ -106,7 +126,8 @@ public final class UsageAnalytics {
                 model: record.model,
                 inputTokens: record.inputTokens, outputTokens: record.outputTokens,
                 cacheReadTokens: record.cacheReadTokens,
-                cacheWrite5mTokens: record.cacheWriteTokens, cacheWrite1hTokens: 0)
+                cacheWrite5mTokens: record.cacheWrite5mTokens,
+                cacheWrite1hTokens: record.cacheWrite1hTokens)
             if ModelPricing.price(for: record.model) == nil {
                 unpricedSet.insert(record.model)
             }
@@ -133,7 +154,8 @@ public final class UsageAnalytics {
             session.outputTokens += record.outputTokens
             session.cost += recordCost
             let modelTokens = record.inputTokens + record.outputTokens
-                + record.cacheReadTokens + record.cacheWriteTokens
+                + record.cacheReadTokens
+                + record.cacheWrite5mTokens + record.cacheWrite1hTokens
             session.modelBreakdown[record.model, default: 0] += modelTokens
             if let ts = record.timestamp {
                 session.lastActivity = max(session.lastActivity ?? ts, ts)
@@ -182,7 +204,8 @@ public final class UsageAnalytics {
         totals.inputTokens += record.inputTokens
         totals.outputTokens += record.outputTokens
         totals.cacheReadTokens += record.cacheReadTokens
-        totals.cacheWriteTokens += record.cacheWriteTokens
+        totals.cacheWrite5mTokens += record.cacheWrite5mTokens
+        totals.cacheWrite1hTokens += record.cacheWrite1hTokens
         totals.cost += cost
     }
 
@@ -238,7 +261,8 @@ public final class UsageAnalytics {
         var fileCwd: String?
         var records: [ParsedRecord] = []
         var pending: [(messageId: String, model: String, timestamp: Date?,
-                       input: Int, output: Int, cacheRead: Int, cacheWrite: Int)] = []
+                       input: Int, output: Int, cacheRead: Int,
+                       cacheWrite5m: Int, cacheWrite1h: Int)] = []
 
         for line in text.split(whereSeparator: \.isNewline) {
             guard
@@ -259,8 +283,9 @@ public final class UsageAnalytics {
             let input = (usage["input_tokens"] as? Int) ?? 0
             let output = (usage["output_tokens"] as? Int) ?? 0
             let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
-            let cacheWrite = (usage["cache_creation_input_tokens"] as? Int) ?? 0
-            pending.append((messageId, model, timestamp, input, output, cacheRead, cacheWrite))
+            let (cacheWrite5m, cacheWrite1h) = Self.cacheWriteTiers(usage: usage)
+            pending.append((messageId, model, timestamp, input, output,
+                            cacheRead, cacheWrite5m, cacheWrite1h))
         }
 
         let cwd = fileCwd ?? ""
@@ -268,9 +293,35 @@ public final class UsageAnalytics {
             records.append(ParsedRecord(
                 messageId: p.messageId, model: p.model, timestamp: p.timestamp,
                 inputTokens: p.input, outputTokens: p.output,
-                cacheReadTokens: p.cacheRead, cacheWriteTokens: p.cacheWrite,
+                cacheReadTokens: p.cacheRead,
+                cacheWrite5mTokens: p.cacheWrite5m, cacheWrite1hTokens: p.cacheWrite1h,
                 sessionId: sessionId, cwd: cwd))
         }
         return records
+    }
+
+    /// Splits a `usage` block's cache-creation tokens into the two TTL tiers
+    /// the Anthropic API prices differently (5-minute 1.25x vs 1-hour 2x —
+    /// spec §C.2, "the #1 source of wrong numbers").
+    ///
+    /// The API breaks the tiers out under a nested `cache_creation` object
+    /// (`ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`); the flat
+    /// `cache_creation_input_tokens` is their sum. When the nested object is
+    /// present we use it directly — no assumption. When it is ABSENT (the
+    /// common case for transcripts that record only the flat total, and the
+    /// default for `cache_control: {type: "ephemeral"}` whose default TTL is
+    /// 5 minutes), we attribute the flat total to the 5-minute tier. This is a
+    /// documented, conservative fallback (the 5m tier is the cheaper of the two,
+    /// so it never over-states cost) rather than a unilateral claim that 1-hour
+    /// writes never occur — they are read whenever the API records them.
+    private static func cacheWriteTiers(usage: [String: Any]) -> (write5m: Int, write1h: Int) {
+        if let breakdown = usage["cache_creation"] as? [String: Any] {
+            let write5m = (breakdown["ephemeral_5m_input_tokens"] as? Int) ?? 0
+            let write1h = (breakdown["ephemeral_1h_input_tokens"] as? Int) ?? 0
+            // If the nested object is present but empty, fall through to the flat total.
+            if write5m != 0 || write1h != 0 { return (write5m, write1h) }
+        }
+        let flat = (usage["cache_creation_input_tokens"] as? Int) ?? 0
+        return (flat, 0)   // flat total -> 5-minute tier (default TTL); no 1h assumed absent
     }
 }
