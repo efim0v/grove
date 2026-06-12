@@ -346,6 +346,46 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(args[commandIndex + 1].contains("--resume '\(id)'"))
     }
 
+    /// If the SAME sessionId is live under a DIFFERENT account, resuming it under
+    /// `account` would write two processes into one transcript and corrupt it.
+    /// resumeSession must BLOCK (actionError naming the other account) and launch
+    /// nothing — not merely warn.
+    func testResumeSessionBlockedWhenSessionLiveUnderAnotherAccount() async throws {
+        let cwd = "/ws/feat-x"
+        let id = "sess-live"
+        let canonicalDir = root.appendingPathComponent("canon-guard")
+        let ownerDir = root.appendingPathComponent("acc-owner-guard")
+        let targetDir = root.appendingPathComponent("acc-target-guard")
+        try FileManager.default.createDirectory(at: canonicalDir, withIntermediateDirectories: true)
+        // The owner has a LIVE process for `id` recorded under its sessions/ dir.
+        let ownerSessions = ownerDir.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: ownerSessions, withIntermediateDirectories: true)
+        try Data(#"{"pid": 999999, "sessionId": "sess-live", "cwd": "/ws/feat-x", "status": "busy"}"#.utf8)
+            .write(to: ownerSessions.appendingPathComponent("999999.json"))
+
+        let defaultAccount = AccountConfig(name: "default", configDir: canonicalDir.path)
+        let owner = AccountConfig(name: "owner", configDir: ownerDir.path)
+        let target = AccountConfig(name: "work", configDir: targetDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [defaultAccount, owner, target]))
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        state.canonicalDirOverride = canonicalDir.path
+        // Force the validator to treat pid 999999 as alive (no real process exists).
+        state.liveProcessValidatorOverride = { _ in true }
+        let session = ClaudeSession(id: id, cwd: cwd, title: nil,
+                                    lastActivity: Date(), accountName: "owner", gitBranch: nil)
+
+        await state.resumeSession(session, as: target)
+
+        let error = try XCTUnwrap(state.actionError)
+        XCTAssertTrue(error.contains("owner") && error.lowercased().contains("live"),
+                      "got: \(error)")
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty,
+                      "a live session under another account blocks the launch")
+    }
+
     // MARK: - createWorkspace / rollback (real git fixture)
 
     private func saveProjectFixture() throws -> (project: ProjectConfig, repo: RepoInfo, workspacesRoot: URL) {

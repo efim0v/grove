@@ -246,6 +246,15 @@ public final class ClaudeService {
         return result.sorted { $0.pid < $1.pid }
     }
 
+    /// Public seam so callers (AppState's concurrency guard) can inject a liveness
+    /// predicate without reaching the internal `processValidator`. Returns a
+    /// configured instance.
+    public func withProcessValidator(_ validator: @escaping (Int32) -> Bool) -> ClaudeService {
+        let copy = ClaudeService()
+        copy.processValidator = validator
+        return copy
+    }
+
     internal static func defaultProcessValidator(_ pid: Int32) -> Bool {
         guard kill(pid, 0) == 0 else { return false }
         let process = Process()

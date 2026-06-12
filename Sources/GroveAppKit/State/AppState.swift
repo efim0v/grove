@@ -72,6 +72,11 @@ public final class AppState: ObservableObject {
     /// (done in the suite's makeState/setUp) so linking never touches the real home.
     internal var canonicalDirOverride: String?
 
+    /// Test seam: the pid-liveness predicate used by the concurrency guard. nil
+    /// means the real check (pid alive AND its command mentions "claude"). Tests
+    /// set { _ in true } so a fixture sessions/<pid>.json counts as live.
+    internal var liveProcessValidatorOverride: ((Int32) -> Bool)?
+
     public init(configStore: ConfigStore) {
         self.configStore = configStore
         let loaded = configStore.load()
@@ -384,6 +389,21 @@ extension AppState {
         return nil
     }
 
+    /// The name of an account (other than `launchAccount`) under which `sessionId`
+    /// has a live process, or nil. Used to BLOCK a cross-account launch that would
+    /// have two processes writing one transcript (the one real corruption case).
+    private func sessionLiveUnderOtherAccount(_ sessionId: String,
+                                              launchAccount: AccountConfig) -> String? {
+        let service = liveProcessValidatorOverride
+            .map { ClaudeService().withProcessValidator($0) } ?? ClaudeService()
+        for account in config.accounts where account.name != launchAccount.name {
+            if service.liveProcesses(account: account).contains(where: { $0.sessionId == sessionId }) {
+                return account.name
+            }
+        }
+        return nil
+    }
+
     /// Resumes `session` under `account`. Same-account: links nothing, just
     /// launches `--resume` in the session's cwd. Cross-account (D7, no copy): links
     /// BOTH the owning and the target account into the canonical store, so the
@@ -395,6 +415,11 @@ extension AppState {
     /// guard, added in Task 4).
     public func resumeSession(_ session: ClaudeSession, as account: AccountConfig) async {
         if account.name != session.accountName {
+            if let other = sessionLiveUnderOtherAccount(session.id, launchAccount: account) {
+                actionError = "This session is live under “\(other)” — close it first, "
+                    + "then resume as \(account.name)."
+                return
+            }
             guard canonicalAccount != nil else {
                 actionError = "Can't share sessions without a canonical account: add an "
                     + "account whose config dir is ~/.claude (the default account)."
