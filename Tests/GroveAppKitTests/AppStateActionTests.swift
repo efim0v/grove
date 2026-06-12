@@ -75,6 +75,40 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(error.contains("new-workspace"), "got: \(error)")
     }
 
+    func testLaunchClaudePassesModelAndEffortIntoTheCommand() async throws {
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        await state.launchClaude(cwd: "/ws/x", title: "X", account: account,
+                                 resume: nil, model: "claude-opus-4-6", effort: "high")
+        let call = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first)
+        let commandIndex = try XCTUnwrap(call.args.firstIndex(of: "--command"))
+        let command = call.args[commandIndex + 1]
+        XCTAssertTrue(command.contains("--model 'claude-opus-4-6'"), command)
+        XCTAssertTrue(command.contains("--effort 'high'"), command)
+    }
+
+    /// resumeSession applies the project's default model/effort (project beats
+    /// account default). The session's project is resolved by cwd prefix.
+    func testResumeSessionAppliesProjectDefaultModelEffort() async throws {
+        var project = ProjectConfig(name: "p", path: "/proj")
+        project.workspacesRoot = "/ws"
+        project.defaultModel = "claude-sonnet-4-6"
+        project.defaultEffort = "medium"
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [project], accounts: [account]))
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        state.selectedProjectID = project.id
+        let session = ClaudeSession(id: "s1", cwd: "/ws/feat-x", title: "T",
+                                    lastActivity: Date(), accountName: "work", gitBranch: nil)
+        await state.resumeSession(session, as: account)   // same account -> no link
+        let call = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first)
+        let commandIndex = try XCTUnwrap(call.args.firstIndex(of: "--command"))
+        XCTAssertTrue(call.args[commandIndex + 1].contains("--model 'claude-sonnet-4-6'"))
+        XCTAssertTrue(call.args[commandIndex + 1].contains("--effort 'medium'"))
+    }
+
     // MARK: - goToCmux
 
     func testGoToCmuxSelectsWorkspaceAndActivates() async {

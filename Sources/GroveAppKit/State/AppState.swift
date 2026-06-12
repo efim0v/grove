@@ -301,15 +301,38 @@ extension AppState {
     /// Launches Claude (optionally resuming a session) in a NEW cmux workspace
     /// at `cwd`, focused. cmux is started first when not running.
     public func launchClaude(cwd: String, title: String, account: AccountConfig,
-                             resume sessionId: String?) async {
+                             resume sessionId: String?,
+                             model: String? = nil, effort: String? = nil) async {
         let service = cmux()
-        let command = ClaudeService.launchCommand(account: account, resume: sessionId)
+        let command = ClaudeService.launchCommand(account: account, resume: sessionId,
+                                                  model: model, effort: effort)
         do {
             try await service.ensureRunning()
             try await service.newWorkspace(name: title, cwd: cwd, command: command, focus: true)
         } catch {
             actionError = String(describing: error)
         }
+    }
+
+    /// The project that owns `cwd` (its path or workspacesRoot is a prefix), if any.
+    /// Used so a session's launch picks up the right project defaults.
+    private func project(forCwd cwd: String) -> ProjectConfig? {
+        let canon = canonicalPath(cwd)
+        return config.projects.first { p in
+            let roots = [expandTilde(p.path), expandTilde(p.workspacesRoot ?? "")]
+                .filter { !$0.isEmpty }.map(canonicalPath)
+            return roots.contains { canon == $0 || canon.hasPrefix($0 + "/") }
+        }
+    }
+
+    /// Effective default model for a launch: project.defaultModel beats
+    /// account.defaultModel beats nil (spec §C.6). cwd resolves the project.
+    func effectiveModel(cwd: String, account: AccountConfig) -> String? {
+        project(forCwd: cwd)?.defaultModel ?? account.defaultModel
+    }
+
+    func effectiveEffort(cwd: String, account: AccountConfig) -> String? {
+        project(forCwd: cwd)?.defaultEffort ?? account.defaultEffort
     }
 
     /// Degraded-mode affordance (spec §7): the error banner's "Launch cmux"
@@ -485,7 +508,9 @@ extension AppState {
             }
         }
         let title = session.title ?? (session.cwd as NSString).lastPathComponent
-        await launchClaude(cwd: session.cwd, title: title, account: account, resume: session.id)
+        await launchClaude(cwd: session.cwd, title: title, account: account, resume: session.id,
+                           model: effectiveModel(cwd: session.cwd, account: account),
+                           effort: effectiveEffort(cwd: session.cwd, account: account))
     }
 }
 

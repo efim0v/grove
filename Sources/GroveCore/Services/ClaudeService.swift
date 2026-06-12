@@ -300,15 +300,18 @@ public final class ClaudeService {
 
     /// Shell command string for cmux `--command`. Default account (expanded configDir
     /// == $HOME/.claude) needs no env prefix; custom accounts get CLAUDE_CONFIG_DIR.
-    /// The binary path, config dir and resume session id are single-quote shell-quoted.
-    public static func launchCommand(account: AccountConfig, resume sessionId: String? = nil) -> String {
+    /// Optional `model`/`effort` append `--model <id>` / `--effort <level>` (spec §C.6,
+    /// applied at launch only — a running process can't be re-modeled, NG1). The binary
+    /// path, config dir, resume id, model and effort are single-quote shell-quoted.
+    public static func launchCommand(account: AccountConfig, resume sessionId: String? = nil,
+                                     model: String? = nil, effort: String? = nil) -> String {
         let dir = expandTilde(account.configDir)
         let isDefaultAccount = dir == NSHomeDirectory() + "/.claude"
         let claude = shellQuote(claudeExecutable())
         var command = isDefaultAccount ? claude : "CLAUDE_CONFIG_DIR=\(shellQuote(dir)) \(claude)"
-        if let sessionId {
-            command += " --resume \(shellQuote(sessionId))"
-        }
+        if let sessionId { command += " --resume \(shellQuote(sessionId))" }
+        if let model { command += " --model \(shellQuote(model))" }
+        if let effort { command += " --effort \(shellQuote(effort))" }
         return command
     }
 }

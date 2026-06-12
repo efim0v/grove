@@ -384,6 +384,34 @@ final class ClaudeServiceTests: XCTestCase {
         }
     }
 
+    func testLaunchCommandAppendsModelAndEffortQuoted() {
+        withBareClaudeResolution {
+            let custom = AccountConfig(name: "work", configDir: "/Users/dev/.claude-accounts/work")
+            XCTAssertEqual(
+                ClaudeService.launchCommand(account: custom, resume: "sess-1",
+                                            model: "claude-opus-4-6", effort: "high"),
+                "CLAUDE_CONFIG_DIR='/Users/dev/.claude-accounts/work' 'claude' "
+                + "--resume 'sess-1' --model 'claude-opus-4-6' --effort 'high'")
+            let def = AccountConfig(name: "default", configDir: "~/.claude")
+            // Order: --resume (if any) then --model then --effort; nils omit their flag.
+            XCTAssertEqual(ClaudeService.launchCommand(account: def, model: "claude-sonnet-4-6"),
+                           "'claude' --model 'claude-sonnet-4-6'")
+            XCTAssertEqual(ClaudeService.launchCommand(account: def, effort: "low"),
+                           "'claude' --effort 'low'")
+            // No model/effort -> unchanged from the resume-only form.
+            XCTAssertEqual(ClaudeService.launchCommand(account: def, resume: "x"),
+                           "'claude' --resume 'x'")
+        }
+    }
+
+    func testLaunchCommandQuotesSingleQuoteInModel() {
+        withBareClaudeResolution {
+            let def = AccountConfig(name: "default", configDir: "~/.claude")
+            XCTAssertEqual(ClaudeService.launchCommand(account: def, model: "o'pus"),
+                           "'claude' --model 'o'\\''pus'")
+        }
+    }
+
     // MARK: - claudeExecutable resolution
 
     func testClaudeExecutableResolvesFirstExistingCandidate() throws {
