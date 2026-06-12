@@ -534,4 +534,44 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(state.graphNodes.isEmpty)
         XCTAssertNotNil(state.actionError)
     }
+
+    // MARK: - linkAccount
+
+    func testLinkAccountSymlinksWholesaleDirsAndMarksShared() async throws {
+        let canonicalDir = root.appendingPathComponent("canon-link")
+        let workDir = root.appendingPathComponent("acc-work-link")
+        try FileManager.default.createDirectory(at: canonicalDir, withIntermediateDirectories: true)
+        let defaultAccount = AccountConfig(name: "default", configDir: canonicalDir.path)
+        let work = AccountConfig(name: "work", configDir: workDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [defaultAccount, work]))
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+        state.canonicalDirOverride = canonicalDir.path
+
+        state.linkAccount(work)
+
+        XCTAssertNil(state.actionError)
+        for name in SharedSessionStore.wholesaleDirs {
+            XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(
+                atPath: workDir.appendingPathComponent(name).path),
+                canonicalDir.appendingPathComponent(name).path)
+        }
+        XCTAssertEqual(state.config.accounts.first { $0.name == "work" }?.sharedStore, true)
+    }
+
+    func testLinkAccountWithoutCanonicalSetsActionError() async throws {
+        let work = AccountConfig(name: "work", configDir: root.appendingPathComponent("w3").path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [work]))
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+        state.canonicalDirOverride = root.appendingPathComponent("nope").path
+
+        state.linkAccount(work)
+
+        let error = try XCTUnwrap(state.actionError)
+        XCTAssertTrue(error.lowercased().contains("canonical") || error.contains("~/.claude"))
+        XCTAssertEqual(state.config.accounts.first { $0.name == "work" }?.sharedStore, false)
+    }
 }

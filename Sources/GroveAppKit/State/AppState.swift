@@ -364,6 +364,48 @@ extension AppState {
         config.accounts.first { expandTilde($0.configDir) == canonicalDir }
     }
 
+    // MARK: - Shared store
+
+    /// Links `account` into the canonical store (wholesale dirs only; per-workspace
+    /// projects symlinks are created lazily on resume). Marks it sharedStore=true and
+    /// persists. No-op for the canonical account. Failures land in actionError.
+    public func linkAccount(_ account: AccountConfig) {
+        guard canonicalAccount != nil else {
+            actionError = "Can't link without a canonical account: add an account whose "
+                + "config dir is ~/.claude (the default account)."
+            return
+        }
+        guard expandTilde(account.configDir) != canonicalDir else { return }  // canonical: nothing to link
+        let dir = expandTilde(account.configDir)
+        // The account's CLAUDE_CONFIG_DIR must exist before its wholesale dirs can
+        // be symlinked into canonical (createSymbolicLink needs a real parent).
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        do {
+            _ = try SharedSessionStore().ensureLinked(accountDir: dir, canonicalDir: canonicalDir)
+        } catch {
+            actionError = "Couldn't link “\(account.name)”: \(error.localizedDescription)"
+            return
+        }
+        if let index = config.accounts.firstIndex(where: { $0.name == account.name }),
+           !config.accounts[index].sharedStore {
+            config.accounts[index].sharedStore = true
+            persist()
+        }
+    }
+
+    /// Runs SharedSessionStore.verify across accounts MARKED sharedStore and
+    /// surfaces the first issue through actionError (the existing banner). No
+    /// issues → clears nothing (so it never stomps an unrelated error). Snapshot
+    /// renders skip it (no real ~/.claude access).
+    public func verifySharedStore() {
+        let marked = config.accounts.filter(\.sharedStore).map { expandTilde($0.configDir) }
+        guard !marked.isEmpty, canonicalAccount != nil else { return }
+        let issues = SharedSessionStore().verify(accountDirs: marked, canonicalDir: canonicalDir)
+        if let first = issues.first {
+            actionError = "Shared store: \(first)"
+        }
+    }
+
     /// Links `account` into the canonical store unless it IS the canonical account
     /// (never linked to itself). Marks it sharedStore=true and persists. Returns
     /// nil on success, or an error message describing the failure (caller aborts).

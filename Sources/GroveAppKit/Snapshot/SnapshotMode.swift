@@ -112,7 +112,7 @@ public enum SnapshotMode {
             projects: [project],
             accounts: [
                 AccountConfig(name: "default", configDir: "~/.claude"),
-                AccountConfig(name: "work", configDir: "~/.claude-accounts/work"),
+                AccountConfig(name: "work", configDir: "~/.claude-accounts/work", sharedStore: true),
             ]
         )
         let now = Date()

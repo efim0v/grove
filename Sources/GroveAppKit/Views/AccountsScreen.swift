@@ -38,6 +38,10 @@ struct AccountsScreen: View {
             Divider()
             cardList
         }
+        .onAppear {
+            guard !isSnapshotRender else { return }
+            state.verifySharedStore()
+        }
     }
 
     private var header: some View {
@@ -79,6 +83,7 @@ struct AccountsScreen: View {
                 }
                 Spacer()
                 usageSummary(usage, account: account)
+                sharedStoreControl(account)
                 Button("Remove") {
                     state.removeAccount(name: account.name)
                 }
@@ -137,6 +142,27 @@ struct AccountsScreen: View {
             }
             .buttonStyle(.plain)
             .help("Where this account is active")
+        }
+    }
+
+    /// "Link to shared store" for a non-canonical, non-shared account; a static
+    /// "shared"/"canonical" label otherwise. Snapshot-safe: a Button is AppKit-
+    /// backed and draws offscreen, so render a plain label in snapshot mode.
+    @ViewBuilder
+    private func sharedStoreControl(_ account: AccountConfig) -> some View {
+        let isCanonical = expandTilde(account.configDir) == NSHomeDirectory() + "/.claude"
+        if isCanonical {
+            Label("canonical", systemImage: "star.fill")
+                .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+        } else if account.sharedStore {
+            Label("shared", systemImage: "link")
+                .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+        } else if isSnapshotRender {
+            Text("Link").font(.caption2).foregroundStyle(Color.accentColor)
+        } else {
+            Button("Link to shared store") { state.linkAccount(account) }
+                .controlSize(.small)
+                .help("Symlink this account's session stores into the default ~/.claude store")
         }
     }
 
