@@ -19,6 +19,10 @@ public struct URLSessionUsageFetcher: UsageFetching {
 public struct OAuthWindow: Sendable, Equatable {
     public let utilization: Double
     public let resetsAt: String?
+    public init(utilization: Double, resetsAt: String?) {
+        self.utilization = utilization
+        self.resetsAt = resetsAt
+    }
 }
 
 public struct OAuthUsage: Sendable, Equatable {
@@ -26,6 +30,13 @@ public struct OAuthUsage: Sendable, Equatable {
     public let sevenDay: OAuthWindow?
     public let sevenDaySonnet: OAuthWindow?
     public let sevenDayOpus: OAuthWindow?
+    public init(fiveHour: OAuthWindow?, sevenDay: OAuthWindow?,
+                sevenDaySonnet: OAuthWindow?, sevenDayOpus: OAuthWindow?) {
+        self.fiveHour = fiveHour
+        self.sevenDay = sevenDay
+        self.sevenDaySonnet = sevenDaySonnet
+        self.sevenDayOpus = sevenDayOpus
+    }
 }
 
 public enum OAuthUsageError: Error, Equatable {
@@ -41,6 +52,7 @@ public enum OAuthUsageError: Error, Equatable {
 /// `<configDir>/.credentials.json`. `now` drives the cache/backoff clock (no Date()).
 public actor OAuthUsageClient {
     private let fetcher: UsageFetching
+    private let credentials: CredentialsReading
     private let appVersion: String
     private let cacheSeconds: TimeInterval
     private let backoffCap: TimeInterval = 3600
@@ -48,8 +60,10 @@ public actor OAuthUsageClient {
     private var cache: [String: (at: Date, value: OAuthUsage)] = [:]
     private var backoff: [String: (until: Date, attempts: Int)] = [:]
 
-    public init(fetcher: UsageFetching, appVersion: String, cacheSeconds: TimeInterval = 180) {
+    public init(fetcher: UsageFetching, appVersion: String, cacheSeconds: TimeInterval = 180,
+                credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
+        self.credentials = credentials
         self.appVersion = appVersion
         self.cacheSeconds = cacheSeconds
     }
@@ -68,8 +82,10 @@ public actor OAuthUsageClient {
             throw OAuthUsageError.backoff
         }
 
-        // 3. Read the bearer token from <configDir>/.credentials.json.
-        let token = try readAccessToken(configDir: configDir)
+        // 3. Read the bearer token (Keychain, then legacy .credentials.json).
+        guard let token = credentials.accessToken(configDir: configDir) else {
+            throw OAuthUsageError.noCredentials
+        }
 
         // 4. Build the request.
         let request = makeRequest(token: token)
@@ -97,23 +113,6 @@ public actor OAuthUsageClient {
         cache[configDir] = (at: now, value: usage)
         backoff[configDir] = nil
         return usage
-    }
-
-    private func readAccessToken(configDir: String) throws -> String {
-        let path = configDir + "/.credentials.json"
-        guard let data = FileManager.default.contents(atPath: path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { throw OAuthUsageError.noCredentials }
-
-        if let oauth = json["claudeAiOauth"] as? [String: Any],
-           let token = oauth["accessToken"] as? String, !token.isEmpty {
-            return token
-        }
-        // Defensively also accept a top-level accessToken.
-        if let token = json["accessToken"] as? String, !token.isEmpty {
-            return token
-        }
-        throw OAuthUsageError.noCredentials
     }
 
     private func makeRequest(token: String) -> URLRequest {

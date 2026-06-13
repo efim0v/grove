@@ -133,6 +133,20 @@ public final class AppState: ObservableObject {
     /// account's .claude.json oauthAccount. TESTS inject so aggregate math is hermetic.
     internal var tierOverride: [String: String]?
 
+    /// Live OAuth usage client (Anthropic `api/oauth/usage`). Persistent so its
+    /// in-actor cache + 429 backoff survive between ticks. Used ONLY as a fallback
+    /// for accounts whose statusline emits no `rate_limits` (e.g. a lightly-used
+    /// custom account whose limits exist server-side but never reach the local
+    /// statusline) — we read them straight from the source, authenticated with the
+    /// account's own Keychain token.
+    private let oauthClient = OAuthUsageClient(
+        fetcher: URLSessionUsageFetcher(), appVersion: GroveVersion.current)
+
+    /// Test seam: supplies OAuth limits for an account's configDir. nil = use the
+    /// real client (network + Keychain). TESTS inject canned values so refresh is
+    /// hermetic; returning nil for an account means "no OAuth limits available".
+    public var oauthLimitsOverride: (@Sendable (_ configDir: String, _ now: Date) async -> OAuthUsage?)?
+
     public init(configStore: ConfigStore) {
         self.configStore = configStore
         let loaded = configStore.load()
@@ -730,9 +744,45 @@ extension AppState {
             }
             return (snaps, byAcc)
         }.value
-        snapshotsByAccount = result.snaps
+        var snaps = result.snaps
+        // OAuth fallback (item 1.3): accounts whose statusline emitted no fresh
+        // limit window get their limits from Anthropic's usage API — e.g. a
+        // lightly-used custom account whose limits show on anthropic.com but never
+        // reach the local statusline. The default account (statusline present) is
+        // skipped, so no extra network call or Keychain prompt for it.
+        let provider: @Sendable (String, Date) async -> OAuthUsage? =
+            oauthLimitsOverride ?? { [oauthClient] dir, now in try? await oauthClient.usage(configDir: dir, now: now) }
+        for job in jobs {
+            let existing = snaps[job.name] ?? []
+            let hasStatuslineLimits = currentWindow(existing, { $0.fiveHour }, now: now) != nil
+                || currentWindow(existing, { $0.sevenDay }, now: now) != nil
+            if hasStatuslineLimits { continue }
+            guard let usage = await provider(job.dir, now),
+                  let snap = Self.oauthSnapshot(accountName: job.name, usage: usage, now: now) else { continue }
+            snaps[job.name, default: []].append(snap)
+        }
+        snapshotsByAccount = snaps
         usageByAccount = result.byAcc
         GroveLog.perf.info("usage refresh (\(jobs.count) accts): \(Int(Date().timeIntervalSince(started) * 1000))ms")
+    }
+
+    /// Builds a synthetic capture from OAuth usage so the dashboard, aggregate, and
+    /// header chip pick up the limits exactly like a statusline capture. The API's
+    /// `utilization` is already a 0–100 used-percentage (verified against the live
+    /// endpoint: e.g. seven_day = 2.0 = 2% used) — we only clamp it. Returns nil
+    /// when neither the 5h nor the 7d window is present.
+    static func oauthSnapshot(accountName: String, usage: OAuthUsage, now: Date) -> UsageSnapshot? {
+        func window(_ w: OAuthWindow?) -> CapturedWindow? {
+            guard let w else { return nil }
+            return CapturedWindow(usedPercentage: min(max(w.utilization, 0), 100), resetsAt: w.resetsAt)
+        }
+        let five = window(usage.fiveHour)
+        let seven = window(usage.sevenDay)
+        guard five != nil || seven != nil else { return nil }
+        return UsageSnapshot(accountName: accountName, sessionId: "oauth", capturedAt: now, cwd: nil,
+                             modelId: nil, modelDisplayName: nil, effort: nil,
+                             contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
+                             fiveHour: five, sevenDay: seven)
     }
 
     private func tier(for account: AccountConfig) -> String? {

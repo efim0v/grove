@@ -109,6 +109,76 @@ final class AppStateGapTests: XCTestCase {
         XCTAssertEqual(shortModelName("gpt-x"), "gpt-x")       // untouched
     }
 
+    func testOAuthSnapshotMapsUtilizationPercentAndDropsEmpty() {
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        // utilization is already a 0–100 percentage (verified live); carried as-is,
+        // resets_at preserved.
+        let snap = AppState.oauthSnapshot(accountName: "a", usage: OAuthUsage(
+            fiveHour: OAuthWindow(utilization: 0, resetsAt: "x"),
+            sevenDay: OAuthWindow(utilization: 2, resetsAt: nil),
+            sevenDaySonnet: nil, sevenDayOpus: nil), now: now)
+        XCTAssertEqual(snap?.fiveHour?.usedPercentage, 0)
+        XCTAssertEqual(snap?.sevenDay?.usedPercentage, 2)
+        XCTAssertEqual(snap?.fiveHour?.resetsAt, "x")
+        // Out-of-range values are clamped.
+        let clamped = AppState.oauthSnapshot(accountName: "a", usage: OAuthUsage(
+            fiveHour: OAuthWindow(utilization: 130, resetsAt: nil),
+            sevenDay: nil, sevenDaySonnet: nil, sevenDayOpus: nil), now: now)
+        XCTAssertEqual(clamped?.fiveHour?.usedPercentage, 100)
+        // No windows → no synthetic capture.
+        XCTAssertNil(AppState.oauthSnapshot(accountName: "a", usage: OAuthUsage(
+            fiveHour: nil, sevenDay: nil, sevenDaySonnet: nil, sevenDayOpus: nil), now: now))
+    }
+
+    func testRefreshUsageFallsBackToOAuthWhenStatuslineHasNoLimits() async throws {
+        let s = state()
+        let dir = try FixtureLite.tempDir("oauth-acct")
+        s.config.accounts = [AccountConfig(name: "apple", configDir: dir.path)]
+        s.snapshotsByAccount = [:]                       // no statusline captures
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let resets = ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))
+        s.oauthLimitsOverride = { cfg, _ in
+            cfg == dir.path
+                ? OAuthUsage(fiveHour: OAuthWindow(utilization: 22, resetsAt: resets),
+                             sevenDay: OAuthWindow(utilization: 4, resetsAt: resets),
+                             sevenDaySonnet: nil, sevenDayOpus: nil)
+                : nil
+        }
+        await s.refreshUsage(now: now)
+        let snaps = s.snapshotsByAccount["apple"] ?? []
+        XCTAssertEqual(snaps.last?.sessionId, "oauth")
+        XCTAssertEqual(snaps.last?.fiveHour?.usedPercentage, 22)
+        XCTAssertEqual(snaps.last?.sevenDay?.usedPercentage, 4)
+        // And the aggregate/chip now see apple's limits.
+        s.tierOverride = ["apple": "default_claude_max_5x"]
+        XCTAssertEqual(s.aggregateRemaining(window: .fiveHour, now: now).remaining,
+                       5 * 0.78, accuracy: 1e-9)
+    }
+
+    func testRefreshUsageSkipsOAuthWhenStatuslineAlreadyHasLimits() async throws {
+        let s = state()
+        let dir = try FixtureLite.tempDir("oauth-skip")
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        // Seed a REAL statusline capture on disk so the refresh's file read yields a
+        // fresh 5h window (refreshUsage rebuilds snaps from disk, so an in-memory
+        // seed wouldn't survive — the capture must exist as a file).
+        let usageDir = dir.appendingPathComponent("grove/usage")
+        try FileManager.default.createDirectory(at: usageDir, withIntermediateDirectories: true)
+        let resets = ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))
+        let capturedAt = ISO8601DateFormatter().string(from: now)
+        let capture = """
+        {"capturedAt":"\(capturedAt)","raw":{"session_id":"s",
+         "rate_limits":{"five_hour":{"used_percentage":30,"resets_at":"\(resets)"}}}}
+        """
+        try capture.write(to: usageDir.appendingPathComponent("c.json"), atomically: true, encoding: .utf8)
+        s.config.accounts = [AccountConfig(name: "default", configDir: dir.path)]
+        var oauthCalled = false
+        s.oauthLimitsOverride = { _, _ in oauthCalled = true; return nil }
+        await s.refreshUsage(now: now)
+        XCTAssertFalse(oauthCalled, "statusline already supplies limits → no OAuth fetch")
+        XCTAssertEqual(s.snapshotsByAccount["default"]?.first?.fiveHour?.usedPercentage, 30)
+    }
+
     func testInstallAndDisableMonitoringToggleFlag() throws {
         let s = state()
         s.statuslineScriptDirOverride = root.appendingPathComponent("bin").path
