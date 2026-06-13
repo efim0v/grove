@@ -3,13 +3,14 @@ import XCTest
 
 /// Corner system (DesignSystem.swift): fixed radii per chrome level plus the
 /// concentric helper used when a ConcentricRectangle cannot resolve (mid-card
-/// chips far from any container corner). Standard, restrained macOS rounding
-/// (panel 10 / card 6 / field 5) — earlier 26/22/14 then 16/12/8 read too round.
+/// chips far from any container corner). Restrained macOS rounding, 15% softer
+/// than the 10/6/5 baseline (panel 11.5 / card 6.9 / field 5.75) — earlier
+/// 26/22/14 then 16/12/8 read too round.
 final class DesignRadiusTests: XCTestCase {
     func testChromeLevelsAreConcentricallyOrdered() {
-        XCTAssertEqual(DesignRadius.panel, 10)
-        XCTAssertEqual(DesignRadius.card, 6)
-        XCTAssertEqual(DesignRadius.field, 5)
+        XCTAssertEqual(DesignRadius.panel, 11.5)
+        XCTAssertEqual(DesignRadius.card, 6.9)
+        XCTAssertEqual(DesignRadius.field, 5.75)
         XCTAssertGreaterThan(DesignRadius.panel, DesignRadius.card)
         XCTAssertGreaterThan(DesignRadius.card, DesignRadius.field)
     }

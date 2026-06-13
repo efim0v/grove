@@ -14,12 +14,13 @@ enum DesignRadius {
     // conventional macOS radii — a window-like panel, lightly rounded cards,
     // barely-rounded fields — keeping the concentric ordering panel > card > field.
 
-    /// Full-screen panel states (the menu-bar panel content).
-    static let panel: CGFloat = 10
+    /// Full-screen panel states (the menu-bar panel content). 15% softer than the
+    /// 10/6/5 baseline.
+    static let panel: CGFloat = 11.5
     /// Cards/sections (GlassCard chrome).
-    static let card: CGFloat = 6
+    static let card: CGFloat = 6.9
     /// Text fields, picker chips, log wells.
-    static let field: CGFloat = 5
+    static let field: CGFloat = 5.75
 
     /// Concentric radius for an element inset inside a rounded parent,
     /// floored at 4 so tight insets never collapse to sharp corners (and stay
