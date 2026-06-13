@@ -52,9 +52,10 @@ public struct RootView: View {
     /// is wider so account columns sit side by side.
     var currentPanelSize: (width: CGFloat, height: CGFloat?) {
         if case .projects = state.route {
-            // Both tabs share the SAME width so the header/footer are identical
-            // and never truncate; Charts height is adaptive (one column, no scroll).
-            return state.rootTab == .charts ? (460, nil) : (460, 520)
+            // Charts is a narrow single column (~half the Projects width); height
+            // is adaptive (one column, no scroll). Projects stays roomy for the
+            // project cards + session previews.
+            return state.rootTab == .charts ? (260, nil) : (460, 520)
         }
         return Self.panelSize(for: state.route)
     }

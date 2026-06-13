@@ -158,7 +158,7 @@ final class DashboardPresentationTests: XCTestCase {
                                 cacheReadTokens: 10, cacheWrite5mTokens: 5, cacheWrite1hTokens: 5,
                                 cost: 1.5)
         let rows = tokenRows(today: today, thisMonth: UsageTotals())
-        XCTAssertEqual(rows.map(\.period), ["Today", "This Month"])
+        XCTAssertEqual(rows.map(\.period), ["Today", "Month"])
         XCTAssertEqual(rows[0].input, 100)
         XCTAssertEqual(rows[0].cache, 20)        // 10 read + 5 + 5 write
         XCTAssertEqual(rows[0].cost, 1.5)

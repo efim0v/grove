@@ -212,7 +212,7 @@ public func tokenRows(today: UsageTotals, thisMonth: UsageTotals) -> [TokenRow] 
         TokenRow(period: period, input: t.inputTokens, output: t.outputTokens,
                  cache: t.cacheReadTokens + t.cacheWriteTokens, cost: t.cost)
     }
-    return [row("Today", today), row("This Month", thisMonth)]
+    return [row("Today", today), row("Month", thisMonth)]
 }
 
 // MARK: - One dashboard column (Overall, or one account)

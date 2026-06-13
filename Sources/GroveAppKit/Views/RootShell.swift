@@ -23,13 +23,15 @@ struct RootShell: View {
     // MARK: - Header: brand + tab strip + add (Projects only)
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Label("Grove", systemImage: "tree")
+        HStack(spacing: 8) {
+            // Brand mark only (no "Grove" text) so the tab strip keeps its labels
+            // even in the narrow Charts width.
+            Image(systemName: "tree")
                 .font(.headline)
-                .labelStyle(.titleAndIcon)
-            Spacer(minLength: 8)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 6)
             tabStrip
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
             Button { addProjectViaPanel() } label: { Image(systemName: "plus") }
                 .buttonStyle(.plain)
                 .help("Add a project directory")
@@ -49,9 +51,10 @@ struct RootShell: View {
                     Button {
                         state.rootTab = tab
                     } label: {
-                        Label(tab.label, systemImage: tab.systemImage)
+                        Text(tab.label)
                             .font(.callout.weight(state.rootTab == tab ? .semibold : .regular))
-                            .labelStyle(.titleAndIcon)
+                            .lineLimit(1)
+                            .fixedSize()
                             .padding(.horizontal, 12)
                             .padding(.vertical, 4)
                             .selectionCapsule(isOn: state.rootTab == tab)
@@ -76,7 +79,7 @@ struct RootShell: View {
     private var footer: some View {
         HStack(spacing: 10) {
             Button { state.open(.accounts) } label: {
-                Label("Accounts", systemImage: "person.2").font(.callout)
+                Label("Accounts", systemImage: "person.2").font(.caption).fixedSize()
             }
             .buttonStyle(.plain)
             .help("Claude accounts")
@@ -100,12 +103,14 @@ struct RootShell: View {
             if let issue = state.configIssue {
                 Text(issue).font(.caption).foregroundStyle(.orange).lineLimit(1)
             }
-            Spacer()
-            Text("Grove \(GroveVersion.current)")
+            Spacer(minLength: 6)
+            Text("v\(GroveVersion.current)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize()
             Button("Quit") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
+                .fixedSize()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
