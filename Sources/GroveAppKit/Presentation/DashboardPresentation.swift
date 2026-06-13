@@ -42,6 +42,7 @@ public struct LimitCard: Equatable, Sendable {
     public let usedPercentage: Double     // 0…100; 0 when no data
     public let level: CapacityLevel
     public let resetCaption: String       // "1d 19h" / "" when unknown
+    public let resetAbsolute: String       // "at 9:09 PM" / "on Mon 2:59 AM" / ""
     public let note: String               // "On track" / "limit close" / "no data"
     public let noteIsWarning: Bool
     public let hasData: Bool
@@ -58,8 +59,10 @@ public struct LimitCard: Equatable, Sendable {
             : (remaining > 0.5 ? .plenty : (remaining > 0.1 ? .tight : .critical))
         if hasData, let resetsAt, let date = parseISODate(resetsAt) {
             self.resetCaption = LimitCard.shortCountdown(date.timeIntervalSince(now))
+            self.resetAbsolute = LimitCard.absoluteTime(date, now: now)
         } else {
             self.resetCaption = ""
+            self.resetAbsolute = ""
         }
         if !hasData {
             self.note = "no data"; self.noteIsWarning = false
@@ -79,6 +82,19 @@ public struct LimitCard: Equatable, Sendable {
         if h > 0 { return "\(h)h \(m)m" }
         return "\(m)m"
     }
+
+    /// Local clock time the window resets at: "at 9:09 PM" same day, else
+    /// "on Mon 2:59 AM". Shown after the countdown (reference: "Resets in: 48m at 9:09 PM").
+    static func absoluteTime(_ date: Date, now: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        if Calendar.current.isDate(date, inSameDayAs: now) {
+            formatter.dateFormat = "h:mm a"
+            return "at " + formatter.string(from: date)
+        }
+        formatter.dateFormat = "EEE h:mm a"
+        return "on " + formatter.string(from: date)
+    }
 }
 
 // MARK: - Daily usage bar (Sun … Today)
@@ -88,8 +104,17 @@ public struct DailyUsageBar: Equatable, Sendable, Identifiable {
     public let day: Date
     public let label: String          // "Sun" … "Today"
     public let totalTokens: Int
+    public let cost: Double           // USD that day (for the hover detail)
     /// 0…1 relative to the week's busiest day (drives the bar colour in the view).
     public let intensity: Double
+
+    public init(day: Date, label: String, totalTokens: Int, cost: Double = 0, intensity: Double) {
+        self.day = day
+        self.label = label
+        self.totalTokens = totalTokens
+        self.cost = cost
+        self.intensity = intensity
+    }
 }
 
 /// Day-of-week labels relative to `now`: today -> "Today", yesterday -> "Yest.",
@@ -111,7 +136,8 @@ public func dailyUsageBars(_ days: [DayUsage], now: Date) -> [DailyUsageBar] {
         else if let yesterday, cal.isDate(d.day, inSameDayAs: yesterday) { label = "Yest." }
         else { label = fmt.string(from: d.day) }
         let intensity = maxTokens > 0 ? Double(d.totalTokens) / Double(maxTokens) : 0
-        return DailyUsageBar(day: d.day, label: label, totalTokens: d.totalTokens, intensity: intensity)
+        return DailyUsageBar(day: d.day, label: label, totalTokens: d.totalTokens,
+                             cost: d.cost, intensity: intensity)
     }
 }
 

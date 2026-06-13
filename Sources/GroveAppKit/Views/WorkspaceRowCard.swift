@@ -192,37 +192,87 @@ struct WorkspaceRowCard: View {
         }
     }
 
-    // MARK: - Session rows (activity dot, title, account, relative age, open)
+    // MARK: - Sessions — a distinct, detailed sub-table (its OWN entity, set apart
+    // from the repos): status, title, account · model · tokens · cost, age, Go/Resume.
 
     private var sessionRows: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(workspace.sessions, id: \.id) { session in
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(activityColor(for: session))
-                        .frame(width: 6, height: 6)
-                    Text(session.title ?? "(untitled session)")
-                        .lineLimit(1)
-                    Text(session.accountName)
-                        .foregroundStyle(.tertiary)
-                    Spacer(minLength: 8)
-                    Text(relativeAge(session.lastActivity, now: now))
-                        .foregroundStyle(.secondary)
-                    if isSnapshotRender {
-                        // .buttonStyle(.link) draws a yellow placeholder
-                        // offscreen — static link-colored lookalike instead.
-                        Text(liveProcess(for: session) == nil ? "Resume" : "Go")
-                            .foregroundStyle(Color.accentColor)
-                    } else {
-                        Button(liveProcess(for: session) == nil ? "Resume" : "Go") {
-                            open(session)
-                        }
-                        .buttonStyle(.link)
-                    }
-                }
-                .font(.caption)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 5) {
+                Image(systemName: "bubble.left.and.text.bubble.right").font(.caption2)
+                Text("Sessions").font(.caption.weight(.semibold))
+                Text("\(workspace.sessions.count)").font(.caption2).foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            .padding(.bottom, 4)
+            ForEach(Array(workspace.sessions.enumerated()), id: \.element.id) { index, session in
+                if index > 0 { Divider().opacity(0.3) }
+                sessionDetailRow(session)
             }
         }
+        .padding(8)
+        .background(sessionTableBackground)
+    }
+
+    @ViewBuilder private var sessionTableBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+        if isSnapshotRender {
+            shape.fill(.white.opacity(0.05)).overlay(shape.strokeBorder(.white.opacity(0.12)))
+        } else {
+            shape.fill(.black.opacity(0.22)).overlay(shape.strokeBorder(.white.opacity(0.08)))
+        }
+    }
+
+    private func sessionDetailRow(_ session: ClaudeSession) -> some View {
+        let usage = state.usageByAccount[session.accountName]?.sessions[session.id]
+        let model = usage?.modelBreakdown.max { $0.value < $1.value }?.key
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Circle().fill(activityColor(for: session)).frame(width: 7, height: 7)
+                Text(statusWord(for: session))
+                    .foregroundStyle(activityColor(for: session))
+                    .frame(width: 52, alignment: .leading)
+                Text(displayTitle(session)).fontWeight(.medium).lineLimit(1)
+                Spacer(minLength: 8)
+                Text(relativeAge(session.lastActivity, now: now)).foregroundStyle(.tertiary)
+                if isSnapshotRender {
+                    Text(liveProcess(for: session) == nil ? "Resume" : "Go")
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Button(liveProcess(for: session) == nil ? "Resume" : "Go") { open(session) }
+                        .buttonStyle(.link)
+                }
+            }
+            .font(.caption)
+            HStack(spacing: 8) {
+                Text(session.accountName).foregroundStyle(.tertiary)
+                if let usage {
+                    Text("\(compactTokens(usage.inputTokens + usage.outputTokens)) tok")
+                    Text(formatUSD(usage.cost))
+                }
+                if let model { Text(model).monospaced() }
+                Spacer(minLength: 0)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.leading, 13)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// running (busy/idle live) / waiting / closed (no live process).
+    private func statusWord(for session: ClaudeSession) -> String {
+        guard let live = liveProcess(for: session) else { return "closed" }
+        return live.status == "waiting" ? "waiting" : "running"
+    }
+
+    /// Sessions whose first message is the cmux/local-command caveat get a junk
+    /// title — fall back to a short id so the table stays readable.
+    private func displayTitle(_ session: ClaudeSession) -> String {
+        guard let title = session.title, !title.isEmpty,
+              !title.hasPrefix("<"), !title.hasPrefix("Caveat:")
+        else { return "session \(session.id.prefix(6))" }
+        return title
     }
 
     private func liveProcess(for session: ClaudeSession) -> LiveProcess? {

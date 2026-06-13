@@ -14,12 +14,12 @@ enum DesignRadius {
     // panel follows to 26 so the concentric ordering (panel > card > field)
     // the system is built on keeps holding.
 
-    /// Full-screen panel states (the MenuBarExtra window content).
-    static let panel: CGFloat = 26
+    /// Full-screen panel states (the menu-bar panel content).
+    static let panel: CGFloat = 16
     /// Cards/sections (GlassCard chrome).
-    static let card: CGFloat = 22
+    static let card: CGFloat = 12
     /// Text fields, picker chips, log wells.
-    static let field: CGFloat = 14
+    static let field: CGFloat = 8
 
     /// Concentric radius for an element inset inside a rounded parent,
     /// floored at 8 so tight insets never collapse to sharp corners.

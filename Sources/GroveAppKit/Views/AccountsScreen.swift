@@ -74,25 +74,27 @@ struct AccountsScreen: View {
     private func accountCard(_ account: AccountConfig) -> some View {
         let usage = accountUsage(account: account, snapshots: Array(state.snapshots.values))
         let isExpanded = expandedAccounts.contains(account.name) || isSnapshotRender
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        return VStack(alignment: .leading, spacing: 8) {
+            // Identity on its OWN full-width row so the long email · org · tier
+            // no longer wraps into (and collides with) the controls.
+            HStack(alignment: .center, spacing: 10) {
                 Image(systemName: "person.crop.circle")
-                    .font(.title3)
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(account.name)
-                        .font(.callout.weight(.semibold))
+                    Text(account.name).font(.callout.weight(.semibold))
                     identityLine(account)
                 }
-                Spacer()
+                Spacer(minLength: 8)
+                removeControl(account)
+            }
+            // Status + controls on a separate, aligned row.
+            HStack(spacing: 12) {
                 usageSummary(usage, account: account)
+                Spacer(minLength: 0)
                 sharedStoreControl(account)
                 monitorControl(account)
                 rootDirControl(account)
-                Button("Remove") {
-                    state.removeAccount(name: account.name)
-                }
-                .controlSize(.small)
-                .help("Removes the account from Grove's config only — \(account.configDir) is untouched")
             }
             limitBars(account)
             usageTable(account)
@@ -109,6 +111,18 @@ struct AccountsScreen: View {
         }
         .padding(10)
         .glassCard()
+    }
+
+    /// Config-only Remove. Snapshot-safe (a Button renders as a placeholder offscreen).
+    @ViewBuilder
+    private func removeControl(_ account: AccountConfig) -> some View {
+        if isSnapshotRender {
+            Text("Remove").font(.caption2).foregroundStyle(.secondary)
+        } else {
+            Button("Remove") { state.removeAccount(name: account.name) }
+                .controlSize(.small)
+                .help("Removes the account from Grove's config only — \(account.configDir) is untouched")
+        }
     }
 
     /// Reveals the account's config dir in Finder. Snapshot-safe: a Button is
@@ -166,6 +180,8 @@ struct AccountsScreen: View {
             }
         }
         .font(.caption)
+        .lineLimit(2)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - Limit bars (5h / 7d) from the most-recent capture snapshot
@@ -175,15 +191,14 @@ struct AccountsScreen: View {
     @ViewBuilder
     private func limitBars(_ account: AccountConfig) -> some View {
         let snapshots = state.snapshotsByAccount[account.name] ?? []
-        if let latest = snapshots.max(by: { ($0.capturedAt ?? .distantPast) < ($1.capturedAt ?? .distantPast) }) {
+        let now = Date()
+        let five = currentWindow(snapshots, { $0.fiveHour }, now: now)
+        let seven = currentWindow(snapshots, { $0.sevenDay }, now: now)
+        if !snapshots.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                if let five = latest.fiveHour {
-                    limitBarRow(title: "5h", window: five)
-                }
-                if let seven = latest.sevenDay {
-                    limitBarRow(title: "7d", window: seven)
-                }
-                if latest.fiveHour == nil && latest.sevenDay == nil {
+                if let five { limitBarRow(title: "5h", window: five) }
+                if let seven { limitBarRow(title: "7d", window: seven) }
+                if five == nil && seven == nil {
                     Text("no rate-limit data in last capture")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }

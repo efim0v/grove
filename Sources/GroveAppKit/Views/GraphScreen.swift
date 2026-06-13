@@ -280,10 +280,28 @@ struct GraphLanesCanvas: View {
                     if parent.lane == node.lane {
                         path.addLine(to: to)
                     } else {
-                        let midY = (from.y + to.y) / 2
-                        path.addCurve(to: to,
-                                      control1: CGPoint(x: from.x, y: midY),
-                                      control2: CGPoint(x: to.x, y: midY))
+                        // Take the horizontal offset in a SHORT rounded bend near
+                        // the lower-lane endpoint; the higher (branch) lane stays
+                        // straight-vertical for the rest, so a branch never drifts
+                        // diagonally across many rows (issue #3).
+                        let bend = min(GraphScreen.rowHeight, abs(to.y - from.y))
+                        if node.lane > parent.lane {
+                            // Child in the higher lane: vertical, then bend to the parent.
+                            let turnY = to.y - bend
+                            path.addLine(to: CGPoint(x: from.x, y: turnY))
+                            let midY = (turnY + to.y) / 2
+                            path.addCurve(to: to,
+                                          control1: CGPoint(x: from.x, y: midY),
+                                          control2: CGPoint(x: to.x, y: midY))
+                        } else {
+                            // Child in the lower lane: bend up into the branch lane, then vertical.
+                            let turnY = from.y + bend
+                            let midY = (from.y + turnY) / 2
+                            path.addCurve(to: CGPoint(x: to.x, y: turnY),
+                                          control1: CGPoint(x: from.x, y: midY),
+                                          control2: CGPoint(x: to.x, y: midY))
+                            path.addLine(to: to)
+                        }
                     }
                     // The branch-side (higher) lane owns the link color, so a
                     // feature lane keeps its color through fork and merge.

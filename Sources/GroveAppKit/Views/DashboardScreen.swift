@@ -44,7 +44,7 @@ struct DashboardScreen: View {
                 DashboardColumnView(column: cols[index], isSnapshotRender: isSnapshotRender)
             }
             .padding(12)
-            .frame(width: Self.columnWidth + 24)
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -92,7 +92,7 @@ struct DashboardScreen: View {
             Text("Add a Claude account to see its usage.")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        .frame(width: Self.columnWidth + 24, height: 220)
+        .frame(maxWidth: .infinity, minHeight: 220)
     }
 }
 
@@ -131,17 +131,25 @@ struct LimitCardView: View {
             ProgressBar(fraction: card.usedPercentage / 100, color: levelColor(card.level))
                 .frame(height: 9)
             HStack(spacing: 6) {
-                Text(card.resetCaption.isEmpty ? "Resets in: —" : "Resets in: \(card.resetCaption)")
+                Text(resetText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+                Spacer(minLength: 6)
                 Text(card.note)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(noteColor)
+                    .fixedSize()
             }
         }
         .padding(12)
         .glassCard()
+    }
+
+    private var resetText: String {
+        guard !card.resetCaption.isEmpty else { return "Resets in: —" }
+        let absolute = card.resetAbsolute.isEmpty ? "" : " \(card.resetAbsolute)"
+        return "Resets in: \(card.resetCaption)\(absolute)"
     }
 
     private var noteColor: Color {
@@ -155,11 +163,23 @@ struct LimitCardView: View {
 struct DailyUsageCardView: View {
     let bars: [DailyUsageBar]
     let isSnapshotRender: Bool
+    @State private var hoverLabel: String?
 
     var body: some View {
+        let hovered = bars.first { $0.label == hoverLabel }
         VStack(alignment: .leading, spacing: 8) {
-            Label("Daily Usage", systemImage: "chart.bar.fill")
-                .font(.callout.weight(.semibold))
+            HStack(spacing: 6) {
+                Label("Daily Usage", systemImage: "chart.bar.fill")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                // Unit when idle; the hovered bar's detail when pointing at one.
+                if let hovered {
+                    Text("\(hovered.label) · \(formatCompactTokens(hovered.totalTokens)) tok · \(formatCompactCost(hovered.cost))")
+                        .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                } else {
+                    Text("tokens / day").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
             if bars.allSatisfy({ $0.totalTokens == 0 }) {
                 Text("No usage in the last 7 days")
                     .font(.caption).foregroundStyle(.secondary)
@@ -167,20 +187,39 @@ struct DailyUsageCardView: View {
             } else if isSnapshotRender {
                 snapshotBars
             } else {
-                Chart(bars) { bar in
-                    BarMark(x: .value("Day", bar.label),
-                            y: .value("Tokens", bar.totalTokens),
-                            width: .ratio(0.6))
-                        .foregroundStyle(intensityColor(bar.intensity))
-                        .cornerRadius(4)
-                }
-                .chartYAxis(.hidden)
-                .chartXAxis { AxisMarks { AxisValueLabel().font(.caption2) } }
-                .frame(height: 96)
+                chart
             }
         }
         .padding(12)
         .glassCard()
+    }
+
+    private var chart: some View {
+        Chart(bars) { bar in
+            BarMark(x: .value("Day", bar.label),
+                    y: .value("Tokens", bar.totalTokens),
+                    width: .ratio(0.6))
+                .foregroundStyle(intensityColor(bar.intensity)
+                    .opacity(hoverLabel == nil || hoverLabel == bar.label ? 1 : 0.4))
+                .cornerRadius(4)
+        }
+        .chartYAxis(.hidden)
+        .chartXAxis { AxisMarks { AxisValueLabel().font(.caption2) } }
+        .frame(height: 96)
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                Rectangle().fill(.clear).contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let point):
+                            let x = point.x - geo[proxy.plotAreaFrame].origin.x
+                            hoverLabel = proxy.value(atX: x, as: String.self)
+                        case .ended:
+                            hoverLabel = nil
+                        }
+                    }
+            }
+        }
     }
 
     /// Manual bars for snapshot mode (Swift Charts can render blank offscreen).
@@ -211,20 +250,21 @@ struct TokenUsageCardView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Token Usage", systemImage: "number")
                 .font(.callout.weight(.semibold))
-            Grid(alignment: .trailing, horizontalSpacing: 10, verticalSpacing: 4) {
-                GridRow {
-                    Text("").gridColumnAlignment(.leading)
-                    header("Input"); header("Output"); header("Cache"); header("Cost")
-                }
-                ForEach(rows) { row in
-                    GridRow {
-                        Text(row.period).foregroundStyle(.secondary).gridColumnAlignment(.leading)
-                        Text(formatCompactTokens(row.input)).monospacedDigit()
-                        Text(formatCompactTokens(row.output)).monospacedDigit()
-                        Text(formatCompactTokens(row.cache)).monospacedDigit()
-                        Text(formatCompactCost(row.cost)).monospacedDigit()
-                    }
-                    .font(.caption)
+            // Columns spread evenly across the full card width (each maxWidth:∞).
+            HStack(spacing: 8) {
+                cell("", .caption2.weight(.semibold), .secondary, leading: true)
+                cell("Input", .caption2.weight(.semibold), .secondary)
+                cell("Output", .caption2.weight(.semibold), .secondary)
+                cell("Cache", .caption2.weight(.semibold), .secondary)
+                cell("Cost", .caption2.weight(.semibold), .secondary)
+            }
+            ForEach(rows) { row in
+                HStack(spacing: 8) {
+                    cell(row.period, .caption, .secondary, leading: true)
+                    cell(formatCompactTokens(row.input), .caption)
+                    cell(formatCompactTokens(row.output), .caption)
+                    cell(formatCompactTokens(row.cache), .caption)
+                    cell(formatCompactCost(row.cost), .caption)
                 }
             }
             if !models.isEmpty {
@@ -245,8 +285,14 @@ struct TokenUsageCardView: View {
         .glassCard()
     }
 
-    private func header(_ text: String) -> some View {
-        Text(text).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+    private func cell(_ text: String, _ font: Font, _ color: Color = .primary,
+                      leading: Bool = false) -> some View {
+        Text(text)
+            .font(font)
+            .foregroundStyle(color)
+            .monospacedDigit()
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
     }
 }
 
