@@ -109,20 +109,33 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(merged[1].inputTokens, 20)   // b has no second day -> a only
     }
 
-    // MARK: - usage-rate series
+    // MARK: - current (non-stale) limit window
 
-    func testUsageRateSeriesFiltersAndSorts() {
-        let t1 = now.addingTimeInterval(-3_600)
-        let t2 = now
+    func testCurrentWindowPrefersLatestFreshAndIgnoresStale() {
+        let future = ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))
+        let past = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3_600))
         let snaps = [
-            snap(captured: t2, five: CapturedWindow(usedPercentage: 40, resetsAt: nil)),
-            snap(captured: t1, five: CapturedWindow(usedPercentage: 20, resetsAt: nil)),
-            snap(captured: nil, five: CapturedWindow(usedPercentage: 99, resetsAt: nil)), // no time -> dropped
-            snap(captured: now.addingTimeInterval(-1_000), five: nil),                    // no window -> dropped
+            // Stale: its window already reset, even though the % is highest.
+            snap(captured: now.addingTimeInterval(-30), five: CapturedWindow(usedPercentage: 88, resetsAt: past)),
+            snap(captured: now.addingTimeInterval(-20), five: CapturedWindow(usedPercentage: 20, resetsAt: future)),
+            snap(captured: now, five: CapturedWindow(usedPercentage: 23, resetsAt: future)),
         ]
-        let series = usageRateSeries(snaps, weekly: false)
-        XCTAssertEqual(series.map(\.percent), [20, 40])    // sorted oldest first
-        XCTAssertEqual(series.first?.time, t1)
+        XCTAssertEqual(currentWindow(snaps, { $0.fiveHour }, now: now)?.usedPercentage, 23,
+                       "latest FRESH wins, not the stale 88")
+    }
+
+    func testCurrentWindowFallsBackToLatestWhenAllStale() {
+        let past = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3_600))
+        let snaps = [
+            snap(captured: now.addingTimeInterval(-30), five: CapturedWindow(usedPercentage: 50, resetsAt: past)),
+            snap(captured: now, five: CapturedWindow(usedPercentage: 40, resetsAt: past)),
+        ]
+        XCTAssertEqual(currentWindow(snaps, { $0.fiveHour }, now: now)?.usedPercentage, 40)
+    }
+
+    func testCurrentWindowTreatsNilResetAsFresh() {
+        let snaps = [snap(captured: now, five: CapturedWindow(usedPercentage: 33, resetsAt: nil))]
+        XCTAssertEqual(currentWindow(snaps, { $0.fiveHour }, now: now)?.usedPercentage, 33)
     }
 
     // MARK: - model shares
@@ -165,7 +178,6 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(column.fiveHour.usedPercentage, 80)   // latest, not older
         XCTAssertEqual(column.weekly.usedPercentage, 96)
         XCTAssertEqual(column.weekly.level, .critical)
-        XCTAssertEqual(column.usageRate.count, 2)
     }
 
     func testOverallDashboardUsesAggregateUsedPercentage() {

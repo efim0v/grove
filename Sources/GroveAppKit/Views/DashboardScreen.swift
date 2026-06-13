@@ -2,72 +2,109 @@ import SwiftUI
 import Charts
 import GroveCore
 
-/// The Charts tab (item 4): the usage dashboard from the reference, rendered with
-/// native Swift Charts. Shows an "Overall" column plus one column per account,
-/// laid out side by side (horizontally scrollable when there are many accounts).
+/// The Charts tab: the usage dashboard from the reference, rendered with native
+/// Swift Charts. ONE scope at a time (Overall, or a single account) chosen with
+/// ‹ › arrows; the same widgets, different contents. No scroll — the panel is
+/// sized to fit the whole column.
 struct DashboardScreen: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
-    /// Column width tuned to the reference (~one phone-width card stack).
-    static let columnWidth: CGFloat = 290
+    static let columnWidth: CGFloat = 320
 
-    private func columns() -> [DashboardColumn] {
+    /// Every scope: "Overall" first when there is more than one account (otherwise
+    /// it would just duplicate the sole account), then one per account.
+    private func scopes() -> [DashboardColumn] {
         let now = Date()
-        let overall = overallDashboard(
-            analyticsByAccount: state.usageByAccount,
-            snapshotsByAccount: state.snapshotsByAccount,
-            aggregateFiveHour: state.aggregateRemaining(window: .fiveHour, now: now),
-            aggregateWeekly: state.aggregateRemaining(window: .sevenDay, now: now),
-            now: now)
         let perAccount = state.config.accounts.map { account in
             accountDashboard(name: account.name,
                              analytics: state.usageByAccount[account.name],
                              snapshots: state.snapshotsByAccount[account.name] ?? [],
                              now: now)
         }
-        // Overall is only meaningful alongside ≥2 accounts; with one account it
-        // duplicates that account, so collapse to a single column.
-        return perAccount.count <= 1 ? (perAccount.isEmpty ? [overall] : perAccount)
-                                     : [overall] + perAccount
+        guard perAccount.count > 1 else { return perAccount }
+        let overall = overallDashboard(
+            analyticsByAccount: state.usageByAccount,
+            snapshotsByAccount: state.snapshotsByAccount,
+            aggregateFiveHour: state.aggregateRemaining(window: .fiveHour, now: now),
+            aggregateWeekly: state.aggregateRemaining(window: .sevenDay, now: now),
+            now: now)
+        return [overall] + perAccount
     }
 
     var body: some View {
-        let cols = columns()
-        let stack = HStack(alignment: .top, spacing: 12) {
-            ForEach(cols) { column in
-                DashboardColumnView(column: column, isSnapshotRender: isSnapshotRender)
-                    .frame(width: Self.columnWidth)
+        let cols = scopes()
+        if cols.isEmpty {
+            emptyState
+        } else {
+            let index = min(max(state.chartsScopeIndex, 0), cols.count - 1)
+            // Sizes to the cards' natural height (no scroll); the panel grows to fit.
+            VStack(spacing: 10) {
+                switcher(scopes: cols, index: index)
+                DashboardColumnView(column: cols[index], isSnapshotRender: isSnapshotRender)
+            }
+            .padding(12)
+            .frame(width: Self.columnWidth + 24)
+        }
+    }
+
+    // MARK: - Scope switcher (‹ Title i/n ›)
+
+    private func switcher(scopes cols: [DashboardColumn], index: Int) -> some View {
+        HStack(spacing: 8) {
+            arrow("chevron.left", enabled: index > 0) {
+                state.chartsScopeIndex = max(0, index - 1)
+            }
+            VStack(spacing: 1) {
+                Text(cols[index].title)
+                    .font(.headline)
+                    .lineLimit(1)
+                if cols.count > 1 {
+                    Text("\(index + 1) / \(cols.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            .frame(maxWidth: .infinity)
+            arrow("chevron.right", enabled: index < cols.count - 1) {
+                state.chartsScopeIndex = min(cols.count - 1, index + 1)
             }
         }
-        .padding(12)
-        // ImageRenderer doesn't lay out ScrollView content offscreen, so the
-        // snapshot draws the columns in a plain stack; the live panel scrolls
-        // both ways (tall columns, many account columns).
-        return Group {
-            if isSnapshotRender {
-                stack.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
-                ScrollView([.horizontal, .vertical], showsIndicators: true) { stack }
-            }
+    }
+
+    private func arrow(_ symbol: String, enabled: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.callout.weight(.semibold))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .buttonStyle(.plain)
+        .foregroundStyle(enabled ? Color.primary : Color.secondary.opacity(0.35))
+        .disabled(!enabled)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "chart.bar.xaxis").font(.largeTitle).foregroundStyle(.secondary)
+            Text("No accounts").font(.headline)
+            Text("Add a Claude account to see its usage.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(width: Self.columnWidth + 24, height: 220)
     }
 }
 
-/// One scope's vertical card stack (Overall or one account).
+/// One scope's stacked cards (the title lives in the switcher above).
 struct DashboardColumnView: View {
     let column: DashboardColumn
     let isSnapshotRender: Bool
 
     var body: some View {
         VStack(spacing: 10) {
-            Text(column.title)
-                .font(.headline)
-                .frame(maxWidth: .infinity, alignment: .leading)
             LimitCardView(card: column.fiveHour)
             LimitCardView(card: column.weekly)
-            UsageRateCardView(points: column.usageRate, isSnapshotRender: isSnapshotRender)
             DailyUsageCardView(bars: column.daily, isSnapshotRender: isSnapshotRender)
             TokenUsageCardView(rows: column.tokens, models: column.models)
         }
@@ -113,70 +150,6 @@ struct LimitCardView: View {
     }
 }
 
-// MARK: - Usage-rate line chart
-
-struct UsageRateCardView: View {
-    let points: [UsageRatePoint]
-    let isSnapshotRender: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Usage Rate", systemImage: "chart.xyaxis.line")
-                .font(.callout.weight(.semibold))
-            if points.count < 2 {
-                placeholder("Not enough captures yet")
-            } else if isSnapshotRender {
-                // ImageRenderer can draw Swift Charts blank offscreen; a plain
-                // sparkline keeps the snapshot legible.
-                Sparkline(values: points.map(\.percent))
-                    .stroke(.green, lineWidth: 1.5)
-                    .frame(height: 80)
-            } else {
-                Chart(points) { p in
-                    AreaMark(x: .value("Time", p.time),
-                             y: .value("Used %", p.percent))
-                        .foregroundStyle(.green.opacity(0.18))
-                    LineMark(x: .value("Time", p.time),
-                             y: .value("Used %", p.percent))
-                        .foregroundStyle(.green)
-                        .interpolationMethod(.monotone)
-                }
-                .chartYScale(domain: 0...100)
-                .chartYAxis { AxisMarks(values: [0, 50, 100]) }
-                .chartXAxis(.hidden)
-                .frame(height: 80)
-            }
-        }
-        .padding(12)
-        .glassCard()
-    }
-
-    private func placeholder(_ text: String) -> some View {
-        Text(text)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 80)
-    }
-}
-
-/// Minimal sparkline path used as the snapshot-mode fallback for the line chart.
-struct Sparkline: Shape {
-    let values: [Double]
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        guard values.count > 1 else { return path }
-        let maxV = max(values.max() ?? 1, 1)
-        let stepX = rect.width / CGFloat(values.count - 1)
-        for (i, v) in values.enumerated() {
-            let x = rect.minX + CGFloat(i) * stepX
-            let y = rect.maxY - CGFloat(v / maxV) * rect.height
-            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
-            else { path.addLine(to: CGPoint(x: x, y: y)) }
-        }
-        return path
-    }
-}
-
 // MARK: - Daily usage bar chart
 
 struct DailyUsageCardView: View {
@@ -190,7 +163,7 @@ struct DailyUsageCardView: View {
             if bars.allSatisfy({ $0.totalTokens == 0 }) {
                 Text("No usage in the last 7 days")
                     .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 90)
+                    .frame(maxWidth: .infinity, minHeight: 96)
             } else if isSnapshotRender {
                 snapshotBars
             } else {
@@ -277,6 +250,8 @@ struct TokenUsageCardView: View {
     }
 }
 
+// MARK: - Shared chrome
+
 /// A thick rounded capacity bar (the reference's limit bar). The fill width
 /// tracks `fraction` (clamped to 0…1); a non-zero fraction always shows a sliver.
 struct ProgressBar: View {
@@ -294,8 +269,6 @@ struct ProgressBar: View {
         }
     }
 }
-
-// MARK: - Shared colour helpers
 
 func levelColor(_ level: CapacityLevel) -> Color {
     switch level {

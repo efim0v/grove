@@ -52,9 +52,18 @@ public struct RootView: View {
     /// is wider so account columns sit side by side.
     var currentPanelSize: (width: CGFloat, height: CGFloat?) {
         if case .projects = state.route {
-            return state.rootTab == .charts ? (620, 560) : (460, 520)
+            // Charts is a single ~320 column; height is adaptive so the whole
+            // column fits without scrolling (the panel grows to it).
+            return state.rootTab == .charts ? (344, nil) : (460, 520)
         }
         return Self.panelSize(for: state.route)
+    }
+
+    /// Height cap for the adaptive-height screens. The charts column needs more
+    /// room than the default 560 so all cards fit without a scroll view.
+    private var maxPanelHeight: CGFloat {
+        if case .projects = state.route, state.rootTab == .charts { return 820 }
+        return 560
     }
 
     /// Preferred panel frame per route; nil height = adaptive (the screen
@@ -97,7 +106,7 @@ public struct RootView: View {
                 }
             }
             .frame(width: size.width, height: size.height)
-            .frame(maxHeight: 560)   // caps the height-adaptive createWorkspace
+            .frame(maxHeight: maxPanelHeight)   // caps the height-adaptive screens
             .transition(navTransition)
         }
         // Slide transitions would otherwise draw outside the panel frame.

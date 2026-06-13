@@ -130,25 +130,25 @@ public func mergeDailyUsage(_ perAccount: [[DayUsage]]) -> [DayUsage] {
     }
 }
 
-// MARK: - Usage-rate line (used% over capture time)
+// MARK: - Current (non-stale) limit window
 
-public struct UsageRatePoint: Equatable, Sendable, Identifiable {
-    public var id: Date { time }
-    public let time: Date
-    public let percent: Double     // 0…100 used% at that capture
-}
-
-/// Builds the usage-rate series from capture snapshots: each capture's window
-/// `used_percentage` plotted against its `capturedAt`, oldest first. Captures
-/// without a timestamp or the chosen window are dropped. `weekly == false` uses
-/// the 5-hour window.
-public func usageRateSeries(_ snapshots: [UsageSnapshot], weekly: Bool) -> [UsageRatePoint] {
-    let points: [UsageRatePoint] = snapshots.compactMap { snap in
-        guard let time = snap.capturedAt else { return nil }
-        guard let used = (weekly ? snap.sevenDay : snap.fiveHour)?.usedPercentage else { return nil }
-        return UsageRatePoint(time: time, percent: used)
+/// The window value to show NOW: from the most-recently-captured snapshot whose
+/// that-window `resets_at` is still in the FUTURE. A `resets_at` already in the past
+/// means the window has since reset, so its `used_percentage` is stale — each
+/// session's statusline caches its own last-seen limits, which is exactly what
+/// produced bogus readings (e.g. a stale 53%/88% next to the live 23%/5%). Falls
+/// back to the latest capture's window when none are provably fresh.
+public func currentWindow(_ snapshots: [UsageSnapshot],
+                          _ pick: (UsageSnapshot) -> CapturedWindow?,
+                          now: Date) -> CapturedWindow? {
+    var best: (at: Date, window: CapturedWindow)?
+    for snap in snapshots {
+        guard let window = pick(snap), let capturedAt = snap.capturedAt else { continue }
+        if let raw = window.resetsAt, let reset = parseISODate(raw), reset <= now { continue } // stale
+        if best == nil || capturedAt > best!.at { best = (capturedAt, window) }
     }
-    return points.sorted { $0.time < $1.time }
+    if let best { return best.window }
+    return latestCapture(snapshots).flatMap(pick)   // nothing provably fresh
 }
 
 // MARK: - Model breakdown (token share per model)
@@ -197,7 +197,6 @@ public struct DashboardColumn: Equatable, Sendable, Identifiable {
     public let fiveHour: LimitCard
     public let weekly: LimitCard
     public let daily: [DailyUsageBar]
-    public let usageRate: [UsageRatePoint]
     public let models: [ModelShare]
     public let tokens: [TokenRow]
     public let costToday: Double
@@ -212,9 +211,8 @@ func latestCapture(_ snapshots: [UsageSnapshot]) -> UsageSnapshot? {
 /// Builds one account's dashboard column from its analytics + captures.
 public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
                              snapshots: [UsageSnapshot], now: Date) -> DashboardColumn {
-    let latest = latestCapture(snapshots)
-    let fh = latest?.fiveHour
-    let wk = latest?.sevenDay
+    let fh = currentWindow(snapshots, { $0.fiveHour }, now: now)
+    let wk = currentWindow(snapshots, { $0.sevenDay }, now: now)
     let five = LimitCard(window: .fiveHour, title: "5-Hour Session", systemImage: "clock",
                          usedPercentage: fh?.usedPercentage ?? 0, resetsAt: fh?.resetsAt,
                          hasData: fh != nil, now: now)
@@ -226,7 +224,6 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
         fiveHour: five,
         weekly: weekly,
         daily: dailyUsageBars(analytics?.daily ?? [], now: now),
-        usageRate: usageRateSeries(snapshots, weekly: false),
         models: modelShares(analytics?.sessions ?? [:]),
         tokens: tokenRows(today: analytics?.today ?? UsageTotals(),
                           thisMonth: analytics?.thisMonth ?? UsageTotals()),
@@ -235,7 +232,7 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
 }
 
 /// Builds the "Overall" column: limit bars from the tier-weighted aggregates,
-/// daily/models/tokens summed across accounts, usage-rate from every capture.
+/// daily/models/tokens summed across accounts.
 public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics],
                              snapshotsByAccount: [String: [UsageSnapshot]],
                              aggregateFiveHour: RateLimitModel.Aggregate,
@@ -266,7 +263,6 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
         fiveHour: five,
         weekly: weekly,
         daily: dailyUsageBars(mergedDaily, now: now),
-        usageRate: usageRateSeries(allCaptures, weekly: false),
         models: modelShares(allSessions),
         tokens: tokenRows(today: today, thisMonth: month),
         costToday: today.cost,

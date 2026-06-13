@@ -60,6 +60,9 @@ public final class AppState: ObservableObject {
     /// Top-level tab (Charts | Projects). Persisted here so it survives the panel
     /// closing/reopening (item 4: state preserved on minimize).
     @Published public var rootTab: RootTab = .projects
+    /// Which scope the Charts tab shows (0 = Overall when >1 account, else the first
+    /// account). The ‹ › arrows step this; persisted so it survives panel reopen.
+    @Published public var chartsScopeIndex: Int = 0
     @Published public var selectedProjectID: UUID?
     @Published public var selectedTab: MainTab = .workspaces
     /// The panel's current full-screen state. Mutate via open()/goBack() so
@@ -750,10 +753,8 @@ extension AppState {
     /// account weighted by tier, combined with its most-recent capture's used%.
     public func aggregateRemaining(window: LimitWindow, now: Date) -> RateLimitModel.Aggregate {
         let accounts: [RateLimitModel.AccountWindow] = config.accounts.compactMap { account in
-            guard let latest = snapshotsByAccount[account.name]?
-                .max(by: { ($0.capturedAt ?? .distantPast) < ($1.capturedAt ?? .distantPast) })
-            else { return nil }
-            let captured = window == .fiveHour ? latest.fiveHour : latest.sevenDay
+            let snaps = snapshotsByAccount[account.name] ?? []
+            let captured = currentWindow(snaps, { window == .fiveHour ? $0.fiveHour : $0.sevenDay }, now: now)
             guard let used = captured?.usedPercentage else { return nil }
             return RateLimitModel.AccountWindow(tier: tier(for: account), usedPercentage: used)
         }
