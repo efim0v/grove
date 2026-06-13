@@ -75,6 +75,12 @@ public final class AppState: ObservableObject {
     /// The scan spawned by the last open(.project(id)); tests await it.
     internal var refreshTask: Task<Void, Never>?
     @Published public var searchQuery: String = ""
+    /// True only while the menu-bar panel is actually open. The controller sets it
+    /// on show/hide; RootView's 15s refresh loop is keyed on it so the loop never
+    /// runs while the panel is hidden (or in a headless render/test) — which would
+    /// otherwise spin forever parsing real transcripts (the menu-bar panel hides
+    /// via orderOut, which does NOT deallocate the view or cancel its .task).
+    @Published public var isPanelOpen: Bool = false
     @Published public var isScanning: Bool = false
     @Published public var actionError: String?
     @Published public var graphRepoPath: String?

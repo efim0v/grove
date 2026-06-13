@@ -30,14 +30,16 @@ public struct RootView: View {
         // concentric nesting underneath.
         .background(.black.opacity(0.35))
         .containerShape(.rect(cornerRadius: DesignRadius.panel, style: .continuous))
-        .task {
-            // Refresh now, then every 15 s while the panel stays open. The
-            // task is cancelled on disappear (panel closed), pausing the loop.
-            guard !isSnapshotRender else { return }
+        // Keyed on isPanelOpen: the panel hides via orderOut (which does NOT
+        // cancel a plain .task), so the loop must stop itself when the panel
+        // closes. In a headless render/test isPanelOpen is false, so the loop
+        // never starts — no runaway refresh against the real ~/.claude.
+        .task(id: state.isPanelOpen) {
+            guard !isSnapshotRender, state.isPanelOpen else { return }
             await state.refresh()
-            while !Task.isCancelled {
+            while !Task.isCancelled && state.isPanelOpen {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
-                if Task.isCancelled { break }
+                if Task.isCancelled || !state.isPanelOpen { break }
                 await state.refresh()
             }
         }
