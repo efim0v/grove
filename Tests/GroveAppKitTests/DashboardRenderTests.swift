@@ -16,6 +16,25 @@ final class DashboardRenderTests: XCTestCase {
         _ = renderer.cgImage   // forces body evaluation, incl. the live Chart code
     }
 
+    /// Renders every scene with isSnapshotRender=FALSE so the LIVE branches the
+    /// snapshot pipeline skips execute — real Picker/Menu/TextField/Swift Charts
+    /// and the .glassEffect chrome across every routed screen. ImageRenderer draws
+    /// glass/AppKit controls blank offscreen, but the bodies still evaluate, so a
+    /// broken live-branch expression is caught.
+    func testAllScenesRenderLiveBranches() {
+        for scene in SnapshotMode.SnapshotScene.allCases {
+            let state = SnapshotMode.configuredState(for: scene)
+            let size = scene.size
+            let view = RootView(state: state)
+                .frame(width: size.width, height: size.height)
+                .environment(\.colorScheme, .dark)
+                .environment(\.isSnapshotRender, false)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 1
+            _ = renderer.cgImage
+        }
+    }
+
     func testDashboardColumnRendersLiveChartPaths() {
         let state = SnapshotMode.fixtureState()
         let now = Date()
