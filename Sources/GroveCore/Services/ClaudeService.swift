@@ -62,7 +62,11 @@ public struct LiveProcess: Sendable, Equatable {
 /// Reads Claude Code account identity, session transcripts and (Task 9) live processes
 /// from a `CLAUDE_CONFIG_DIR`. A class (not a struct) so it can keep an mtime-keyed
 /// parse cache: a jsonl file is re-parsed only when its modification date changes.
-public final class ClaudeService {
+///
+/// `@unchecked Sendable`: `sessionCache` is guarded by `cacheLock` and `processValidator`
+/// is set once at construction, so one instance can be kept on AppState (so the parse
+/// cache survives across scans — item 2 perf) and used from the background scan.
+public final class ClaudeService: @unchecked Sendable {
     private struct ParsedSession {
         let id: String
         let cwd: String

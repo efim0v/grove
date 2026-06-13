@@ -222,6 +222,29 @@ final class UsageAnalyticsTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(acc.costByModel[m]), 4.2, accuracy: 1e-9)
     }
 
+    // MARK: - daily buckets (last 7 calendar days, for the Daily Usage chart)
+
+    func testDailyBucketsCoverSevenCalendarDaysEndingToday() throws {
+        let m = "claude-opus-4-8"
+        try writeTranscript(cwd: "/ws/x", id: "u", lines: [
+            assistant(id: "today", model: m, inTok: 10, outTok: 5, ts: "2025-06-15T09:00:00.000Z"),
+            assistant(id: "d13", model: m, inTok: 20, outTok: 0, ts: "2025-06-13T09:00:00.000Z"),
+            // outside the 7-day window (week starts 2025-06-09) -> not bucketed.
+            assistant(id: "old", model: m, inTok: 99, outTok: 0, ts: "2025-06-01T09:00:00.000Z"),
+        ])
+        let acc = analytics.account(configDir: configDir.path, accountName: "a", now: now)
+        XCTAssertEqual(acc.daily.count, 7)
+        // Oldest first; the last bucket is today.
+        let today = try XCTUnwrap(acc.daily.last)
+        XCTAssertEqual(today.inputTokens, 10)
+        XCTAssertEqual(today.outputTokens, 5)
+        XCTAssertEqual(today.totalTokens, 15)
+        // 2025-06-13 is two days before today -> index 4 of the 7-day window.
+        XCTAssertEqual(acc.daily[4].inputTokens, 20)
+        // The out-of-window record leaked into nothing.
+        XCTAssertEqual(acc.daily.reduce(0) { $0 + $1.inputTokens }, 30)
+    }
+
     // MARK: - mtime cache: a re-read with an unchanged file does not re-parse
 
     func testMtimeCacheSkipsReparseWhenFileUnchanged() throws {

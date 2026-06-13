@@ -29,6 +29,24 @@ public struct UsageTotals: Sendable, Equatable {
     }
 }
 
+/// One calendar day's token rollup, for the Daily Usage bar chart (item 4).
+public struct DayUsage: Sendable, Equatable {
+    public let day: Date        // start-of-day (UTC)
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let cacheTokens: Int
+    public let cost: Double
+    public var totalTokens: Int { inputTokens + outputTokens + cacheTokens }
+    public init(day: Date, inputTokens: Int = 0, outputTokens: Int = 0,
+                cacheTokens: Int = 0, cost: Double = 0) {
+        self.day = day
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheTokens = cacheTokens
+        self.cost = cost
+    }
+}
+
 /// Per-session rollup (for the session cards, spec §C.5).
 public struct SessionUsage: Sendable, Equatable {
     public let sessionId: String
@@ -59,6 +77,8 @@ public struct AccountUsageAnalytics: Sendable, Equatable {
     public var today: UsageTotals
     public var thisMonth: UsageTotals
     public var last7d: UsageTotals
+    /// 7 calendar-day buckets ending today (UTC), oldest first — Daily Usage chart.
+    public var daily: [DayUsage]
     public var sessions: [String: SessionUsage]   // keyed by sessionId
     /// account-wide USD per model (prefers lastModelUsage.costUSD when present).
     public var costByModel: [String: Double]
@@ -69,13 +89,14 @@ public struct AccountUsageAnalytics: Sendable, Equatable {
     public var unpricedCost: Double   // always 0 by definition; kept explicit for the UI
 
     public init(accountName: String, today: UsageTotals, thisMonth: UsageTotals,
-                last7d: UsageTotals, sessions: [String: SessionUsage],
+                last7d: UsageTotals, daily: [DayUsage] = [], sessions: [String: SessionUsage],
                 costByModel: [String: Double], byCwd: [String: UsageTotals],
                 unpricedModels: [String], unpricedCost: Double) {
         self.accountName = accountName
         self.today = today
         self.thisMonth = thisMonth
         self.last7d = last7d
+        self.daily = daily
         self.sessions = sessions
         self.costByModel = costByModel
         self.byCwd = byCwd
@@ -88,7 +109,11 @@ public struct AccountUsageAnalytics: Sendable, Equatable {
 /// mtime-keyed parse cache like ClaudeService.sessions: a jsonl is re-summed only
 /// when its mtime changes. Takes explicit STRING dir paths (never ~/.claude) and an
 /// injected `now` for the today/month/7d windows (no Date() in the math).
-public final class UsageAnalytics {
+///
+/// `@unchecked Sendable`: the only mutable state (`parseCache`, `cacheHitCount`) is
+/// guarded by `cacheLock`, so a single instance is safe to keep on AppState and call
+/// from a background task (the off-main usage refresh, item 2 perf).
+public final class UsageAnalytics: @unchecked Sendable {
     public init() {}
 
     /// Test/diagnostic: increments on every mtime-cache hit.
@@ -148,6 +173,14 @@ public final class UsageAnalytics {
         let cal = UsageAnalytics.utcCalendar
         let sevenDaysAgo = now.addingTimeInterval(-7 * 86_400)
 
+        // 7 calendar-day buckets ending today (UTC) for the Daily Usage chart.
+        let startToday = cal.startOfDay(for: now)
+        let dayKeys: [Date] = (0..<7).reversed().compactMap {
+            cal.date(byAdding: .day, value: -$0, to: startToday)
+        }
+        let weekStart = dayKeys.first ?? startToday
+        var dailyMap: [Date: UsageTotals] = [:]
+
         for record in deduped {
             let recordCost = ModelPricing.cost(
                 model: record.model,
@@ -169,6 +202,12 @@ public final class UsageAnalytics {
                 }
                 if cal.isDate(ts, equalTo: now, toGranularity: .month) {
                     add(&thisMonth, record, cost: recordCost)
+                }
+                if ts >= weekStart && ts <= now {
+                    let key = cal.startOfDay(for: ts)
+                    var bucket = dailyMap[key] ?? UsageTotals()
+                    add(&bucket, record, cost: recordCost)
+                    dailyMap[key] = bucket
                 }
             }
 
@@ -220,9 +259,15 @@ public final class UsageAnalytics {
             }
         }
 
+        let daily = dayKeys.map { key -> DayUsage in
+            let t = dailyMap[key] ?? UsageTotals()
+            return DayUsage(day: key, inputTokens: t.inputTokens, outputTokens: t.outputTokens,
+                            cacheTokens: t.cacheReadTokens + t.cacheWriteTokens, cost: t.cost)
+        }
+
         return AccountUsageAnalytics(
             accountName: accountName,
-            today: today, thisMonth: thisMonth, last7d: last7d,
+            today: today, thisMonth: thisMonth, last7d: last7d, daily: daily,
             sessions: sessions, costByModel: costByModel, byCwd: byCwd,
             unpricedModels: unpricedSet.sorted(), unpricedCost: 0)
     }

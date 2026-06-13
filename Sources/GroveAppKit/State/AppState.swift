@@ -60,6 +60,12 @@ public final class AppState: ObservableObject {
 
     private let configStore: ConfigStore
 
+    /// Persistent service instances. Their mtime parse-caches MUST survive across
+    /// scans/refreshes — a fresh `ClaudeService()`/`UsageAnalytics()` per tick
+    /// re-parsed every transcript from scratch on the 15s loop (item 2 perf bug).
+    private let claude = ClaudeService()
+    private let usageAnalytics = UsageAnalytics()
+
     /// Test seam: when set, every cmux interaction uses this service instead of
     /// a real `CmuxService()` (which would resolve and invoke the real cmux
     /// binary). Internal so GroveAppKitTests can inject via @testable import.
@@ -222,23 +228,30 @@ extension AppState {
     }
 
     /// Built fresh from the CURRENT config so edits (accounts, overrides, hooks)
-    /// take effect on the next scan/creation without restarting.
+    /// take effect on the next scan/creation without restarting. Reuses the
+    /// persistent `claude` so its transcript parse-cache survives across scans.
     public var workspaceService: WorkspaceService {
-        WorkspaceService(git: GitService(), claude: ClaudeService(), cmux: cmux(), config: config)
+        WorkspaceService(git: GitService(), claude: claude, cmux: cmux(), config: config)
     }
 
     /// Scans the selected project; no-op when nothing is selected. scan() itself
     /// never throws (per-repo/cmux failures degrade into snapshot.errors).
+    ///
+    /// Usage refresh (account-wide, independent of selection) runs CONCURRENTLY
+    /// with the scan via `async let`, and its heavy file I/O happens off the main
+    /// actor (see refreshUsage), so neither freezes the panel (item 2). Both are
+    /// awaited before returning so tests and the 15s loop stay deterministic.
     public func refresh() async {
-        // Usage refresh iterates accounts and is independent of the selected
-        // project; it MUST run for the Accounts route / menu-bar badge even when
-        // nothing is selected, so it goes BEFORE the early-return guard below.
-        refreshUsage(now: Date())
-        guard let project = selectedProject else { return }
-        isScanning = true
-        let snapshot = await workspaceService.scan(project: project)
-        snapshots[project.id] = snapshot
-        isScanning = false
+        let started = Date()
+        async let usage: Void = refreshUsage(now: started)
+        if let project = selectedProject {
+            isScanning = true
+            let snapshot = await workspaceService.scan(project: project)
+            snapshots[project.id] = snapshot
+            isScanning = false
+            GroveLog.perf.info("scan \(project.name, privacy: .public): \(Int(Date().timeIntervalSince(started) * 1000))ms")
+        }
+        await usage
     }
 
     /// Refreshes branchesByRepo for `repos`, concurrently (one git call per
@@ -616,20 +629,32 @@ extension AppState {
 
     /// Reads capture snapshots + analytics across accounts (called on the scan tick).
     /// `now` injected; defaults to Date() ONLY at the production call site.
-    public func refreshUsage(now: Date) {
-        let reader = UsageReader()
-        let analytics = UsageAnalytics()
-        var snaps: [String: [UsageSnapshot]] = [:]
-        var byAcc: [String: AccountUsageAnalytics] = [:]
-        for account in config.accounts {
-            let dir = expandTilde(account.configDir)
-            snaps[account.name] = reader.read(configDir: dir, accountName: account.name)
-            byAcc[account.name] = analytics.account(configDir: dir, accountName: account.name,
-                                                    claudeJSONPath: claudeJSONPath(for: account),
-                                                    now: now)
+    ///
+    /// The file reads + JSON parsing run OFF the main actor (`Task.detached`) so a
+    /// cold transcript parse never freezes the panel on open (item 2). The shared
+    /// `usageAnalytics` keeps its mtime cache between calls, so steady-state ticks
+    /// only re-parse changed files. Results are assigned back on the main actor.
+    public func refreshUsage(now: Date) async {
+        let analytics = usageAnalytics
+        let jobs: [(name: String, dir: String, claudeJSON: String)] = config.accounts.map {
+            (name: $0.name, dir: expandTilde($0.configDir), claudeJSON: claudeJSONPath(for: $0))
         }
-        snapshotsByAccount = snaps
-        usageByAccount = byAcc
+        let started = Date()
+        let result = await Task.detached(priority: .utility) {
+            () -> (snaps: [String: [UsageSnapshot]], byAcc: [String: AccountUsageAnalytics]) in
+            let reader = UsageReader()
+            var snaps: [String: [UsageSnapshot]] = [:]
+            var byAcc: [String: AccountUsageAnalytics] = [:]
+            for job in jobs {
+                snaps[job.name] = reader.read(configDir: job.dir, accountName: job.name)
+                byAcc[job.name] = analytics.account(configDir: job.dir, accountName: job.name,
+                                                    claudeJSONPath: job.claudeJSON, now: now)
+            }
+            return (snaps, byAcc)
+        }.value
+        snapshotsByAccount = result.snaps
+        usageByAccount = result.byAcc
+        GroveLog.perf.info("usage refresh (\(jobs.count) accts): \(Int(Date().timeIntervalSince(started) * 1000))ms")
     }
 
     private func tier(for account: AccountConfig) -> String? {

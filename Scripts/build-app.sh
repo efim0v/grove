@@ -11,18 +11,25 @@ APP="dist/Grove.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/GroveApp "$APP/Contents/MacOS/Grove"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Bundle id intentionally NOT the old dev.artem.grove: that identity's
+	     menu-bar layout cache was corrupted by a MenuBarExtra crash-loop on
+	     macOS 26.4 (status item pinned off-screen behind Control Center, only
+	     clears on reboot). A fresh id gets a clean, visible slot. -->
 	<key>CFBundleIdentifier</key>
-	<string>dev.artem.grove</string>
+	<string>dev.artemefimov.grove</string>
 	<key>CFBundleName</key>
 	<string>Grove</string>
 	<key>CFBundleExecutable</key>
 	<string>Grove</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>
