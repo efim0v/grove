@@ -73,6 +73,22 @@ final class RecentSessionsTests: XCTestCase {
         XCTAssertEqual(rows.first?.accountName, "work")
     }
 
+    /// The Projects-tab data path must stay well under the 0.5s UI budget even
+    /// with a large transcript corpus — the indexer parses only a bounded buffer
+    /// of the newest candidates, never the whole set.
+    func testStaysFastWithManyTranscriptFiles() throws {
+        let root = "/Users/x/Projects/big"
+        for i in 0..<80 {
+            try writeSession(cwd: root + "/ws-\(i)", id: "s-\(i)", title: "S\(i)",
+                             ageSeconds: Double(i))
+        }
+        let start = Date()
+        let rows = claude.recentSessions(underRoots: [root], accounts: [account()], limit: 2)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertEqual(rows.map(\.id), ["s-0", "s-1"])   // the two newest (smallest age)
+        XCTAssertLessThan(elapsed, 0.5, "recent-session index must stay under the 0.5s UI budget")
+    }
+
     func testEmptyForNoRootsOrZeroLimit() {
         XCTAssertTrue(claude.recentSessions(underRoots: [], accounts: [account()], limit: 5).isEmpty)
         XCTAssertTrue(claude.recentSessions(underRoots: ["/x"], accounts: [account()], limit: 0).isEmpty)

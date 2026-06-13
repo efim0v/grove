@@ -19,6 +19,24 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertNil(SnapshotMode.parseSnapshotDir(from: ["GroveApp", "--snapshot"]))
     }
 
+    // MARK: - end-to-end rendering (exercises every routed view body)
+
+    /// Renders all scenes through the real ImageRenderer pipeline and asserts each
+    /// PNG is produced and non-trivial. This drives every routed screen's body
+    /// (RootShell/ProjectsTab/DashboardScreen/ProjectScreen tabs/AccountsScreen…)
+    /// so a layout that crashes or renders blank is caught in CI, not by eye.
+    @MainActor
+    func testAllScenesRenderToNonEmptyPNGs() throws {
+        let dir = try FixtureLite.tempDir("snapshot-render")
+        let count = try SnapshotMode.renderAll(into: dir)
+        XCTAssertEqual(count, SnapshotMode.SnapshotScene.allCases.count)
+        for scene in SnapshotMode.SnapshotScene.allCases {
+            let path = dir.appendingPathComponent(scene.fileName).path
+            let size = (try FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+            XCTAssertGreaterThan(size, 2_000, "\(scene.fileName) rendered too small/empty")
+        }
+    }
+
     // MARK: - scenes
 
     func testScenesHaveContractFileNames() {
