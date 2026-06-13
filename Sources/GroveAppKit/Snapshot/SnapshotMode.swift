@@ -37,6 +37,7 @@ public enum SnapshotMode {
 
     enum SnapshotScene: String, CaseIterable {
         case projects = "projects"
+        case charts = "charts"
         case rootWorkspaces = "root-workspaces"
         case workspacesExpanded = "workspaces-expanded"
         case createSheet = "create-sheet"
@@ -54,13 +55,14 @@ public enum SnapshotMode {
         /// because RootView stacks the banner ABOVE the routed screen.
         var size: CGSize {
             switch self {
-            case .projects: return CGSize(width: 420, height: 440)
+            case .projects: return CGSize(width: 460, height: 520)
+            case .charts: return CGSize(width: 620, height: 560)
             case .rootWorkspaces, .workspacesExpanded, .graph, .sessions:
                 return CGSize(width: 760, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)
             case .accounts, .accountsUsage: return CGSize(width: 560, height: 480)
             case .settings: return CGSize(width: 560, height: 560)
-            case .errorBanner: return CGSize(width: 420, height: 504)
+            case .errorBanner: return CGSize(width: 460, height: 584)
             }
         }
     }
@@ -147,6 +149,20 @@ public enum SnapshotMode {
         // max_20x vs default_claude_max_20x mismatch.
         state.tierOverride = ["default": "default_claude_max_20x",
                               "work": "default_claude_max_5x"]
+
+        // Projects-tab session previews (item 4): a running session mapped to a
+        // cmux workspace (Go) and a waiting one (Resume).
+        let wsRoot = "/Users/demo/Workspaces/acme.shop"
+        state.recentSessionsByProject = [project.id: [
+            ProjectSessionRow(sessionId: "s-mp-1", title: "media pipeline retries",
+                              cwd: wsRoot + "/media-pipeline", location: "media-pipeline",
+                              accountName: "default", lastActivity: now.addingTimeInterval(-900),
+                              status: .running, cmuxWorkspaceId: "ws-101"),
+            ProjectSessionRow(sessionId: "s-mu-1", title: "upload endpoint",
+                              cwd: wsRoot + "/media-upload", location: "media-upload",
+                              accountName: "work", lastActivity: now.addingTimeInterval(-120),
+                              status: .waiting, cmuxWorkspaceId: nil),
+        ]]
         return state
     }
 
@@ -190,6 +206,21 @@ public enum SnapshotMode {
         return ["default": [defaultSnap], "work": [workSnap]]
     }
 
+    /// 7 calendar-day token buckets with a reference-like profile (a couple of
+    /// heavy days, a light "today") so the Daily Usage chart shows colour variety.
+    static func fixtureDaily(now: Date, scale: Double) -> [DayUsage] {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let today = cal.startOfDay(for: now)
+        let profile = [0, 0, 0, 900_000, 760_000, 420_000, 60_000]
+        return (0..<7).map { i in
+            let tokens = Int(Double(profile[i]) * scale)
+            let day = cal.date(byAdding: .day, value: -(6 - i), to: today)!
+            return DayUsage(day: day, inputTokens: tokens / 6, outputTokens: tokens / 12,
+                            cacheTokens: tokens, cost: Double(tokens) / 120_000)
+        }
+    }
+
     /// Per-account analytics: today/month token+cost rollups, per-model cost for
     /// the breakdown %, and a `sessions` entry per fixture session id so the
     /// session cards show real numbers. Account-of-record matches each fixture
@@ -231,6 +262,7 @@ public enum SnapshotMode {
             last7d: UsageTotals(inputTokens: 612_300, outputTokens: 121_900,
                                 cacheReadTokens: 3_100_000, cacheWrite5mTokens: 150_000,
                                 cacheWrite1hTokens: 18_000, cost: 22.18),
+            daily: fixtureDaily(now: now, scale: 1.0),
             sessions: defaultSessions,
             costByModel: [opus: 51.90, sonnet: 6.81],
             byCwd: [
@@ -261,6 +293,7 @@ public enum SnapshotMode {
             last7d: UsageTotals(inputTokens: 281_500, outputTokens: 61_200,
                                 cacheReadTokens: 1_500_000, cacheWrite5mTokens: 72_000,
                                 cacheWrite1hTokens: 9_000, cost: 7.92),
+            daily: fixtureDaily(now: now, scale: 0.55),
             sessions: workSessions,
             costByModel: [sonnet: 19.44],
             byCwd: [
@@ -543,6 +576,11 @@ public enum SnapshotMode {
         let projectID = state.selectedProjectID!
         switch scene {
         case .projects:
+            state.rootTab = .projects
+            state.route = .projects
+        case .charts:
+            // The charts tab of the root shell; fixture already carries usage data.
+            state.rootTab = .charts
             state.route = .projects
         case .rootWorkspaces, .workspacesExpanded:
             state.route = .project(projectID)

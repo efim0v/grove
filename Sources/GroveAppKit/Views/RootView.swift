@@ -45,11 +45,21 @@ public struct RootView: View {
 
     // MARK: - Route switch with push/pop transitions and per-route size
 
+    /// Preferred panel frame for the CURRENT route. The root scope (.projects)
+    /// is a two-tab shell whose width depends on the active tab — the Charts tab
+    /// is wider so account columns sit side by side.
+    var currentPanelSize: (width: CGFloat, height: CGFloat?) {
+        if case .projects = state.route {
+            return state.rootTab == .charts ? (620, 560) : (460, 520)
+        }
+        return Self.panelSize(for: state.route)
+    }
+
     /// Preferred panel frame per route; nil height = adaptive (the screen
     /// sizes to its content, capped at 560 in routedScreen).
     static func panelSize(for route: Route) -> (width: CGFloat, height: CGFloat?) {
         switch route {
-        case .projects: return (420, 440)
+        case .projects: return (460, 520)
         case .project: return (760, 540)
         case .createWorkspace: return (540, nil)
         case .projectSettings: return (560, 560)
@@ -64,12 +74,12 @@ public struct RootView: View {
     /// ZStack (and the MenuBarExtra window with it) animates between the two
     /// inside open()'s withAnimation.
     @ViewBuilder private var routedScreen: some View {
-        let size = Self.panelSize(for: state.route)
+        let size = currentPanelSize
         ZStack(alignment: .top) {
             Group {
                 switch state.route {
                 case .projects:
-                    ProjectsScreen(state: state)
+                    RootShell(state: state)
                 case .project:
                     ProjectScreen(state: state)
                 case .createWorkspace:
@@ -141,7 +151,7 @@ public struct RootView: View {
             .padding(.top, 10)
             // Pin to the route's width: an unconstrained Text would otherwise
             // balloon the content-sized panel to the error's full line width.
-            .frame(width: Self.panelSize(for: state.route).width)
+            .frame(width: currentPanelSize.width)
         }
     }
 }

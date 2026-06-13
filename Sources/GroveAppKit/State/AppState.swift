@@ -21,6 +21,27 @@ public enum MainTab: String, CaseIterable {
     }
 }
 
+/// The two top-level tabs (item 4): the usage dashboard and the projects list.
+/// Projects is the default — routing to a workspace is the most common action.
+public enum RootTab: String, CaseIterable, Sendable {
+    case projects
+    case charts
+
+    public var label: String {
+        switch self {
+        case .projects: return "Projects"
+        case .charts: return "Charts"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .projects: return "folder"
+        case .charts: return "chart.bar.xaxis"
+        }
+    }
+}
+
 /// Single observable source of truth for the app. Owns the config (loaded via
 /// ConfigStore), per-project scan snapshots, selection, and every user action.
 /// Action methods never throw into views: failures land in `actionError`.
@@ -33,6 +54,12 @@ public final class AppState: ObservableObject {
     /// refreshUsage on the scan tick. Empty until the first refresh.
     @Published public var usageByAccount: [String: AccountUsageAnalytics] = [:]
     @Published public var snapshotsByAccount: [String: [UsageSnapshot]] = [:]
+    /// Per-project recent Claude sessions (item 4): the Projects tab's previews.
+    /// Filled by refreshSessionIndex (cheap, off-main — no git scan).
+    @Published public var recentSessionsByProject: [UUID: [ProjectSessionRow]] = [:]
+    /// Top-level tab (Charts | Projects). Persisted here so it survives the panel
+    /// closing/reopening (item 4: state preserved on minimize).
+    @Published public var rootTab: RootTab = .projects
     @Published public var selectedProjectID: UUID?
     @Published public var selectedTab: MainTab = .workspaces
     /// The panel's current full-screen state. Mutate via open()/goBack() so
@@ -244,6 +271,7 @@ extension AppState {
     public func refresh() async {
         let started = Date()
         async let usage: Void = refreshUsage(now: started)
+        async let sessions: Void = refreshSessionIndex()
         if let project = selectedProject {
             isScanning = true
             let snapshot = await workspaceService.scan(project: project)
@@ -252,6 +280,32 @@ extension AppState {
             GroveLog.perf.info("scan \(project.name, privacy: .public): \(Int(Date().timeIntervalSince(started) * 1000))ms")
         }
         await usage
+        await sessions
+    }
+
+    /// Cheap per-project recent-session previews for the Projects tab (item 4).
+    /// Independent of the heavy git scan: it only reads recent transcripts + live
+    /// processes + the cmux hook map, all OFF the main actor. This is what makes
+    /// the primary flow (open → pick a session → go to its terminal) instant.
+    public func refreshSessionIndex() async {
+        let accounts = config.accounts
+        let claude = self.claude
+        let cmuxMap = cmux().claudeSessionWorkspaceMap(hookFile: cmuxHookFile)
+        let jobs: [(id: UUID, roots: [String])] = config.projects.map { p in
+            let wsRoot = expandTilde(p.workspacesRoot
+                ?? config.workspacesRootTemplate.replacingOccurrences(of: "{project}", with: p.name))
+            return (id: p.id, roots: [expandTilde(p.path), wsRoot].filter { !$0.isEmpty })
+        }
+        let result = await Task.detached(priority: .utility) { () -> [UUID: [ProjectSessionRow]] in
+            let live = accounts.flatMap { claude.liveProcesses(account: $0) }
+            var out: [UUID: [ProjectSessionRow]] = [:]
+            for job in jobs {
+                let sessions = claude.recentSessions(underRoots: job.roots, accounts: accounts, limit: 2)
+                out[job.id] = buildProjectSessionRows(sessions: sessions, live: live, cmuxMap: cmuxMap)
+            }
+            return out
+        }.value
+        recentSessionsByProject = result
     }
 
     /// Refreshes branchesByRepo for `repos`, concurrently (one git call per
@@ -402,6 +456,21 @@ extension AppState {
             actionError = nil
         } catch {
             actionError = String(describing: error)
+        }
+    }
+
+    /// Projects-tab session block tap (item 4): Go to the live cmux workspace
+    /// hosting the session if known, else Resume it under its account in a fresh
+    /// workspace. The fast routing path — no snapshot lookup needed.
+    public func openSession(_ row: ProjectSessionRow) async {
+        let account = config.accounts.first { $0.name == row.accountName }
+            ?? config.accounts.first
+            ?? AccountConfig(name: "default", configDir: "~/.claude")
+        if let workspaceId = row.cmuxWorkspaceId {
+            do { try await cmux().selectWorkspace(workspaceId) }
+            catch { actionError = String(describing: error) }
+        } else {
+            await launchClaude(cwd: row.cwd, title: row.title, account: account, resume: row.sessionId)
         }
     }
 

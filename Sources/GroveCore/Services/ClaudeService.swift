@@ -168,6 +168,58 @@ public final class ClaudeService: @unchecked Sendable {
         return result.sorted { $0.lastActivity > $1.lastActivity }
     }
 
+    /// Recent sessions whose real cwd is under any of `roots` (expanded absolute
+    /// paths), across all `accounts`, newest first by file mtime, capped at
+    /// `limit`. Deliberately CHEAP (item 2): it lists transcript files, prefilters
+    /// directories by the mangled-root prefix, and parses only a bounded buffer of
+    /// the newest candidates to confirm the real cwd + read the title — never the
+    /// whole transcript corpus, and no git/cmux. Powers the Projects tab's
+    /// per-project session previews without a full workspace scan.
+    public func recentSessions(underRoots roots: [String], accounts: [AccountConfig],
+                               limit: Int) -> [ClaudeSession] {
+        guard limit > 0, !roots.isEmpty else { return [] }
+        let fm = FileManager.default
+        let canonRoots = roots.map { canonicalPath($0) }
+        let mangledPrefixes = Set(roots.map { ClaudeService.mangle($0) }
+            + canonRoots.map { ClaudeService.mangle($0) })
+
+        struct Candidate { let path: String; let mtime: Date; let account: String }
+        var candidates: [Candidate] = []
+        for account in accounts {
+            let projectsDir = expandTilde(account.configDir) + "/projects"
+            guard let dirs = try? fm.contentsOfDirectory(atPath: projectsDir) else { continue }
+            for dir in dirs where mangledPrefixes.contains(where: { dir.hasPrefix($0) }) {
+                let dirPath = projectsDir + "/" + dir
+                guard let names = try? fm.contentsOfDirectory(atPath: dirPath) else { continue }
+                for name in names where name.hasSuffix(".jsonl") {
+                    let path = dirPath + "/" + name
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue,
+                          let attrs = try? fm.attributesOfItem(atPath: path),
+                          let mtime = attrs[.modificationDate] as? Date else { continue }
+                    candidates.append(Candidate(path: path, mtime: mtime, account: account.name))
+                }
+            }
+        }
+        candidates.sort { $0.mtime > $1.mtime }
+
+        var rows: [ClaudeSession] = []
+        var seen = Set<String>()
+        let budget = limit * 4 + 8   // bounded: only the newest candidates get parsed
+        for cand in candidates.prefix(budget) {
+            guard let parsed = cachedParse(path: cand.path, mtime: cand.mtime) else { continue }
+            let canonCwd = canonicalPath(parsed.cwd)
+            let underRoot = canonRoots.contains { canonCwd == $0 || canonCwd.hasPrefix($0 + "/") }
+            guard underRoot else { continue }   // mangled-prefix false positive -> drop
+            guard seen.insert(parsed.cwd + "\u{0}" + parsed.id).inserted else { continue }
+            rows.append(ClaudeSession(id: parsed.id, cwd: parsed.cwd, title: parsed.title,
+                                      lastActivity: cand.mtime, accountName: cand.account,
+                                      gitBranch: parsed.gitBranch))
+            if rows.count >= limit { break }
+        }
+        return rows
+    }
+
     private func cachedParse(path: String, mtime: Date) -> ParsedSession? {
         cacheLock.lock()
         if let entry = sessionCache[path], entry.mtime == mtime {
