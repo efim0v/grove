@@ -35,10 +35,10 @@ final class StatuslineInstallerTests: XCTestCase {
         // The wrapper script exists and is executable under the injected scriptDir.
         let script = installer.scriptPath(forConfigDir: configDir.path)
         XCTAssertTrue(fm.isExecutableFile(atPath: script))
-        // settings.json now points at the wrapper.
+        // settings.json now points at the wrapper, shell-quoted (Claude runs it via sh -c).
         let s = try readSettings()
         let line = try XCTUnwrap(s["statusLine"] as? [String: Any])
-        XCTAssertEqual(line["command"] as? String, script)
+        XCTAssertEqual(line["command"] as? String, shellQuote(script))
         // The prior command was returned for AccountConfig.savedStatusline.
         XCTAssertEqual(saved, original)
     }
@@ -49,7 +49,7 @@ final class StatuslineInstallerTests: XCTestCase {
         XCTAssertNil(saved, "no prior statusLine -> nothing to restore")
         let line = try readSettings()["statusLine"] as? [String: Any]
         XCTAssertEqual(line?["command"] as? String,
-                       installer.scriptPath(forConfigDir: configDir.path))
+                       shellQuote(installer.scriptPath(forConfigDir: configDir.path)))
     }
 
     func testInstallIsIdempotentAndDoesNotOverwriteSavedOriginal() throws {
@@ -114,6 +114,40 @@ final class StatuslineInstallerTests: XCTestCase {
                         .trimmingCharacters(in: .whitespacesAndNewlines), "CALLED")
     }
 
+    // MARK: - the installed command survives `sh -c` even with spaces in the path
+
+    /// Regression: the production scriptDir is "~/Library/Application Support/Grove/bin"
+    /// (a SPACE). Claude Code runs statusLine.command via `sh -c "<command>"`, so an
+    /// unquoted path resolved to "…/Library/Application: not found" (exit 127) and the
+    /// wrapper never ran — all-zero limits. The command must be shell-quoted.
+    func testInstalledCommandRunsThroughShCDespiteSpacesInPath() throws {
+        let spacedBin = configDir.appendingPathComponent("Application Support/Grove bin")
+        try fm.createDirectory(at: spacedBin, withIntermediateDirectories: true)
+        let spacedInstaller = StatuslineInstaller(scriptDir: spacedBin.path)
+        try #"{"statusLine":{"type":"command","command":"/bin/cat >/dev/null"}}"#
+            .write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+        _ = try spacedInstaller.install(configDir: configDir.path)
+        let command = try XCTUnwrap(
+            (try readSettings()["statusLine"] as? [String: Any])?["command"] as? String)
+        XCTAssertTrue(command.contains(" "), "the spaced wrapper path must appear in the command")
+
+        // Run it EXACTLY as Claude Code does.
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", command]
+        let stdin = Pipe()
+        proc.standardInput = stdin
+        proc.standardOutput = Pipe(); proc.standardError = Pipe()
+        try proc.run()
+        stdin.fileHandleForWriting.write(Data(#"{"session_id":"spaced","cost":{"total_cost_usd":1}}"#.utf8))
+        stdin.fileHandleForWriting.closeFile()
+        proc.waitUntilExit()
+
+        let snap = configDir.appendingPathComponent("grove/usage/spaced.json")
+        XCTAssertTrue(fm.fileExists(atPath: snap.path),
+                      "wrapper must run via sh -c despite spaces (exit \(proc.terminationStatus))")
+    }
+
     // MARK: - multi-account: each account gets its own wrapper (no clobber)
 
     func testTwoAccountsGetIndependentWrappersWithOwnBakedEnv() throws {
@@ -144,8 +178,8 @@ final class StatuslineInstallerTests: XCTestCase {
             let s = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
             return (s["statusLine"] as? [String: Any])?["command"] as? String
         }
-        XCTAssertEqual(try command(in: dirA), scriptA)
-        XCTAssertEqual(try command(in: dirB), scriptB)
+        XCTAssertEqual(try command(in: dirA), shellQuote(scriptA))
+        XCTAssertEqual(try command(in: dirB), shellQuote(scriptB))
 
         // B's install did NOT clobber A's baked original.
         XCTAssertEqual(StatuslineInstaller.bakedOriginal(inScriptAt: scriptA), "A-orig")

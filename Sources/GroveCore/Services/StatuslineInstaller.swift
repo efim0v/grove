@@ -36,14 +36,21 @@ public struct StatuslineInstaller: Sendable {
         // original.
         let settingsPath = configDir + "/settings.json"
         let scriptPath = self.scriptPath(forConfigDir: configDir)
+        // The command MUST be shell-quoted: Claude Code runs statusLine.command via
+        // `sh -c`, and the production scriptDir (~/Library/Application Support/Grove/bin)
+        // contains a SPACE. An unquoted path breaks ("…/Library/Application: not found",
+        // exit 127) so the wrapper never runs and no usage/limit snapshot is ever
+        // written — the cause of all-zero limits in the app.
+        let quotedCommand = shellQuote(scriptPath)
         var settings = StatuslineInstaller.readSettings(at: settingsPath)
         let currentCommand = (settings["statusLine"] as? [String: Any])?["command"] as? String
 
         let original: String?
         if let current = currentCommand {
-            if current == scriptPath {
-                // Already the wrapper: recover the real original baked into the
-                // previously-shipped script (nil when there was none).
+            // Already our wrapper? Accept the quoted form AND the legacy bare path
+            // written before the quoting fix (so a re-install migrates it cleanly).
+            if current == quotedCommand || current == scriptPath {
+                // Recover the real original baked into the previously-shipped script.
                 original = StatuslineInstaller.bakedOriginal(inScriptAt: scriptPath)
             } else {
                 original = current
@@ -63,8 +70,8 @@ public struct StatuslineInstaller: Sendable {
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: scriptPath)
 
-        // Repoint settings at the bare wrapper path.
-        settings["statusLine"] = ["type": "command", "command": scriptPath]
+        // Repoint settings at the shell-quoted wrapper path (handles the space).
+        settings["statusLine"] = ["type": "command", "command": quotedCommand]
         try StatuslineInstaller.writeSettings(settings, to: settingsPath)
         return original
     }
