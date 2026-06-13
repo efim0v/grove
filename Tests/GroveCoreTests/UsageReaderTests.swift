@@ -62,4 +62,29 @@ final class UsageReaderTests: XCTestCase {
     func testMissingUsageDirYieldsEmpty() {
         XCTAssertEqual(reader.read(configDir: configDir.path, accountName: "a").count, 0)
     }
+
+    // Real captures carry resets_at as a Unix epoch NUMBER, not an ISO string.
+    func testNumericEpochResetsAtIsNormalizedToParseableISO() throws {
+        try writeSnapshot("epoch.json", #"""
+        {"capturedAt":"2025-06-15T10:00:00Z","raw":{
+          "session_id":"epoch","workspace":{"current_dir":"/ws/z"},
+          "rate_limits":{
+            "five_hour":{"used_percentage":22,"resets_at":1750000000},
+            "seven_day":{"used_percentage":4,"resets_at":1750500000}}}}
+        """#)
+        let s = try XCTUnwrap(reader.read(configDir: configDir.path, accountName: "a").first)
+        XCTAssertEqual(s.fiveHour?.usedPercentage, 22)
+        let raw = try XCTUnwrap(s.fiveHour?.resetsAt)
+        XCTAssertEqual(parseISODate(raw), Date(timeIntervalSince1970: 1_750_000_000))
+    }
+
+    func testNormalizedResetsAtHandlesStringSecondsAndMillis() {
+        XCTAssertEqual(UsageReader.normalizedResetsAt("2025-06-15T13:00:00Z"), "2025-06-15T13:00:00Z")
+        XCTAssertNil(UsageReader.normalizedResetsAt(nil))
+        XCTAssertNil(UsageReader.normalizedResetsAt(0))
+        XCTAssertEqual(UsageReader.normalizedResetsAt(1_750_000_000).flatMap(parseISODate),
+                       Date(timeIntervalSince1970: 1_750_000_000))
+        XCTAssertEqual(UsageReader.normalizedResetsAt(1_750_000_000_000).flatMap(parseISODate),
+                       Date(timeIntervalSince1970: 1_750_000_000))   // ms -> s
+    }
 }

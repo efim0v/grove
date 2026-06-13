@@ -110,6 +110,27 @@ public struct UsageReader: Sendable {
         else { return nil }
         return CapturedWindow(
             usedPercentage: used,
-            resetsAt: object["resets_at"] as? String)
+            resetsAt: normalizedResetsAt(object["resets_at"]))
     }
+
+    /// Claude emits `resets_at` either as an ISO8601 string OR a Unix epoch number
+    /// (seconds — or milliseconds for very large values). Normalize both to an
+    /// ISO8601 string so RateLimitModel/LimitBar's `parseISODate` reads it uniformly;
+    /// otherwise a numeric reset left the "Resets in" countdown blank.
+    static func normalizedResetsAt(_ value: Any?) -> String? {
+        if let s = value as? String, !s.isEmpty { return s }
+        if let n = value as? NSNumber {
+            var seconds = n.doubleValue
+            if seconds > 1_000_000_000_000 { seconds /= 1000 }   // ms -> s
+            guard seconds > 0 else { return nil }
+            return resetsFormatter.string(from: Date(timeIntervalSince1970: seconds))
+        }
+        return nil
+    }
+
+    private static let resetsFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 }
