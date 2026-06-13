@@ -10,8 +10,9 @@ import GroveCore
 public struct ProjectSessionRow: Sendable, Equatable, Identifiable {
     /// User-facing status trio (item 7): "выполняется / ожидает / закрыта".
     public enum Status: String, Sendable, Equatable {
-        case running    // a live process, busy or idle
-        case waiting    // a live process awaiting input
+        case running    // a live process actively generating (Claude status "busy")
+        case waiting    // a live process that finished its turn, awaiting your next
+                        // prompt (Claude status "idle"/"shell") — where you jump in
         case closed     // no live process (resumable)
     }
 
@@ -51,10 +52,14 @@ public func buildProjectSessionRows(sessions: [ClaudeSession],
     return sessions.map { s in
         let process = liveBySession[s.id]
         let status: ProjectSessionRow.Status
+        // Claude Code's live status is "busy" (mid-turn) / "idle" (finished, waiting
+        // for input) / "shell". Only "busy" is genuinely RUNNING; "idle"/"shell"
+        // both map to .idle and mean the session is waiting for your next prompt —
+        // the actionable "where do I jump in" state. nil = no live process = closed.
         switch process.map({ SessionLiveStatus(rawStatus: $0.status) }) {
-        case .some(.waiting): status = .waiting
-        case .some:           status = .running     // busy or idle, both "running"
-        case nil:             status = .closed
+        case .some(.busy):                  status = .running
+        case .some(.waiting), .some(.idle): status = .waiting
+        case nil:                           status = .closed
         }
         let title = (s.title?.isEmpty == false) ? s.title! : String(s.id.prefix(8))
         return ProjectSessionRow(

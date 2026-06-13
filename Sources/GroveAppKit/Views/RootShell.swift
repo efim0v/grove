@@ -23,12 +23,18 @@ struct RootShell: View {
     // MARK: - Header: brand + tab strip + add (Projects only)
 
     private var header: some View {
-        HStack(spacing: 8) {
+        let now = Date()
+        return HStack(spacing: 8) {
             // Brand mark only (no "Grove" text) so the tab strip keeps its labels
             // even in the narrow Charts width.
             Image(systemName: "tree")
                 .font(.headline)
                 .foregroundStyle(.primary)
+            // Overall remaining 5h capacity + soonest reset (item 4).
+            AggregateChip(window: "5h",
+                          aggregate: state.aggregateRemaining(window: .fiveHour, now: now),
+                          resetsAt: state.aggregateReset(window: .fiveHour, now: now),
+                          now: now)
             Spacer(minLength: 6)
             tabStrip
             Spacer(minLength: 6)

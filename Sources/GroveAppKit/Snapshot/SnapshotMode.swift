@@ -56,7 +56,7 @@ public enum SnapshotMode {
         var size: CGSize {
             switch self {
             case .projects: return CGSize(width: 460, height: 520)
-            case .charts: return CGSize(width: 260, height: 700)
+            case .charts: return CGSize(width: 290, height: 720)
             case .rootWorkspaces, .workspacesExpanded, .graph, .sessions:
                 return CGSize(width: 760, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)

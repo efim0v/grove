@@ -82,6 +82,33 @@ final class AppStateGapTests: XCTestCase {
         XCTAssertEqual(agg.remaining, 5 * 0.6, accuracy: 1e-9)
     }
 
+    func testAggregateResetIsTheSoonestUpcomingAcrossAccounts() {
+        let s = state()
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let iso = ISO8601DateFormatter()
+        let inOneHour = iso.string(from: now.addingTimeInterval(3_600))
+        let inHalfHour = iso.string(from: now.addingTimeInterval(1_800))   // sooner
+        func snap(_ acct: String, _ resets: String) -> UsageSnapshot {
+            UsageSnapshot(accountName: acct, sessionId: "s", capturedAt: now, cwd: nil,
+                          modelId: nil, modelDisplayName: nil, effort: nil,
+                          contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
+                          fiveHour: CapturedWindow(usedPercentage: 50, resetsAt: resets), sevenDay: nil)
+        }
+        s.config.accounts = [AccountConfig(name: "a", configDir: "/tmp/a"),
+                             AccountConfig(name: "b", configDir: "/tmp/b")]
+        s.snapshotsByAccount = ["a": [snap("a", inOneHour)], "b": [snap("b", inHalfHour)]]
+        let reset = s.aggregateReset(window: .fiveHour, now: now)
+        XCTAssertEqual(reset?.timeIntervalSince1970 ?? 0,
+                       now.addingTimeInterval(1_800).timeIntervalSince1970, accuracy: 1.0,
+                       "the chip shows the next account to refresh, not the latest")
+    }
+
+    func testShortModelNameStripsClaudePrefix() {
+        XCTAssertEqual(shortModelName("claude-sonnet-4-6"), "sonnet-4-6")
+        XCTAssertEqual(shortModelName("claude-opus-4-8"), "opus-4-8")
+        XCTAssertEqual(shortModelName("gpt-x"), "gpt-x")       // untouched
+    }
+
     func testInstallAndDisableMonitoringToggleFlag() throws {
         let s = state()
         s.statuslineScriptDirOverride = root.appendingPathComponent("bin").path

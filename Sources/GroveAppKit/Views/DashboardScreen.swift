@@ -173,9 +173,12 @@ struct DailyUsageCardView: View {
                     .font(.callout.weight(.semibold))
                 Spacer()
                 // Unit when idle; the hovered bar's detail when pointing at one.
+                // Compact ("Wed · 2.4M · $8.29", no "tok") + scale-don't-truncate
+                // so it fits beside the title in the narrow Charts width.
                 if let hovered {
-                    Text("\(hovered.label) · \(formatCompactTokens(hovered.totalTokens)) tok · \(formatCompactCost(hovered.cost))")
+                    Text("\(hovered.label) · \(formatCompactTokens(hovered.totalTokens)) · \(formatCompactCost(hovered.cost))")
                         .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.7)
                 } else {
                     Text("tokens / day").font(.caption2).foregroundStyle(.tertiary)
                 }
@@ -246,12 +249,16 @@ struct TokenUsageCardView: View {
     let rows: [TokenRow]
     let models: [ModelShare]
 
+    /// Fixed width for the period/label column so the four numeric columns get
+    /// the remaining width — without it an equal 5-way split starves the numbers
+    /// and they truncate ("$78.1…") in the narrow Charts width.
+    private static let labelColumn: CGFloat = 42
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Token Usage", systemImage: "number")
                 .font(.callout.weight(.semibold))
-            // Columns spread evenly across the full card width (each maxWidth:∞).
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 cell("", .caption2.weight(.semibold), .secondary, leading: true)
                 cell("Input", .caption2.weight(.semibold), .secondary)
                 cell("Output", .caption2.weight(.semibold), .secondary)
@@ -259,7 +266,7 @@ struct TokenUsageCardView: View {
                 cell("Cost", .caption2.weight(.semibold), .secondary)
             }
             ForEach(rows) { row in
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     cell(row.period, .caption, .secondary, leading: true)
                     cell(formatCompactTokens(row.input), .caption)
                     cell(formatCompactTokens(row.output), .caption)
@@ -271,12 +278,15 @@ struct TokenUsageCardView: View {
                 Divider().opacity(0.4)
                 ForEach(models) { share in
                     HStack {
-                        Text(share.model).font(.caption).lineLimit(1)
-                        Spacer()
+                        // Strip the "claude-" prefix so "claude-sonnet-4-6" reads as
+                        // "sonnet-4-6" and fits without truncation.
+                        Text(shortModelName(share.model))
+                            .font(.caption).lineLimit(1).minimumScaleFactor(0.8)
+                        Spacer(minLength: 6)
                         Text("\(Int(share.percent.rounded()))%")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.green)
-                            .monospacedDigit()
+                            .monospacedDigit().fixedSize()
                     }
                 }
             }
@@ -292,8 +302,18 @@ struct TokenUsageCardView: View {
             .foregroundStyle(color)
             .monospacedDigit()
             .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
+            // Shrink rather than truncate, so a long value scales down a hair
+            // instead of becoming "…" — never dots.
+            .minimumScaleFactor(0.75)
+            .frame(maxWidth: leading ? Self.labelColumn : .infinity,
+                   alignment: leading ? .leading : .trailing)
     }
+}
+
+/// "claude-sonnet-4-6" -> "sonnet-4-6"; "claude-opus-4-8" -> "opus-4-8". Leaves
+/// already-short ids untouched.
+func shortModelName(_ id: String) -> String {
+    id.hasPrefix("claude-") ? String(id.dropFirst("claude-".count)) : id
 }
 
 // MARK: - Shared chrome

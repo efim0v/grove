@@ -761,6 +761,19 @@ extension AppState {
         return RateLimitModel.aggregateRemaining(accounts)
     }
 
+    /// Summing principle for windows that reset at DIFFERENT times: the remaining
+    /// capacity is the tier-weighted sum above (how much headroom you have RIGHT
+    /// NOW across accounts); the reset shown is the SOONEST upcoming one — the next
+    /// moment any account's window refreshes and headroom returns. Returns that
+    /// instant, or nil when no account has a future reset on record.
+    public func aggregateReset(window: LimitWindow, now: Date) -> Date? {
+        let windows: [CapturedWindow] = config.accounts.compactMap { account in
+            let snaps = snapshotsByAccount[account.name] ?? []
+            return currentWindow(snaps, { window == .fiveHour ? $0.fiveHour : $0.sevenDay }, now: now)
+        }
+        return soonestReset(windows, now: now).flatMap(parseISODate)
+    }
+
     /// Opens the account's config dir in Finder (`open <configDir>`). Snapshot-safe
     /// callers gate this off; production reveals the real dir.
     public func openConfigDir(_ account: AccountConfig) {

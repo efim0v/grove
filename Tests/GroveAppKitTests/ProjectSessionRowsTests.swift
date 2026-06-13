@@ -22,15 +22,19 @@ final class ProjectSessionRowsTests: XCTestCase {
 
     func testRunningAndWaitingFromLiveStatus() {
         let rows = buildProjectSessionRows(
-            sessions: [session("busy"), session("wait"), session("idle")],
+            sessions: [session("busy"), session("wait"), session("idle"), session("shell")],
             live: [live("busy", status: "busy"),
                    live("wait", status: "waiting"),
-                   live("idle", status: "idle")],
+                   live("idle", status: "idle"),
+                   live("shell", status: "shell")],
             cmuxMap: [:])
         let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.sessionId, $0.status) })
+        // Only "busy" is genuinely running; "idle"/"shell" mean the session finished
+        // its turn and is waiting for the next prompt (the actionable state).
         XCTAssertEqual(byId["busy"], .running)
         XCTAssertEqual(byId["wait"], .waiting)
-        XCTAssertEqual(byId["idle"], .running)   // idle live still reads as "running"
+        XCTAssertEqual(byId["idle"], .waiting)
+        XCTAssertEqual(byId["shell"], .waiting)
     }
 
     func testGoTargetFromCmuxMap() {

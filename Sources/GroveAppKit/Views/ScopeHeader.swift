@@ -78,6 +78,11 @@ struct ScopeHeader: View {
 struct AggregateChip: View {
     let window: String
     let aggregate: RateLimitModel.Aggregate
+    /// Soonest upcoming reset across accounts (item 4). When present the chip
+    /// appends a countdown ("5h 62% · 2h14m"): the next time headroom returns.
+    var resetsAt: Date? = nil
+    var now: Date = Date()
+
     var body: some View {
         let badge = AggregateBadge(aggregate)   // .noData when aggregate.total == 0
         let color: Color = {
@@ -88,13 +93,18 @@ struct AggregateChip: View {
             case .critical: return .red
             }
         }()
-        let label = badge.hasData ? "\(Int((aggregate.fraction * 100).rounded()))%" : "—"
-        return Text("\(window) \(label)")
+        let percent = badge.hasData ? "\(Int((aggregate.fraction * 100).rounded()))%" : "—"
+        let countdown = badge.hasData ? resetsAt.map { " · \(LimitCard.shortCountdown($0.timeIntervalSince(now)))" } ?? "" : ""
+        return Text("\(window) \(percent)\(countdown)")
             .font(.caption.weight(.medium))
+            .monospacedDigit()
+            .lineLimit(1)
+            .fixedSize()
             .padding(.horizontal, 6).padding(.vertical, 2)
             .background(color.opacity(0.18), in: Capsule())
             .foregroundStyle(color)
-            .help(badge.hasData ? "Remaining 5h capacity across accounts"
-                                : "No usage captures yet — enable Monitoring")
+            .help(badge.hasData
+                  ? "Remaining \(window) capacity across all accounts (tier-weighted) · resets soonest at the time shown"
+                  : "No usage captures yet — enable Monitoring")
     }
 }
