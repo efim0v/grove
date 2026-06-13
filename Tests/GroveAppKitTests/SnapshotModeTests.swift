@@ -57,9 +57,7 @@ final class SnapshotModeTests: XCTestCase {
         let projectID = try XCTUnwrap(state(.projects).selectedProjectID)
 
         XCTAssertEqual(state(.projects).route, .projects)
-        XCTAssertEqual(state(.projects).rootTab, .projects)
-        XCTAssertEqual(state(.charts).route, .projects)
-        XCTAssertEqual(state(.charts).rootTab, .charts)
+        XCTAssertEqual(state(.charts).route, .projects)   // charts side window (no tab)
         XCTAssertEqual(state(.rootWorkspaces).route, .project(projectID))
         XCTAssertEqual(state(.workspacesExpanded).route, .project(projectID))
         XCTAssertEqual(state(.graph).route, .project(projectID))

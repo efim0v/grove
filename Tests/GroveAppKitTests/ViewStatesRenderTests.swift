@@ -46,13 +46,19 @@ final class ViewStatesRenderTests: XCTestCase {
         render(s, projectSize)
     }
 
-    func testChartsTabWithNoAccounts() {
+    func testChartsSideWindowWithNoAccounts() {
         let s = SnapshotMode.fixtureState()
         s.config.accounts = []
         s.usageByAccount = [:]
         s.snapshotsByAccount = [:]
-        s.rootTab = .charts
-        render(s, CGSize(width: 620, height: 560))
+        // The charts now render in the standalone side window, not the main shell.
+        let view = ChartsSideContent(state: s)
+            .frame(width: 290, height: 560)
+            .environment(\.colorScheme, .dark)
+            .environment(\.isSnapshotRender, true)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        _ = renderer.cgImage
     }
 
     func testNonCmuxErrorBannerBranch() {
@@ -63,7 +69,6 @@ final class ViewStatesRenderTests: XCTestCase {
 
     func testProjectsTabWhileScanning() {
         let s = SnapshotMode.fixtureState()
-        s.rootTab = .projects
         s.isScanning = true
         render(s, CGSize(width: 460, height: 520))
     }

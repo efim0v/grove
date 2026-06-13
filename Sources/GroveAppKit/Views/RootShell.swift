@@ -2,10 +2,11 @@ import SwiftUI
 import AppKit
 import GroveCore
 
-/// The root scope (route .projects): a two-tab shell (item 4) — Projects (the
-/// primary view: project list with quick session access) and Charts (the usage
-/// dashboard). The tab selection lives in AppState so it survives the panel
-/// closing/reopening. Header + footer are shared across both tabs.
+/// The root scope (route .projects): the project list with quick session access.
+/// The usage dashboard is no longer a tab here — it lives in a permanent side
+/// window (ChartsSideContent) docked left of the main panel, always visible. So
+/// this shell is just the brand/limits header, the Projects content, and the
+/// shared footer.
 struct RootShell: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
@@ -25,59 +26,28 @@ struct RootShell: View {
     private var header: some View {
         let now = Date()
         return HStack(spacing: 8) {
-            // Brand mark only (no "Grove" text) so the tab strip keeps its labels
-            // even in the narrow Charts width.
             Image(systemName: "tree")
                 .font(.headline)
                 .foregroundStyle(.primary)
+            Text("Grove").font(.headline)
             // Overall remaining 5h capacity + soonest reset (item 4).
             AggregateChip(window: "5h",
                           aggregate: state.aggregateRemaining(window: .fiveHour, now: now),
                           resetsAt: state.aggregateReset(window: .fiveHour, now: now),
                           now: now)
             Spacer(minLength: 6)
-            tabStrip
-            Spacer(minLength: 6)
             Button { addProjectViaPanel() } label: { Image(systemName: "plus") }
                 .buttonStyle(.plain)
                 .help("Add a project directory")
-                .opacity(state.rootTab == .projects ? 1 : 0)
-                .disabled(state.rootTab != .projects)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
     }
 
-    /// Capsule segmented strip (Liquid Glass live; snapshot-safe fill offscreen),
-    /// matching the project-scope tab strip the app already uses.
-    private var tabStrip: some View {
-        GlassEffectContainer {
-            HStack(spacing: 4) {
-                ForEach(RootTab.allCases, id: \.rawValue) { tab in
-                    Button {
-                        state.rootTab = tab
-                    } label: {
-                        Text(tab.label)
-                            .font(.callout.weight(state.rootTab == tab ? .semibold : .regular))
-                            .lineLimit(1)
-                            .fixedSize()
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 4)
-                            .selectionCapsule(isOn: state.rootTab == tab)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    // MARK: - Tab content
+    // MARK: - Content (the project list; charts live in the side window)
 
     @ViewBuilder private var content: some View {
-        switch state.rootTab {
-        case .projects: ProjectsTab(state: state)
-        case .charts: DashboardScreen(state: state)
-        }
+        ProjectsTab(state: state)
     }
 
     // MARK: - Footer: Accounts, settings, refresh, version, Quit

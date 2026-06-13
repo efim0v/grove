@@ -96,6 +96,20 @@ struct DashboardScreen: View {
     }
 }
 
+/// The Charts dashboard as a standalone, always-on side window docked to the LEFT
+/// of the main panel (the Projects|Charts tab was removed — charts are now always
+/// visible, regardless of which section the main window shows). Fixed narrow
+/// width; the hosting panel applies the chrome (material/clip/border) in
+/// production and the snapshot backdrop supplies it offscreen, so it's NOT here.
+struct ChartsSideContent: View {
+    @ObservedObject var state: AppState
+    static let width: CGFloat = 290
+    var body: some View {
+        DashboardScreen(state: state)
+            .frame(width: ChartsSideContent.width)
+    }
+}
+
 /// One scope's stacked cards (the title lives in the switcher above).
 struct DashboardColumnView: View {
     let column: DashboardColumn
@@ -258,6 +272,10 @@ struct TokenUsageCardView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Token Usage", systemImage: "number")
                 .font(.callout.weight(.semibold))
+                .help("Each message is counted once (by message id), for the calendar month. "
+                    + "Resuming a session replays its history into a new transcript with the SAME "
+                    + "message ids — those copies are not re-billed, so Grove does not re-count them. "
+                    + "Tools that count every replayed copy report several× higher.")
             HStack(spacing: 6) {
                 cell("", .caption2.weight(.semibold), .secondary, leading: true)
                 cell("Input", .caption2.weight(.semibold), .secondary)

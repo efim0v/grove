@@ -42,6 +42,16 @@ final class GrovePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// The Charts side window. It must NEVER become key: it holds only display +
+/// click controls (the ‹ › scope arrows, which respond to mouse clicks without
+/// key status), so keeping it non-key leaves the MAIN panel key — its search
+/// field stays focused and ⌘R/⌘Q keep working even while the user clicks around
+/// the charts. (A borderless NSPanel is non-key by default; this is explicit.)
+final class ChartsDisplayPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
 /// Owns the status item and the panel that hosts the SwiftUI `RootView`.
 @MainActor
 private final class StatusBarController: NSObject, NSApplicationDelegate, NSWindowDelegate {
@@ -53,6 +63,14 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
     /// KVO token: the panel must resize when SwiftUI's preferredContentSize changes
     /// (a tab/route switch) — an NSWindow does not do this on its own reliably.
     private var sizeObservation: NSKeyValueObservation?
+
+    /// The always-on Charts side window, docked to the LEFT of the main panel.
+    /// Opens/closes with the main panel and re-glues to its left edge on every
+    /// resize/move, so the two windows stand side by side regardless of which
+    /// section the main panel is showing.
+    private var chartsPanel: ChartsDisplayPanel?
+    private var chartsHost: NSHostingController<AnyView>?
+    private var chartsSizeObservation: NSKeyValueObservation?
     /// Global mouse monitor installed while the panel is open so a click anywhere
     /// OUTSIDE our app (desktop, another app, the menu bar) dismisses it. A global
     /// monitor never fires for clicks inside our own windows — including a child
@@ -127,11 +145,82 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
 
     /// Resizes the panel to `size` (the SwiftUI content) and re-pins the top-right
     /// corner to the icon — so a content-size change never re-centers/jumps it.
+    /// The Charts side window follows the main panel's left edge.
     private func applyContentSize(_ size: NSSize) {
         guard let p = panel, size.width > 1, size.height > 1 else { return }
         if p.frame.size != size { p.setContentSize(size) }
         repositionToAnchor()
         p.invalidateShadow()
+        repositionChartsPanel()
+    }
+
+    /// Builds (once) the borderless Charts side window — same chrome as the main
+    /// panel, hosting the standalone dashboard.
+    private func makeChartsPanel() -> ChartsDisplayPanel {
+        if let chartsPanel { return chartsPanel }
+        let p = ChartsDisplayPanel(contentRect: NSRect(x: 0, y: 0, width: ChartsSideContent.width, height: 600),
+                                   styleMask: [.borderless],
+                                   backing: .buffered, defer: false)
+        p.level = .popUpMenu
+        p.isFloatingPanel = true
+        p.hidesOnDeactivate = false
+        p.isMovable = false
+        p.backgroundColor = .clear
+        p.isOpaque = false
+        p.hasShadow = true
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        p.delegate = self
+        let radius = DesignRadius.panel
+        let chrome = AnyView(ChartsSideContent(state: state)
+            .frame(maxHeight: 820)
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(.white.opacity(0.08))))
+        let h = NSHostingController(rootView: chrome)
+        h.sizingOptions = [.preferredContentSize]
+        p.contentViewController = h
+        chartsHost = h
+        chartsSizeObservation = h.observe(\.preferredContentSize) { [weak self] controller, _ in
+            let size = controller.preferredContentSize
+            DispatchQueue.main.async { self?.applyChartsContentSize(size) }
+        }
+        chartsPanel = p
+        return p
+    }
+
+    private func applyChartsContentSize(_ size: NSSize) {
+        guard let p = chartsPanel, size.width > 1, size.height > 1 else { return }
+        // Cap the height to the visible screen so the window can always be fully
+        // on-screen (the dashboard has no scroll view; a too-tall window would
+        // otherwise push its top above the menu bar on short displays).
+        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
+        let capped = NSSize(width: size.width,
+                            height: min(size.height, (visible?.height ?? size.height) - 8))
+        if p.frame.size != capped { p.setContentSize(capped) }
+        repositionChartsPanel()
+        p.invalidateShadow()
+    }
+
+    /// Glues the Charts window beside the main panel, tops aligned — left of it by
+    /// default, falling back to the right when there's no room on the left. Both
+    /// axes are clamped so the window is always fully on-screen.
+    private func repositionChartsPanel() {
+        guard let charts = chartsPanel, let main = panel else { return }
+        let gap: CGFloat = 8
+        let size = charts.frame.size
+        let mainFrame = main.frame
+        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        // Prefer left of the main panel; if that runs off the left edge, dock right.
+        var x = mainFrame.minX - gap - size.width
+        if x < visible.minX + 4 { x = mainFrame.maxX + gap }
+        x = max(visible.minX + 4, min(x, visible.maxX - size.width - 4))
+        // Align the tops, but keep the whole window on-screen (top ≤ maxY, bottom ≥ minY).
+        var y = mainFrame.maxY - size.height
+        y = max(visible.minY + 4, min(y, visible.maxY - size.height - 4))
+        let origin = NSPoint(x: x, y: y)
+        if charts.frame.origin != origin { charts.setFrameOrigin(origin) }
     }
 
     @objc private func togglePanel() {
@@ -151,22 +240,43 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
             repositionToAnchor()
         }
         state.isPanelOpen = true                  // starts RootView's refresh loop
+        // Charts side window: built, sized, and glued to the main panel's left
+        // edge BEFORE either is ordered in, so it never appears mispositioned.
+        let cp = makeChartsPanel()
+        if let ch = chartsHost, ch.preferredContentSize.height > 1 {
+            applyChartsContentSize(ch.preferredContentSize)
+        } else {
+            repositionChartsPanel()
+        }
         NSApp.activate(ignoringOtherApps: true)   // key window + keyboard for an .accessory app
+        cp.orderFront(nil)                         // display-only; main keeps key
         p.makeKeyAndOrderFront(nil)
         installOutsideClickMonitor()
     }
 
     private func hidePanel() {
         state.isPanelOpen = false                 // stops RootView's refresh loop
+        chartsPanel?.orderOut(nil)
         panel?.orderOut(nil)
         removeOutsideClickMonitor()
     }
 
-    /// Any resize re-pins the TOP-RIGHT corner to the icon so the panel grows
-    /// left/down instead of jumping, and refreshes the rounded window shadow.
+    /// Any resize re-pins the main panel's TOP-RIGHT corner to the icon (so it
+    /// grows left/down instead of jumping) and re-glues the Charts side window to
+    /// its left edge. A resize of the Charts window only re-glues that window.
     func windowDidResize(_ notification: Notification) {
-        repositionToAnchor()
-        panel?.invalidateShadow()
+        let resized = notification.object as? NSWindow
+        // A resize delivered while the window is hidden (a SwiftUI layout pass during
+        // orderOut) must not reposition with stale anchors — showPanel re-anchors.
+        guard resized?.isVisible == true else { return }
+        if resized === chartsPanel {
+            repositionChartsPanel()
+            chartsPanel?.invalidateShadow()
+        } else if resized === panel {
+            repositionToAnchor()
+            panel?.invalidateShadow()
+            repositionChartsPanel()
+        }
     }
 
     private func repositionToAnchor() {

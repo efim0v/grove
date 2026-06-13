@@ -21,27 +21,6 @@ public enum MainTab: String, CaseIterable {
     }
 }
 
-/// The two top-level tabs (item 4): the usage dashboard and the projects list.
-/// Projects is the default — routing to a workspace is the most common action.
-public enum RootTab: String, CaseIterable, Sendable {
-    case projects
-    case charts
-
-    public var label: String {
-        switch self {
-        case .projects: return "Projects"
-        case .charts: return "Charts"
-        }
-    }
-
-    public var systemImage: String {
-        switch self {
-        case .projects: return "folder"
-        case .charts: return "chart.bar.xaxis"
-        }
-    }
-}
-
 /// Single observable source of truth for the app. Owns the config (loaded via
 /// ConfigStore), per-project scan snapshots, selection, and every user action.
 /// Action methods never throw into views: failures land in `actionError`.
@@ -57,10 +36,7 @@ public final class AppState: ObservableObject {
     /// Per-project recent Claude sessions (item 4): the Projects tab's previews.
     /// Filled by refreshSessionIndex (cheap, off-main — no git scan).
     @Published public var recentSessionsByProject: [UUID: [ProjectSessionRow]] = [:]
-    /// Top-level tab (Charts | Projects). Persisted here so it survives the panel
-    /// closing/reopening (item 4: state preserved on minimize).
-    @Published public var rootTab: RootTab = .projects
-    /// Which scope the Charts tab shows (0 = Overall when >1 account, else the first
+    /// Which scope the Charts side window shows (0 = Overall when >1 account, else the first
     /// account). The ‹ › arrows step this; persisted so it survives panel reopen.
     @Published public var chartsScopeIndex: Int = 0
     @Published public var selectedProjectID: UUID?

@@ -47,26 +47,18 @@ public struct RootView: View {
 
     // MARK: - Route switch with push/pop transitions and per-route size
 
-    /// Preferred panel frame for the CURRENT route. The root scope (.projects)
-    /// is a two-tab shell whose width depends on the active tab — the Charts tab
-    /// is wider so account columns sit side by side.
+    /// Preferred panel frame for the CURRENT route. The root scope (.projects) is
+    /// the project list at a fixed roomy size; the usage dashboard is no longer a
+    /// tab here (it's the permanent side window).
     var currentPanelSize: (width: CGFloat, height: CGFloat?) {
         if case .projects = state.route {
-            // Charts is a narrow single column (well under the Projects width);
-            // height is adaptive (one column, no scroll). 290 is the narrowest
-            // width where the 4-number Token Usage row stays fully legible.
-            // Projects stays roomy for the project cards + session previews.
-            return state.rootTab == .charts ? (290, nil) : (460, 520)
+            return (460, 520)
         }
         return Self.panelSize(for: state.route)
     }
 
-    /// Height cap for the adaptive-height screens. The charts column needs more
-    /// room than the default 560 so all cards fit without a scroll view.
-    private var maxPanelHeight: CGFloat {
-        if case .projects = state.route, state.rootTab == .charts { return 820 }
-        return 560
-    }
+    /// Height cap for the adaptive-height screens.
+    private var maxPanelHeight: CGFloat { 560 }
 
     /// Preferred panel frame per route; nil height = adaptive (the screen
     /// sizes to its content, capped at 560 in routedScreen).

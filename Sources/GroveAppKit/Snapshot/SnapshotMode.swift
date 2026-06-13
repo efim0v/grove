@@ -576,11 +576,9 @@ public enum SnapshotMode {
         let projectID = state.selectedProjectID!
         switch scene {
         case .projects:
-            state.rootTab = .projects
             state.route = .projects
         case .charts:
-            // The charts tab of the root shell; fixture already carries usage data.
-            state.rootTab = .charts
+            // The standalone Charts side window; fixture already carries usage data.
             state.route = .projects
         case .rootWorkspaces, .workspacesExpanded:
             state.route = .project(projectID)
@@ -612,6 +610,11 @@ public enum SnapshotMode {
 
     @MainActor
     static func view(for scene: SnapshotScene) -> AnyView {
+        // The Charts side window renders its standalone content, NOT the main shell
+        // (charts is no longer a tab in RootView).
+        if scene == .charts {
+            return AnyView(ChartsSideContent(state: configuredState(for: scene)))
+        }
         let root = RootView(state: configuredState(for: scene))
         if scene == .workspacesExpanded {
             return AnyView(root.environment(\.snapshotExpandedWorkspaces, ["media-upload"]))
