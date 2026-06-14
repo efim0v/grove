@@ -2,12 +2,19 @@ import AppKit
 import SwiftUI
 
 /// The ONE window substrate shared by both panels (main + Charts): macOS 26's
-/// native `NSGlassEffectView` in CLEAR style — maximally transparent, minimally
-/// blurred ("чистое" Liquid Glass, not frosted soap), and CONSTANT.
+/// native `NSGlassEffectView` in REGULAR style — the same slightly-transparent,
+/// small-blur Liquid Glass as SwiftUI's `.glassEffect(.regular)`, but CONSTANT.
+///
+/// Why `.regular` not `.clear`: clear glass is mostly a lens, so its look is
+/// dominated by whatever sits behind the window — over a busy fullscreen surface
+/// it suddenly reads as heavy blur, over the desktop as near-transparent, and the
+/// two side-by-side panels (over different backdrops) never match. `.regular` has
+/// a fixed frost floor, so it reads the SAME regardless of backdrop and on both
+/// panels. (The panels also drop `.fullScreenAuxiliary` so they no longer float
+/// over fullscreen apps and re-sample that blurry surface — see GroveMenuBarApp.)
 ///
 /// Why AppKit, not SwiftUI `.glassEffect`: SwiftUI's glass reacts to the host
-/// window's key/active state — it drops to a plain blur when the window isn't key
-/// (and `.regular` is the frosted, blurry variant). With two side-by-side panels
+/// window's key/active state — it dims when the window isn't key. With two panels
 /// (one key-capable, one canBecomeKey=false) that meant the windows looked
 /// different and shifted as focus moved. `NSGlassEffectView` composites at the
 /// window-server layer and does NOT consult SwiftUI active state, so identical
@@ -23,7 +30,7 @@ enum GlassWindowSubstrate {
     /// backgroundColor=.clear (Grove's panels are).
     static func install(_ host: NSHostingController<AnyView>, radius: CGFloat, in panel: NSPanel) {
         let glass = NSGlassEffectView()
-        glass.style = .clear            // maximally transparent, minimal blur — NOT frosted
+        glass.style = .regular          // fixed frost floor: constant, identical on both panels
         glass.cornerRadius = radius     // the rounded window shape
         glass.tintColor = nil           // neutral, constant
         host.view.wantsLayer = true

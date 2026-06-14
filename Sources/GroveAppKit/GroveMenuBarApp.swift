@@ -112,14 +112,19 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         let p = GrovePanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 520),
                            styleMask: [.borderless],
                            backing: .buffered, defer: false)
-        p.level = .popUpMenu                 // above normal windows, like a menu
+        p.level = .floating                  // above normal windows, but NOT forced over fullscreen apps
         p.isFloatingPanel = true
         p.hidesOnDeactivate = false
         p.isMovable = false
         p.backgroundColor = .clear
         p.isOpaque = false
         p.hasShadow = true
-        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Show on the current Space when summoned, but do NOT float over fullscreen
+        // apps or ride along during a Space swipe — that re-samples a dense/blurry
+        // backdrop and makes the constant glass suddenly intensify (the user's #1
+        // complaint). `.moveToActiveSpace` brings the panel to the active Space on
+        // demand without persisting across Spaces.
+        p.collectionBehavior = [.moveToActiveSpace]
         p.delegate = self
 
         // The panel supplies the chrome the popover used to: a glass material under
@@ -165,14 +170,16 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         let p = ChartsDisplayPanel(contentRect: NSRect(x: 0, y: 0, width: ChartsSideContent.width, height: 600),
                                    styleMask: [.borderless],
                                    backing: .buffered, defer: false)
-        p.level = .popUpMenu
+        p.level = .floating                  // match the main panel: no forced fullscreen overlay
         p.isFloatingPanel = true
         p.hidesOnDeactivate = false
         p.isMovable = false
         p.backgroundColor = .clear
         p.isOpaque = false
         p.hasShadow = true
-        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Identical to the main panel so both windows' glass behaves the same: on the
+        // active Space when shown, never floating over fullscreen apps / re-sampling.
+        p.collectionBehavior = [.moveToActiveSpace]
         p.delegate = self
         let radius = DesignRadius.panel
         let chrome = AnyView(ChartsSideContent(state: state)
