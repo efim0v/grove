@@ -52,6 +52,62 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertEqual(bars[0].fraction, 0)
     }
 
+    func testLanguageBarsMetricSelectorReSortsAndRescales() {
+        // DESC-by-code ≠ DESC-by-files: Swift dominates code, JSON dominates files.
+        let s = stats([
+            lang("Swift", files: 2, code: 1000, comment: 100, blank: 50),
+            lang("JSON", files: 50, code: 100, comment: 0, blank: 0),
+        ])
+        // Default + explicit .code: Swift first, busiest -> fraction 1.0.
+        XCTAssertEqual(languageBars(s).map(\.language), ["Swift", "JSON"])
+        XCTAssertEqual(languageBars(s, metric: .code).map(\.language), ["Swift", "JSON"])
+        XCTAssertEqual(languageBars(s, metric: .code).first?.fraction, 1.0)
+
+        // .files re-sorts (JSON first) AND re-scales (JSON busiest -> 1.0; Swift 2/50).
+        let byFiles = languageBars(s, metric: .files)
+        XCTAssertEqual(byFiles.map(\.language), ["JSON", "Swift"])
+        XCTAssertEqual(byFiles[0].fraction, 1.0)
+        XCTAssertEqual(byFiles[0].metricValue, 50)
+        XCTAssertEqual(byFiles[0].metricText, "50")
+        XCTAssertEqual(byFiles[1].fraction, 2.0 / 50.0, accuracy: 1e-9)
+
+        // .total uses code+comment+blank: Swift 1150 vs JSON 100 -> Swift first.
+        XCTAssertEqual(languageBars(s, metric: .total).map(\.language), ["Swift", "JSON"])
+        XCTAssertEqual(languageBars(s, metric: .total).first?.metricValue, 1150)
+
+        // .comment: only Swift has comments -> Swift first, JSON share 0.
+        let byComment = languageBars(s, metric: .comment)
+        XCTAssertEqual(byComment.map(\.language), ["Swift", "JSON"])
+        XCTAssertEqual(byComment[1].metricValue, 0)
+        XCTAssertEqual(byComment[1].fraction, 0)
+    }
+
+    func testLanguageBarsShareReflectsChosenMetric() {
+        let s = stats([
+            lang("Swift", files: 3, code: 750),
+            lang("Python", files: 1, code: 250),
+        ])
+        // Code share: 750/1000 = 75% and 250/1000 = 25%.
+        let byCode = languageBars(s, metric: .code)
+        XCTAssertEqual(byCode[0].shareText, "75%")
+        XCTAssertEqual(byCode[1].shareText, "25%")
+        XCTAssertEqual(byCode.map(\.share).reduce(0, +), 1.0, accuracy: 1e-9)
+        // Files share re-scales: 3/4 = 75%, 1/4 = 25% (Swift still busiest by files).
+        let byFiles = languageBars(s, metric: .files)
+        XCTAssertEqual(byFiles[0].shareText, "75%")
+        XCTAssertEqual(byFiles[1].shareText, "25%")
+    }
+
+    func testLanguageBarsTieBreaksByNameStably() {
+        // Equal code -> deterministic order by language name (Apple < Banana < Cherry).
+        let s = stats([
+            lang("Banana", files: 1, code: 100),
+            lang("Cherry", files: 1, code: 100),
+            lang("Apple", files: 1, code: 100),
+        ])
+        XCTAssertEqual(languageBars(s, metric: .code).map(\.language), ["Apple", "Banana", "Cherry"])
+    }
+
     // MARK: - statsTotals
 
     func testStatsTotalsFormattedHeadline() {
@@ -595,6 +651,83 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertEqual(stackedDayReadout(empty), "Jun 14 · no code yet")
         // The short GMT date formatter (POSIX, GMT) backing the readout.
         XCTAssertEqual(shortDayDateText(day), "Jun 14")
+    }
+
+    // MARK: - Stacked chart axes (month X-labels + nice Y-ticks)
+
+    private func emptyBar(_ date: Date) -> StackedDayBar {
+        StackedDayBar(date: date, segments: [])
+    }
+
+    func testMonthLabelPositionsOneLabelPerMonthBoundary() {
+        let cal = GitStatsService.gmtCalendar
+        func d(_ m: Int, _ day: Int) -> Date {
+            cal.date(from: DateComponents(year: 2025, month: m, day: day))!
+        }
+        // May 30, May 31, Jun 1, Jun 2, Jul 1 -> labels at the May (idx 0), Jun (idx 2),
+        // and Jul (idx 4) boundaries only — deduped within a month.
+        let bars = [d(5, 30), d(5, 31), d(6, 1), d(6, 2), d(7, 1)].map(emptyBar)
+        let labels = monthLabelPositions(bars, slotWidth: 4)
+        XCTAssertEqual(labels.map(\.label), ["May", "Jun", "Jul"])
+        XCTAssertEqual(labels.map(\.x), [0, 8, 16])   // idx 0·4, 2·4, 4·4
+        XCTAssertEqual(labels[0].id, 0)
+    }
+
+    func testMonthLabelPositionsIndexZeroAlwaysEmits() {
+        let cal = GitStatsService.gmtCalendar
+        func d(_ day: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: day))! }
+        // A series entirely WITHIN one month still labels that month once, at x = 0.
+        let labels = monthLabelPositions([d(10), d(11), d(12)].map(emptyBar), slotWidth: 5)
+        XCTAssertEqual(labels.map(\.label), ["Jun"])
+        XCTAssertEqual(labels.map(\.x), [0])
+    }
+
+    func testMonthLabelPositionsDisambiguatesAcrossYears() {
+        let cal = GitStatsService.gmtCalendar
+        // Dec 2025 -> Jan 2026 -> Dec 2026 spans >1 calendar year, so labels carry the year.
+        let bars = [
+            cal.date(from: DateComponents(year: 2025, month: 12, day: 31))!,
+            cal.date(from: DateComponents(year: 2026, month: 1, day: 1))!,
+            cal.date(from: DateComponents(year: 2026, month: 12, day: 1))!,
+        ].map(emptyBar)
+        let labels = monthLabelPositions(bars, slotWidth: 4)
+        XCTAssertEqual(labels.map(\.label), ["Dec '25", "Jan '26", "Dec '26"])
+    }
+
+    func testMonthLabelPositionsEmpty() {
+        XCTAssertTrue(monthLabelPositions([], slotWidth: 4).isEmpty)
+    }
+
+    func testNiceTicksRoundAndCoverThePeak() {
+        let ticks = niceTicks(peak: 48_790)
+        XCTAssertEqual(ticks.first, 0, "always starts at 0")
+        XCTAssertGreaterThanOrEqual(ticks.last!, 48_790, "top tick covers the tallest bar")
+        XCTAssertLessThanOrEqual(ticks.count, 5, "3–4 intervals -> ≤5 ticks")
+        // Strictly increasing.
+        for i in 1..<ticks.count { XCTAssertGreaterThan(ticks[i], ticks[i - 1]) }
+        // Even, round step (a 1/2/5 × 10ⁿ nice number); peak 48,790 over 4 intervals
+        // -> rawStep ~12,198 -> nice step 20,000 -> [0, 20k, 40k, 60k].
+        XCTAssertEqual(ticks, [0, 20_000, 40_000, 60_000])
+        let step = ticks[1] - ticks[0]
+        for i in 1..<ticks.count {
+            XCTAssertEqual(ticks[i] - ticks[i - 1], step, "uniform step between ticks")
+        }
+    }
+
+    func testNiceTicksEdgeCases() {
+        XCTAssertEqual(niceTicks(peak: 0), [0], "no data -> single zero tick")
+        XCTAssertEqual(niceTicks(peak: -5), [0], "negative guarded to a single zero tick")
+        // Small peak -> small clean ticks, still covering the peak.
+        let small = niceTicks(peak: 3)
+        XCTAssertEqual(small.first, 0)
+        XCTAssertGreaterThanOrEqual(small.last!, 3)
+        XCTAssertLessThanOrEqual(small.count, 5)
+        // Large peak stays round (1/2/5 × 10ⁿ) and covers it.
+        let big = niceTicks(peak: 1_200_000)
+        XCTAssertEqual(big.first, 0)
+        XCTAssertGreaterThanOrEqual(big.last!, 1_200_000)
+        XCTAssertLessThanOrEqual(big.count, 5)
+        XCTAssertEqual(big, [0, 500_000, 1_000_000, 1_500_000])
     }
 
     // MARK: - Per-repo color ramp

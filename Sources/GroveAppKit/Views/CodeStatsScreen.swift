@@ -29,6 +29,20 @@ struct CodeStatsScreen: View {
     /// snapshot path renders every bar without a selection).
     @State private var selectedDay: Date?
 
+    /// Which `LanguageStats` field drives the Languages card's bars + sort order, picked
+    /// from the in-card metric selector. Default `.code` (the historical behavior).
+    @State private var languageMetric: LanguageMetric = .code
+
+    /// The language whose bar row the cursor is over, if any → a small details overlay
+    /// anchored to that row (files / code / comment / blank / %). Live-only: `.onHover`
+    /// never fires under ImageRenderer, so snapshots draw the bars with no overlay.
+    @State private var hoveredLanguage: String?
+
+    /// The day the cursor is over in the "Lines over time" strip, if any → a hover tooltip
+    /// (date + total + per-repo breakdown). Live-only (continuous-hover never fires
+    /// offscreen); falls back to the tap-selected day when nothing is hovered.
+    @State private var hoveredDay: Date?
+
     var body: some View {
         Group {
             if let stats = state.codeStats[selectedProjectID ?? UUID()] {
@@ -80,15 +94,14 @@ struct CodeStatsScreen: View {
     // MARK: - Totals header
 
     private func totalsCard(stats: CodeStats) -> some View {
-        // Both headline numbers (Code / Data·Prose), the file counts, and the period delta
-        // are pure recomputes from already-scanned data — switching the period never
-        // triggers a git re-scan. The delta is now a SINGLE overall NET line — how much the
-        // whole codebase grew (▲, blue) or shrank (▼, pink) over the period, a churn-free
-        // cumulative-state difference (a line churned 5× counts once). The honest two-sided
-        // added/removed churn display is gone (the user wanted "общая дельта", one number).
+        // Both headline numbers (Code / Data·Prose), the file counts, and the per-category
+        // deltas are pure recomputes from already-scanned data — switching the period never
+        // triggers a git re-scan. Each headline now carries its OWN net delta inline at the
+        // value's top-right: how much that category's lines grew (▲, blue) or shrank (▼, pink)
+        // over the period, a churn-free per-category state difference (a line churned 5×
+        // counts once). The old single combined net line below both headlines is gone.
         let breakdown = dataProseBreakdown(stats)
-        let net = netLinesDelta(history, period: period, now: .now)
-        let triangle = deltaTriangle(net: net)
+        let netByCategory = netLinesDeltaByCategory(history, period: period, now: .now)
         // File-count delta isn't derivable from line history client-side, so the file
         // caption stays a plain count (the per-day series carries only lines).
         return VStack(alignment: .leading, spacing: 10) {
@@ -115,21 +128,11 @@ struct CodeStatsScreen: View {
                 // the line-kind strip below, hence the "lines · N files" caption (it is
                 // total lines of the code-language group, not the code-only line kind).
                 headlineNumber(value: breakdown.codeLinesText,
-                               caption: "code · \(breakdown.codeFilesText) files")
+                               caption: "code · \(breakdown.codeFilesText) files",
+                               delta: deltaTriangle(net: netByCategory.code))
                 headlineNumber(value: breakdown.dataProseLinesText,
-                               caption: "data · \(breakdown.dataProseFilesText) files")
-            }
-            // ONE overall net delta for the whole project over the selected period: ▲ blue
-            // when it grew, ▼ pink when it shrank, ±0 gray when flat. The period control
-            // above drives this; the bars chart below has its own (decoupled) window.
-            HStack(spacing: 6) {
-                Text(triangle.label)
-                    .font(.caption.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(triangleColor(triangle.direction))
-                Text("net over \(period.rawValue)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                               caption: "data · \(breakdown.dataProseFilesText) files",
+                               delta: deltaTriangle(net: netByCategory.dataProse))
             }
             // The LINE-KIND breakdown: every line classified Code / Comment / Blank across
             // ALL languages. A different partition than the headline's language groups (so
@@ -188,16 +191,26 @@ struct CodeStatsScreen: View {
             .strokeBorder(.white.opacity(0.10)))
     }
 
-    /// One headline column: a big number and a caption. The period delta is no longer
-    /// per-column (it was the misleading two-sided added/removed churn) — there is now a
-    /// single overall net line shown once under both headlines in `totalsCard`.
-    private func headlineNumber(value: String, caption: String) -> some View {
+    /// One headline column: a big number with its per-category net delta inline at the
+    /// top-right, plus a caption. The `delta` ▲/▼ is baseline-aligned to the big number so
+    /// it reads as a superscript at the value's top-right (blue ▲ when the category grew,
+    /// pink ▼ when it shrank, gray ±0 when flat). Each category's own net over the selected
+    /// period — the misleading two-sided added/removed churn is long gone.
+    private func headlineNumber(value: String, caption: String, delta: DeltaTriangle) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(value)
-                .font(.system(size: 26, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(value)
+                    .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(delta.label)
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(triangleColor(delta.direction))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
             Text(caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -225,9 +238,16 @@ struct CodeStatsScreen: View {
     // MARK: - Language breakdown (bars + table)
 
     private func languageCard(stats: CodeStats) -> some View {
-        let bars = languageBars(stats)
+        // The chosen metric drives the bar length AND the sort order — switching it re-scales
+        // and re-sorts the distribution (a pure recompute, no re-scan).
+        let bars = languageBars(stats, metric: languageMetric)
         return VStack(alignment: .leading, spacing: 8) {
-            CardLabel(title: "Languages", systemImage: "chevron.left.forwardslash.chevron.right")
+            HStack(alignment: .firstTextBaseline) {
+                CardLabel(title: "Languages",
+                          systemImage: "chevron.left.forwardslash.chevron.right")
+                Spacer(minLength: 8)
+                languageMetricControl
+            }
             if bars.isEmpty {
                 Text("No source files matched a known language.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -239,13 +259,45 @@ struct CodeStatsScreen: View {
                 ForEach(bars) { bar in
                     languageBarRow(bar, color: laneColor(for: bar, codeRank: codeRanks[bar.language]))
                 }
-                Divider().opacity(0.4)
-                languageTable(bars)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .glassCard()
+    }
+
+    /// The Languages metric segmented control (Code / Files / Lines / Comment / Blank).
+    /// Pure-SwiftUI Buttons — the same pattern as `periodControl` — so it renders identically
+    /// live and offscreen (AppKit `Picker(.segmented)` draws an error placeholder under
+    /// ImageRenderer). Writing it re-scales + re-sorts the bars.
+    private var languageMetricControl: some View {
+        HStack(spacing: 0) {
+            ForEach(LanguageMetric.allCases) { m in
+                let selected = m == languageMetric
+                Button {
+                    languageMetric = m
+                } label: {
+                    Text(m.rawValue)
+                        .font(.caption2.weight(selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.white : Color.secondary)
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: DesignRadius.field - 2,
+                                                 style: .continuous)
+                                    .fill(Palette.primary.opacity(0.85))
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(.white.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+            .strokeBorder(.white.opacity(0.10)))
     }
 
     /// Map each CODE language to its rank among code languages only (0-based, in the
@@ -282,64 +334,84 @@ struct CodeStatsScreen: View {
                 .frame(width: 110, alignment: .leading)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                         .fill(.white.opacity(0.08))
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                         .fill(color)
                         // A non-zero language always shows a sliver, like ProgressBar.
                         .frame(width: bar.fraction > 0
                                ? max(geo.size.width * bar.fraction, 4) : 0)
                 }
             }
-            .frame(height: 8)
-            Text(bar.codeText)
+            // Thin bars (~5px) matching the dashboard's ProgressBar for design consistency.
+            .frame(height: 5)
+            // The trailing number tracks the SELECTED metric (not always code).
+            Text(bar.metricText)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: 48, alignment: .trailing)
         }
-    }
-
-    /// A small per-language table: language, files, code, comment, blank, %. The %
-    /// is each language's `total` over the summed total across languages.
-    private func languageTable(_ bars: [LanguageBar]) -> some View {
-        let totalAll = max(bars.reduce(0) { $0 + $1.code + $1.comment + $1.blank }, 1)
-        return VStack(spacing: 3) {
-            HStack(spacing: 6) {
-                tableCell("Language", .caption2.weight(.semibold), .secondary, leading: true)
-                tableCell("Files", .caption2.weight(.semibold), .secondary)
-                tableCell("Code", .caption2.weight(.semibold), .secondary)
-                tableCell("Comment", .caption2.weight(.semibold), .secondary)
-                tableCell("Blank", .caption2.weight(.semibold), .secondary)
-                tableCell("%", .caption2.weight(.semibold), .secondary)
-            }
-            ForEach(bars) { bar in
-                let share = Double(bar.code + bar.comment + bar.blank) / Double(totalAll) * 100
-                // Data/prose languages read in a muted neutral so the group is visible at
-                // a glance even in the dense table.
-                let isData = CodeStatsEngine.isDataProse(bar.language)
-                HStack(spacing: 6) {
-                    tableCell(bar.language, .caption2,
-                              isData ? Palette.neutral : .primary, leading: true)
-                    tableCell(bar.filesText, .caption2)
-                    tableCell(bar.codeText, .caption2)
-                    tableCell(bar.commentText, .caption2)
-                    tableCell(bar.blankText, .caption2)
-                    tableCell("\(Int(share.rounded()))%", .caption2)
-                }
+        .contentShape(Rectangle())
+        // Live-only hover: `.onHover` never fires under ImageRenderer, so snapshots draw the
+        // bars with no overlay. Set/clear this row's language as the hovered one.
+        .onHover { inside in
+            if inside { hoveredLanguage = bar.language }
+            else if hoveredLanguage == bar.language { hoveredLanguage = nil }
+        }
+        // The details overlay floats above the row at its top-trailing corner, gated on the
+        // live render so it never appears in snapshots.
+        .overlay(alignment: .topTrailing) {
+            if !isSnapshotRender && hoveredLanguage == bar.language {
+                languageHoverOverlay(bar)
+                    .offset(y: -6)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
             }
         }
     }
 
-    private func tableCell(_ text: String, _ font: Font, _ color: Color = .primary,
-                           leading: Bool = false) -> some View {
-        Text(text)
-            .font(font)
-            .foregroundStyle(color)
-            .monospacedDigit()
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
-            .frame(maxWidth: leading ? 110 : .infinity,
-                   alignment: leading ? .leading : .trailing)
+    /// The hover details panel for a language row — the data the old per-language table
+    /// carried: files / code / comment / blank, plus the chosen metric's share (%). A small
+    /// floating card anchored to the row. Live-only (snapshots never hover).
+    private func languageHoverOverlay(_ bar: LanguageBar) -> some View {
+        let isData = CodeStatsEngine.isDataProse(bar.language)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(bar.language)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isData ? Palette.neutral : .primary)
+                Spacer(minLength: 8)
+                Text("\(bar.shareText) of \(languageMetric.rawValue.lowercased())")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 14) {
+                overlayStat("Files", bar.filesText)
+                overlayStat("Code", bar.codeText)
+                overlayStat("Comment", bar.commentText)
+                overlayStat("Blank", bar.blankText)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.black.opacity(0.55),
+                    in: RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+            .strokeBorder(.white.opacity(0.12)))
+        .fixedSize()
+    }
+
+    /// One label/value pair in the language hover overlay.
+    private func overlayStat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.4)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.primary)
+        }
     }
 
     // MARK: - Per-repo blocks
@@ -472,11 +544,21 @@ struct CodeStatsScreen: View {
     /// spans the full 1-year cap (`stackedBarMaxDaysBack`) so the strip is genuinely
     /// scrollable, and it opens scrolled to today with ~`stackedDefaultVisibleDays` (6
     /// months) filling the viewport. The Totals/Repos `period` only drives the net delta.
+    /// Width of the left Y-axis gutter that holds the tick value labels (0 / 100k / …).
+    private let yAxisGutterWidth: CGFloat = 40
+    /// Height of the X-axis month-label strip drawn under the bars.
+    private let monthLabelStripHeight: CGFloat = 14
+
     private func growthCard() -> some View {
         let repos = state.repoStats[selectedProjectID ?? UUID()] ?? []
         let bars = stackedRepoSeries(repos, daysBack: stackedBarMaxDaysBack, now: .now)
         let colors = repoColorMap(repos)
         let hasCode = bars.contains { $0.total > 0 }
+        // "Nice" Y-axis ticks; the TOP tick (≥ peak) is the shared denominator both the
+        // gridlines and the bar heights normalize against, so the tallest bar sits just
+        // below the top gridline and the magnitudes read off the left labels.
+        let ticks = niceTicks(peak: stackedPeak(bars))
+        let topTick = max(ticks.last ?? 1, 1)
         return VStack(alignment: .leading, spacing: 8) {
             CardLabel(title: "Lines over time", systemImage: "chart.bar.fill")
             stackedReadout(bars, repoCount: repos.count, colors: colors)
@@ -485,13 +567,21 @@ struct CodeStatsScreen: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: growthChartHeight, alignment: .leading)
             } else {
-                if isSnapshotRender {
-                    // The manual stacked bars draw fine offscreen (Swift-Charts-free); the
-                    // snapshot just trims to the most-recent visible window so the dense
-                    // chart reads without a horizontal scroller.
-                    stackedFallback(bars, colors: colors)
-                } else {
-                    stackedScroller(bars, colors: colors)
+                // Left gutter (Y tick labels) + the gridlined bar plot. Gridlines + labels
+                // render in BOTH paths (pure geometry); only the hover tooltip is live-only.
+                HStack(alignment: .top, spacing: 6) {
+                    yAxisLabels(ticks: ticks, topTick: topTick)
+                    ZStack(alignment: .topLeading) {
+                        yAxisGridlines(ticks: ticks, topTick: topTick)
+                        if isSnapshotRender {
+                            // The manual stacked bars draw fine offscreen (Swift-Charts-free);
+                            // the snapshot just trims to the most-recent visible window so the
+                            // dense chart reads without a horizontal scroller.
+                            stackedFallback(bars, colors: colors, topTick: topTick)
+                        } else {
+                            stackedScroller(bars, colors: colors, topTick: topTick)
+                        }
+                    }
                 }
                 stackedLegend(repos, colors: colors)
             }
@@ -501,14 +591,57 @@ struct CodeStatsScreen: View {
         .glassCard()
     }
 
-    /// The readout above the chart: either the tapped day's total + per-repo breakdown
-    /// tooltip, or a neutral hint of how many repos are stacked. Tinted blue (the codebase
-    /// size axis). A day is selected by tapping a bar in the live strip.
+    /// The left Y-axis gutter: each nice tick's value (compact, e.g. "100k") placed at its
+    /// height so magnitudes read off the chart. The bottom row reserves the month-label
+    /// strip's height so the gridline 0 lines up with the bars' baseline.
+    private func yAxisLabels(ticks: [Int], topTick: Int) -> some View {
+        GeometryReader { geo in
+            let plotH = max(geo.size.height - monthLabelStripHeight, 1)
+            ForEach(ticks, id: \.self) { tick in
+                let y = plotH - CGFloat(tick) / CGFloat(topTick) * plotH
+                Text(formatCompactTokens(tick))
+                    .font(.system(size: 8).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: yAxisGutterWidth, alignment: .trailing)
+                    .position(x: yAxisGutterWidth / 2, y: y)
+            }
+        }
+        .frame(width: yAxisGutterWidth,
+               height: growthChartHeight + monthLabelStripHeight)
+    }
+
+    /// Faint horizontal gridlines behind the bars, one per nice tick, normalized against the
+    /// top tick (the shared bar denominator) so they align with the bar heights. Spans only
+    /// the plot height (above the month-label strip).
+    private func yAxisGridlines(ticks: [Int], topTick: Int) -> some View {
+        GeometryReader { geo in
+            let plotH = growthChartHeight
+            ForEach(ticks, id: \.self) { tick in
+                let y = plotH - CGFloat(tick) / CGFloat(topTick) * plotH
+                Rectangle()
+                    .fill(.white.opacity(0.06))
+                    .frame(height: 1)
+                    .position(x: geo.size.width / 2, y: y)
+            }
+        }
+        .frame(height: growthChartHeight + monthLabelStripHeight, alignment: .top)
+        .allowsHitTesting(false)
+    }
+
+    /// The readout above the chart: either the HOVERED day (live, cursor → nearest day) or,
+    /// failing that, the tapped day's total + per-repo breakdown; otherwise a neutral hint of
+    /// how many repos are stacked. The per-repo breakdown renders as small color-coded chips
+    /// (matching each repo's stacked-segment color), biggest-first. Tinted blue (the codebase
+    /// size axis).
     @ViewBuilder
     private func stackedReadout(_ bars: [StackedDayBar], repoCount: Int,
                                 colors: [String: Color]) -> some View {
-        if let day = selectedDay, let bar = bars.first(where: { $0.date == day }) {
-            VStack(alignment: .leading, spacing: 1) {
+        // Hover wins over tap so the tooltip tracks the cursor; both fall back to the hint.
+        let active = (hoveredDay ?? selectedDay).flatMap { day in
+            bars.first(where: { $0.date == day })
+        }
+        if let bar = active {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(stackedDayReadout(bar))
                     .font(.caption.weight(.medium))
                     .monospacedDigit()
@@ -516,20 +649,26 @@ struct CodeStatsScreen: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 if !bar.segments.isEmpty {
-                    // Per-repo breakdown of that day, biggest-first (segment order).
-                    Text(bar.segments
-                        .map { "\($0.repoName) \(groupedThousands($0.lines))" }
-                        .joined(separator: " · "))
-                        .font(.caption2)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
+                    // Per-repo breakdown of that day, biggest-first (segment order), each a
+                    // colored chip matching its stacked segment.
+                    FlowingLegend(spacing: 10, rowSpacing: 3) {
+                        ForEach(bar.segments, id: \.repoName) { seg in
+                            HStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(colors[seg.repoName] ?? Palette.primary)
+                                    .frame(width: 7, height: 7)
+                                Text("\(seg.repoName) \(groupedThousands(seg.lines))")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
                 }
             }
         } else {
             Text("\(repoCount) \(repoCount == 1 ? "repo" : "repos") stacked · "
-                 + (isSnapshotRender ? "codebase size over time" : "tap a bar for that day’s total"))
+                 + (isSnapshotRender ? "codebase size over time" : "hover or tap a bar for that day’s total"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -564,24 +703,78 @@ struct CodeStatsScreen: View {
     /// (`stackedDefaultVisibleDays` × `stackedSlotWidth` ≈ 720pt) fill the default viewport
     /// and the remaining ~185 older days scroll in. Starts scrolled to the most-recent day.
     /// A tap on any bar selects that day for the tooltip readout; tapping it clears it.
-    private func stackedScroller(_ bars: [StackedDayBar], colors: [String: Color]) -> some View {
-        let peak = stackedPeak(bars)
+    private func stackedScroller(_ bars: [StackedDayBar], colors: [String: Color],
+                                 topTick: Int) -> some View {
+        let labels = monthLabelPositions(bars, slotWidth: stackedSlotWidth)
+        let stripWidth = CGFloat(bars.count) * stackedSlotWidth
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
-                HStack(alignment: .bottom, spacing: 0) {
-                    ForEach(bars) { bar in
-                        stackedBarColumn(bar, peak: peak, colors: colors)
-                            .frame(width: stackedSlotWidth)
-                            .id(bar.date)
-                            .contentShape(Rectangle())
-                            .onTapGesture { toggleDaySelection(bar) }
+                VStack(alignment: .leading, spacing: 0) {
+                    // The bars. Heights normalize against the nice top tick (≥ peak) so they
+                    // align with the Y gridlines behind them.
+                    HStack(alignment: .bottom, spacing: 0) {
+                        ForEach(bars) { bar in
+                            stackedBarColumn(bar, peak: topTick, colors: colors)
+                                .frame(width: stackedSlotWidth)
+                                .id(bar.date)
+                                .contentShape(Rectangle())
+                                .onTapGesture { toggleDaySelection(bar) }
+                        }
                     }
+                    .frame(width: stripWidth, height: growthChartHeight, alignment: .bottom)
+                    // Continuous hover maps the cursor x → the nearest day index so the
+                    // tooltip tracks the cursor. Live-only (never fires under ImageRenderer).
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let p):
+                            let idx = Int(p.x / stackedSlotWidth)
+                            if bars.indices.contains(idx) { hoveredDay = bars[idx].date }
+                        case .ended:
+                            hoveredDay = nil
+                        }
+                    }
+                    // X-axis month labels, one per month boundary, positioned in lockstep with
+                    // the bars (same slot width, same scroll offset).
+                    monthLabelStrip(labels, width: stripWidth)
                 }
-                .frame(height: growthChartHeight, alignment: .bottom)
             }
-            .frame(height: growthChartHeight)
+            .frame(height: growthChartHeight + monthLabelStripHeight)
             .onAppear { if let last = bars.last { proxy.scrollTo(last.date, anchor: .trailing) } }
         }
+    }
+
+    /// The X-axis month-label strip: one short month name per boundary at its day-column x.
+    /// `width` matches the bar strip so it scrolls in lockstep inside the same ScrollView.
+    private func monthLabelStrip(_ labels: [MonthLabel], width: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(cullCloseMonthLabels(labels)) { label in
+                Text(label.label)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .alignmentGuide(.leading) { _ in 0 }
+                    .offset(x: label.x, y: 2)
+            }
+        }
+        .frame(width: max(width, 1), height: monthLabelStripHeight, alignment: .topLeading)
+    }
+
+    /// Drop month labels that would overlap their predecessor — the leading-edge label
+    /// (`monthLabelPositions` always emits index 0) can land only a few day-columns before
+    /// the first true month boundary, so we suppress any label within `minGap` px of the
+    /// previously-kept one. Purely a render concern; the pure helper's positions are intact.
+    private func cullCloseMonthLabels(_ labels: [MonthLabel], minGap: CGFloat = 28) -> [MonthLabel] {
+        var kept: [MonthLabel] = []
+        for label in labels {
+            if let last = kept.last, label.x - last.x < minGap {
+                // Prefer the true month boundary over the synthetic leading-edge label when
+                // they collide: replace a kept index-0 (x == 0) with the real boundary.
+                if last.x == 0 { kept[kept.count - 1] = label }
+                continue
+            }
+            kept.append(label)
+        }
+        return kept
     }
 
     /// One day's column in the live strip: a bottom-anchored stack of per-repo segments,
@@ -608,13 +801,15 @@ struct CodeStatsScreen: View {
         }
     }
 
-    /// One segment's tint: the repo's stable color, full-strength when nothing is selected
-    /// or this is the selected day, muted otherwise so the tapped bar stands out.
+    /// One segment's tint: the repo's stable color, full-strength when nothing is focused
+    /// (no hover, no tap) or this IS the focused day, muted otherwise so the hovered/tapped
+    /// bar stands out. Hover takes precedence over tap (matching the readout).
     private func segmentFill(_ seg: StackedSegment, on bar: StackedDayBar,
                              colors: [String: Color]) -> Color {
         let base = colors[seg.repoName] ?? Palette.primary
-        guard selectedDay != nil else { return base }
-        return selectedDay == bar.date ? base : base.opacity(0.45)
+        let focus = hoveredDay ?? selectedDay
+        guard let focus else { return base }
+        return focus == bar.date ? base : base.opacity(0.45)
     }
 
     /// Tap handling: select the tapped day (showing its tooltip), or clear if it was
@@ -631,40 +826,59 @@ struct CodeStatsScreen: View {
     /// ImageRenderer, and a ScrollView's content isn't laid out offscreen either, so the
     /// snapshot trims to the most-recent days that fit the card and draws them edge-to-
     /// edge). Selection is live-only, so every bar draws at full strength.
-    private func stackedFallback(_ bars: [StackedDayBar], colors: [String: Color]) -> some View {
+    private func stackedFallback(_ bars: [StackedDayBar], colors: [String: Color],
+                                 topTick: Int) -> some View {
         GeometryReader { geo in
-            stackedFallbackContent(bars, size: geo.size, colors: colors)
+            stackedFallbackContent(bars, size: geo.size, colors: colors, topTick: topTick)
         }
-        .frame(height: growthChartHeight)
+        .frame(height: growthChartHeight + monthLabelStripHeight)
     }
 
     /// The actual stacked rects for `stackedFallback`, against a resolved `size`. Trims to
     /// the most-recent `floor(width / slot)` days so the offscreen strip fills the card
     /// without a scroller, then draws each day as a bottom-up stack of per-repo segments
-    /// (biggest at the bottom) proportional to that day's total. Pulled out of the
-    /// GeometryReader closure so the geometry math doesn't fight the ViewBuilder.
+    /// (biggest at the bottom) proportional to that day's total, normalized against the nice
+    /// top tick so the bars align with the gridlines. Month labels for the trimmed window
+    /// draw at the bottom edge so the static snapshot also shows the X-axis. Pulled out of
+    /// the GeometryReader closure so the geometry math doesn't fight the ViewBuilder.
     private func stackedFallbackContent(_ bars: [StackedDayBar], size: CGSize,
-                                        colors: [String: Color]) -> some View {
-        let w = size.width, h = size.height
+                                        colors: [String: Color], topTick: Int) -> some View {
+        let w = size.width, h = max(size.height - monthLabelStripHeight, 1)
         let slot = max(stackedSlotWidth, 1)
         let visibleCount = max(min(bars.count, Int(w / slot)), 1)
         let visible = Array(bars.suffix(visibleCount))
-        let peak = stackedPeak(bars)
         let barWidth = max(slot - 1, 1)
+        // Month labels recomputed over the SAME trimmed window the bars use (and culled so
+        // the leading-edge label can't overlap the first real month boundary).
+        let labels = cullCloseMonthLabels(monthLabelPositions(visible, slotWidth: slot))
         return ZStack(alignment: .bottomLeading) {
-            ForEach(Array(visible.enumerated()), id: \.element.id) { i, bar in
-                let x = CGFloat(i) * slot
-                // reversed(): smallest on top, biggest at the bottom.
-                VStack(spacing: 0) {
-                    ForEach(Array(bar.segments.enumerated().reversed()), id: \.offset) { _, seg in
-                        Rectangle()
-                            .fill(colors[seg.repoName] ?? Palette.primary)
-                            .frame(width: barWidth,
-                                   height: stackedSegmentHeight(lines: seg.lines, peak: peak, height: h))
+            // Bars, anchored to the plot area above the month-label strip.
+            ZStack(alignment: .bottomLeading) {
+                ForEach(Array(visible.enumerated()), id: \.element.id) { i, bar in
+                    let x = CGFloat(i) * slot
+                    // reversed(): smallest on top, biggest at the bottom.
+                    VStack(spacing: 0) {
+                        ForEach(Array(bar.segments.enumerated().reversed()), id: \.offset) { _, seg in
+                            Rectangle()
+                                .fill(colors[seg.repoName] ?? Palette.primary)
+                                .frame(width: barWidth,
+                                       height: stackedSegmentHeight(lines: seg.lines,
+                                                                    peak: topTick, height: h))
+                        }
                     }
+                    .offset(x: x, y: 0)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
                 }
-                .offset(x: x, y: 0)
-                .frame(maxHeight: .infinity, alignment: .bottom)
+            }
+            .frame(height: h, alignment: .bottom)
+            .frame(maxHeight: .infinity, alignment: .top)
+            // The X-axis month labels at the bottom edge.
+            ForEach(labels) { label in
+                Text(label.label)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .offset(x: label.x)
             }
         }
     }

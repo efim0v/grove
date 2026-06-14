@@ -9,9 +9,33 @@ import GroveCore
 
 // MARK: - Language bars (one row per language)
 
-/// One language's row in the breakdown. `fraction` is this language's `code`
-/// relative to the BUSIEST language's code (0…1), so the view draws bars on a
-/// shared axis. The formatted strings keep number formatting out of the view.
+/// Which `LanguageStats` field drives the Languages card — the bar length, the
+/// sort order, and the share. The Languages card header selector writes this; the
+/// default is `.code` (the historical behavior). `rawValue` is the human label.
+public enum LanguageMetric: String, CaseIterable, Identifiable, Sendable {
+    case code = "Code"
+    case files = "Files"
+    case total = "Lines"          // code + comment + blank
+    case comment = "Comment"
+    case blank = "Blank"
+    public var id: String { rawValue }
+    /// The chosen field's value for one language.
+    public func value(_ l: LanguageStats) -> Int {
+        switch self {
+        case .code: return l.code
+        case .files: return l.files
+        case .total: return l.total
+        case .comment: return l.comment
+        case .blank: return l.blank
+        }
+    }
+}
+
+/// One language's row in the breakdown. `fraction` is this language's metric
+/// value relative to the BUSIEST language's metric value (0…1), so the view draws
+/// bars on a shared axis. `share` is this language's metric value over the SUM of
+/// the metric across all languages (0…1). The formatted strings keep number
+/// formatting out of the view; `metricText`/`shareText` reflect the chosen metric.
 public struct LanguageBar: Equatable, Sendable, Identifiable {
     public var id: String { language }
     public let language: String
@@ -19,36 +43,73 @@ public struct LanguageBar: Equatable, Sendable, Identifiable {
     public let comment: Int
     public let blank: Int
     public let files: Int
-    public let fraction: Double          // 0…1 of the max code across languages
+    public let total: Int                // code + comment + blank
+    public let fraction: Double          // 0…1 of the max metric across languages
+    public let metricValue: Int          // the chosen metric's raw value
+    public let share: Double             // 0…1 of the summed metric across languages
     public let codeText: String          // "12.5k"
     public let commentText: String       // "1.2k"
     public let blankText: String         // "840"
     public let filesText: String         // "384"
+    public let metricText: String        // the chosen metric's compact value, e.g. "12.5k"
+    public let shareText: String         // "42%"
 
+    /// Backwards-compatible initializer: the metric is `code`, so `metricValue`/
+    /// `metricText` mirror code and `total` is derived from the parts. `share` is 0
+    /// (callers that care pass it via the full init below). Kept so the zero-arg
+    /// `languageBars(_:)` default and existing tests compile unchanged.
     public init(language: String, code: Int, comment: Int, blank: Int, files: Int, fraction: Double) {
+        self.init(language: language, code: code, comment: comment, blank: blank,
+                  files: files, total: code + comment + blank, fraction: fraction,
+                  metricValue: code, share: 0)
+    }
+
+    /// Full initializer carrying the chosen metric's value + share so the hover
+    /// overlay and bar trailing text can read them directly.
+    public init(language: String, code: Int, comment: Int, blank: Int, files: Int,
+                total: Int, fraction: Double, metricValue: Int, share: Double) {
         self.language = language
         self.code = code
         self.comment = comment
         self.blank = blank
         self.files = files
+        self.total = total
         self.fraction = fraction
+        self.metricValue = metricValue
+        self.share = share
         self.codeText = formatCompactTokens(code)
         self.commentText = formatCompactTokens(comment)
         self.blankText = formatCompactTokens(blank)
         self.filesText = formatCompactTokens(files)
+        self.metricText = formatCompactTokens(metricValue)
+        self.shareText = "\(Int((share * 100).rounded()))%"
     }
 }
 
-/// Build one bar per language. Input is already sorted DESC by code
-/// (`CodeStats.byLanguage`'s contract), so the output preserves that order;
-/// `fraction` is each language's code over the largest language's code.
-public func languageBars(_ stats: CodeStats) -> [LanguageBar] {
-    let maxCode = stats.byLanguage.map(\.code).max() ?? 0
-    return stats.byLanguage.map { l in
-        LanguageBar(language: l.language, code: l.code, comment: l.comment,
-                    blank: l.blank, files: l.files,
-                    fraction: maxCode > 0 ? Double(l.code) / Double(maxCode) : 0)
-    }
+/// Build one bar per language, driven by `metric` (default `.code`). Bars are
+/// sorted DESC by the chosen metric (ties broken by language name for a stable,
+/// deterministic order); `fraction` is each language's metric value over the
+/// busiest language's, and `share` is its metric value over the summed metric. The
+/// default `.code` over `CodeStats.byLanguage` (already DESC-by-code) preserves the
+/// historical order and per-row text.
+public func languageBars(_ stats: CodeStats, metric: LanguageMetric = .code) -> [LanguageBar] {
+    let langs = stats.byLanguage
+    let maxValue = langs.map { metric.value($0) }.max() ?? 0
+    let sumValue = langs.reduce(0) { $0 + metric.value($1) }
+    return langs
+        .sorted { a, b in
+            let va = metric.value(a), vb = metric.value(b)
+            return va != vb ? va > vb : a.language < b.language
+        }
+        .map { l in
+            let v = metric.value(l)
+            return LanguageBar(
+                language: l.language, code: l.code, comment: l.comment, blank: l.blank,
+                files: l.files, total: l.total,
+                fraction: maxValue > 0 ? Double(v) / Double(maxValue) : 0,
+                metricValue: v,
+                share: sumValue > 0 ? Double(v) / Double(sumValue) : 0)
+        }
 }
 
 // MARK: - Headline totals
@@ -591,6 +652,77 @@ public func stackedSegmentHeight(lines: Int, peak: Int, height: CGFloat) -> CGFl
     guard lines > 0 else { return 0 }
     let denom = CGFloat(max(peak, 1))
     return max(CGFloat(lines) / denom * height, 1)
+}
+
+// MARK: - Stacked chart axes (month X-labels + nice Y-ticks)
+
+/// One X-axis month label for the stacked strip: the short month name and the pixel
+/// `x` offset of the day-column where that month begins.
+public struct MonthLabel: Equatable, Sendable, Identifiable {
+    public var id: CGFloat { x }
+    public let label: String      // "Jun" (or "Jun '26" across a year boundary)
+    public let x: CGFloat         // dayIndex · slotWidth from the strip's leading edge
+    public init(label: String, x: CGFloat) {
+        self.label = label
+        self.x = x
+    }
+}
+
+/// One label per MONTH BOUNDARY in a day-filled stacked series, positioned under the
+/// bars. A boundary is the first day of each distinct (GMT year, month); index 0 always
+/// emits so the leading edge is labeled. Deduped by construction (one label per month).
+/// `x = dayIndex · slotWidth`. The label is "MMM"; if the series spans more than one
+/// calendar year it disambiguates with "MMM ''yy" so repeated months read distinctly.
+/// PURE + deterministic (POSIX locale, GMT) so snapshots and tests are stable.
+public func monthLabelPositions(_ bars: [StackedDayBar], slotWidth: CGFloat) -> [MonthLabel] {
+    guard !bars.isEmpty else { return [] }
+    let cal = GitStatsService.gmtCalendar
+    // Span >1 calendar year → include the year so "Jun '25" vs "Jun '26" don't collide.
+    let years = Set(bars.map { cal.component(.year, from: $0.date) })
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone(identifier: "GMT")
+    f.dateFormat = years.count > 1 ? "MMM ''yy" : "MMM"
+
+    var labels: [MonthLabel] = []
+    var previousKey: DateComponents? = nil
+    for (i, bar) in bars.enumerated() {
+        let key = cal.dateComponents([.year, .month], from: bar.date)
+        if key != previousKey {
+            labels.append(MonthLabel(label: f.string(from: bar.date), x: CGFloat(i) * slotWidth))
+            previousKey = key
+        }
+    }
+    return labels
+}
+
+/// 3–4 "nice" round Y-axis ticks covering `[0, peak]`: `[0, step, 2·step, …]` where
+/// `step` is a 1/2/5 × 10ⁿ number and the LAST tick is the smallest multiple of `step`
+/// that is ≥ `peak` (so the tallest bar fits under the top gridline). `count` is the
+/// target number of intervals (default 4 → up to ~5 ticks). `peak ≤ 0` → `[0]`. Returns
+/// strictly-increasing tick VALUES; the view formats them (e.g. via `formatCompactTokens`).
+public func niceTicks(peak: Int, count: Int = 4) -> [Int] {
+    guard peak > 0 else { return [0] }
+    let intervals = max(count, 1)
+    let rawStep = Double(peak) / Double(intervals)
+    // Round the raw step UP to the nearest 1/2/5 × 10ⁿ "nice" number.
+    let magnitude = pow(10.0, floor(log10(rawStep)))
+    let normalized = rawStep / magnitude          // in [1, 10)
+    let niceNormalized: Double
+    if normalized <= 1 { niceNormalized = 1 }
+    else if normalized <= 2 { niceNormalized = 2 }
+    else if normalized <= 5 { niceNormalized = 5 }
+    else { niceNormalized = 10 }
+    let step = Int((niceNormalized * magnitude).rounded())
+    guard step > 0 else { return [0, peak] }
+    var ticks = [0]
+    var value = step
+    while value < peak {
+        ticks.append(value)
+        value += step
+    }
+    ticks.append(value)   // smallest multiple ≥ peak (the top gridline ≥ the tallest bar)
+    return ticks
 }
 
 /// The per-day tooltip for a tapped stacked bar: a short GMT date plus that day's total
