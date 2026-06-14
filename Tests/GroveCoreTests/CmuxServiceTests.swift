@@ -65,6 +65,61 @@ final class CmuxServiceTests: XCTestCase {
     // MARK: listWorkspaces
 
     /// Real cmux (0.64.4) wraps the workspace list in an envelope object.
+    // MARK: hook-registry parsing (the format that broke "Go")
+
+    private func writeHook(_ json: String) throws -> String {
+        let dir = NSTemporaryDirectory() + "grove-hook-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = dir + "/hook.json"
+        try json.write(toFile: path, atomically: true, encoding: .utf8)
+        return path
+    }
+
+    func testClaudeSessionMapParsesActiveSessionsByWorkspace() throws {
+        let path = try writeHook("""
+        {"version":1,
+         "activeSessionsByWorkspace":{
+           "WS-AAA":{"sessionId":"sess-1","updatedAt":1781439405.4},
+           "WS-BBB":{"sessionId":"sess-2","updatedAt":1781439400.0}},
+         "sessions":{"sess-1":{"cwd":"/x"},"sess-9":{"cwd":"/y"}}}
+        """)
+        let map = makeCmux(MockRunner(results: [])).claudeSessionWorkspaceMap(hookFile: path)
+        XCTAssertEqual(map["sess-1"], "WS-AAA")
+        XCTAssertEqual(map["sess-2"], "WS-BBB")
+        XCTAssertNil(map["sess-9"])   // present in `sessions` but no active workspace
+    }
+
+    func testClaudeSessionMapStillParsesLegacyFlatFormat() throws {
+        let path = try writeHook(#"{"sess-1":{"workspaceId":"WS-OLD"}}"#)
+        XCTAssertEqual(makeCmux(MockRunner(results: [])).claudeSessionWorkspaceMap(hookFile: path)["sess-1"], "WS-OLD")
+    }
+
+    func testNormalizePathStripsTrailingSlashes() {
+        XCTAssertEqual(CmuxService.normalizePath("/a/b/"), "/a/b")
+        XCTAssertEqual(CmuxService.normalizePath("/a/b"), "/a/b")
+        XCTAssertEqual(CmuxService.normalizePath("/"), "/")
+    }
+
+    func testWorkspaceForCwdMatchesExactThenAncestor() async throws {
+        let json = """
+        {"workspaces":[
+          {"id":"ws-um","title":"um","current_directory":"/ws/group-chats"},
+          {"id":"ws-other","title":"o","current_directory":"/ws/other"}]}
+        """
+        // exact match
+        var cmux = makeCmux(MockRunner(results: [ok(json)]))
+        var ws = await cmux.workspaceForCwd("/ws/group-chats/")
+        XCTAssertEqual(ws?.id, "ws-um")
+        // session cwd is a subdir of the umbrella workspace → ancestor match
+        cmux = makeCmux(MockRunner(results: [ok(json)]))
+        ws = await cmux.workspaceForCwd("/ws/group-chats/messages-websocket-service")
+        XCTAssertEqual(ws?.id, "ws-um")
+        // no relationship → nil
+        cmux = makeCmux(MockRunner(results: [ok(json)]))
+        ws = await cmux.workspaceForCwd("/somewhere/else")
+        XCTAssertNil(ws)
+    }
+
     func testListWorkspacesDecodesEnvelopeJSON() async throws {
         let json = """
         {

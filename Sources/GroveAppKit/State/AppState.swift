@@ -488,6 +488,14 @@ extension AppState {
             catch { actionError = String(describing: error) }
             return
         }
+        // The hook registry only tracks the ACTIVE session per workspace, so most
+        // sessions aren't in it. Match the session's directory against the live cmux
+        // workspaces — the robust path that makes "Go" work for any cmux session.
+        if let ws = await cmux().workspaceForCwd(row.cwd) {
+            do { try await cmux().selectWorkspace(ws.id) }
+            catch { actionError = String(describing: error) }
+            return
+        }
         // Not in cmux → try Apple's Terminal.app by matching the process's tty.
         let claude = self.claude
         let sessionId = row.sessionId

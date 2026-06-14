@@ -332,12 +332,50 @@ public struct CmuxService: Sendable {
             return [:]
         }
         var map: [String: String] = [:]
-        for (sessionId, value) in obj {
+        // Current format: { "activeSessionsByWorkspace": { "<workspaceId>":
+        //   { "sessionId": "...", "updatedAt": … } }, "sessions": {…}, "version": n }.
+        // Invert workspace→activeSession into sessionId→workspaceId.
+        if let active = obj["activeSessionsByWorkspace"] as? [String: Any] {
+            for (workspaceId, value) in active {
+                if let dict = value as? [String: Any], let sid = dict["sessionId"] as? String {
+                    map[sid] = workspaceId
+                }
+            }
+        }
+        // Legacy flat format: { "<sessionId>": { "workspaceId": "..." } }.
+        for (sessionId, value) in obj where sessionId != "activeSessionsByWorkspace"
+            && sessionId != "sessions" && sessionId != "version" {
             if let dict = value as? [String: Any], let ws = dict["workspaceId"] as? String {
                 map[sessionId] = ws
             }
         }
         return map
+    }
+
+    /// The live cmux workspace whose current_directory best matches `cwd` — exact
+    /// first, then the closest ancestor/descendant (a worktree umbrella vs a repo
+    /// subdir). This is the robust "go to session" path when the hook registry
+    /// doesn't list the session (cmux only tracks the ACTIVE session per workspace).
+    /// nil when nothing matches or the workspace list can't be fetched.
+    public func workspaceForCwd(_ cwd: String) async -> CmuxWorkspace? {
+        guard !cwd.isEmpty, let workspaces = try? await listWorkspaces() else { return nil }
+        let target = Self.normalizePath(cwd)
+        if let exact = workspaces.first(where: { Self.normalizePath($0.currentDirectory) == target }) {
+            return exact
+        }
+        return workspaces
+            .filter { ws in
+                let d = Self.normalizePath(ws.currentDirectory)
+                return !d.isEmpty && (target.hasPrefix(d + "/") || d.hasPrefix(target + "/"))
+            }
+            .max { Self.normalizePath($0.currentDirectory).count < Self.normalizePath($1.currentDirectory).count }
+    }
+
+    /// Expands `~` and strips trailing slashes so two paths compare equal.
+    static func normalizePath(_ path: String) -> String {
+        var s = expandTilde(path)
+        while s.count > 1 && s.hasSuffix("/") { s.removeLast() }
+        return s
     }
 }
 
