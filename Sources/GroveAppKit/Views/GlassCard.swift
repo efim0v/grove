@@ -29,9 +29,11 @@ public struct GlassCard: ViewModifier {
     }
 
     public func body(content: Content) -> some View {
+        // Darker (white 0.20 → 0.16) and ~10% more transparent (0.78 → 0.70) than
+        // before; NO light "glass" border — the substrate reads as a clean dark
+        // gray surface floating on the window's Liquid Glass.
         content
-            .background(Color(white: 0.20).opacity(0.78), in: shape)
-            .overlay(shape.strokeBorder(.white.opacity(0.10)))
+            .background(Color(white: 0.16).opacity(0.70), in: shape)
             .containerShape(shape)
     }
 }

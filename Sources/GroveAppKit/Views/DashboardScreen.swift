@@ -257,7 +257,7 @@ struct DailyUsageCardView: View {
         Chart(bars) { bar in
             BarMark(x: .value("Day", bar.label),
                     y: .value("Tokens", bar.totalTokens),
-                    width: .ratio(0.42))
+                    width: .ratio(0.88))   // wide bars, only a few px between them
                 .foregroundStyle(intensityColor(bar.intensity)
                     .opacity(hoverLabel == nil || hoverLabel == bar.label ? 1 : 0.4))
                 .cornerRadius(4)
@@ -284,12 +284,13 @@ struct DailyUsageCardView: View {
     /// Manual bars for snapshot mode (Swift Charts can render blank offscreen).
     private var snapshotBars: some View {
         let maxTokens = max(bars.map(\.totalTokens).max() ?? 1, 1)
-        return HStack(alignment: .bottom, spacing: 6) {
+        return HStack(alignment: .bottom, spacing: 3) {   // only a few px between bars
             ForEach(bars) { bar in
                 VStack(spacing: 4) {
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .fill(intensityColor(bar.intensity))
-                        .frame(width: 13, height: max(2, CGFloat(bar.totalTokens) / CGFloat(maxTokens) * 70))
+                        .frame(maxWidth: .infinity)        // wide bars fill the slot
+                        .frame(height: max(2, CGFloat(bar.totalTokens) / CGFloat(maxTokens) * 70))
                     Text(bar.label).font(.system(size: 8)).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .bottom)

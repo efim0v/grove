@@ -551,7 +551,7 @@ struct AccountsScreen: View {
     private func effortPicker(project: ProjectConfig) -> some View {
         Picker("", selection: effortBinding(project)) {
             Text("(default)").tag(String?.none)
-            ForEach(["low", "medium", "high"], id: \.self) { e in
+            ForEach(ClaudeService.effortLevels, id: \.self) { e in
                 Text(e).tag(String?.some(e))
             }
         }

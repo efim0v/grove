@@ -4,12 +4,12 @@ import XCTest
 /// Corner system (DesignSystem.swift): fixed radii per chrome level plus the
 /// concentric helper used when a ConcentricRectangle cannot resolve (mid-card
 /// chips far from any container corner). Pronounced iOS-26 squircle on the gray
-/// content cards (panel 14 / card 10.5 / field 8.5) over a Liquid Glass window.
+/// content cards (panel 17 / card 12.6 / field 10.2) over a Liquid Glass window.
 final class DesignRadiusTests: XCTestCase {
     func testChromeLevelsAreConcentricallyOrdered() {
-        XCTAssertEqual(DesignRadius.panel, 14)
-        XCTAssertEqual(DesignRadius.card, 10.5)
-        XCTAssertEqual(DesignRadius.field, 8.5)
+        XCTAssertEqual(DesignRadius.panel, 17)
+        XCTAssertEqual(DesignRadius.card, 12.6)
+        XCTAssertEqual(DesignRadius.field, 10.2)
         XCTAssertGreaterThan(DesignRadius.panel, DesignRadius.card)
         XCTAssertGreaterThan(DesignRadius.card, DesignRadius.field)
     }

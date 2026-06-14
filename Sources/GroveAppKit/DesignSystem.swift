@@ -16,12 +16,12 @@ enum DesignRadius {
 
     /// Full-screen panel/window corners (continuous "squircle"). The window is a
     /// transparent Liquid Glass surface, so it carries a generous Apple-26 radius.
-    static let panel: CGFloat = 14
-    /// Cards/sections (GlassCard chrome) — the gray content substrates. ~50%
-    /// rounder than before (6.9 → 10.5) for the pronounced iOS-26 squircle.
-    static let card: CGFloat = 10.5
+    static let panel: CGFloat = 17
+    /// Cards/sections (GlassCard chrome) — the gray content substrates. ~20%
+    /// rounder than the previous 10.5 for a more pronounced iOS-26 squircle.
+    static let card: CGFloat = 12.6
     /// Text fields, picker chips, log wells.
-    static let field: CGFloat = 8.5
+    static let field: CGFloat = 10.2
 
     /// Concentric radius for an element inset inside a rounded parent,
     /// floored at 4 so tight insets never collapse to sharp corners (and stay

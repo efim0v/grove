@@ -411,6 +411,11 @@ public final class ClaudeService: @unchecked Sendable {
 
     // MARK: - Launch commands
 
+    /// Effort levels accepted by `claude --effort` — the full set per `claude
+    /// --help` (low, medium, high, xhigh, max). The single source of truth for the
+    /// effort pickers, so xhigh/max can't be missed.
+    public static let effortLevels = ["low", "medium", "high", "xhigh", "max"]
+
     /// Candidate install locations for the claude CLI, checked in order.
     /// Injectable for tests.
     static var claudeCandidatePaths: [String] = [

@@ -21,12 +21,12 @@ struct ProjectsTab: View {
     }
 
     private var cards: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             ForEach(state.config.projects) { project in
                 projectCard(project)
             }
         }
-        .padding(12)
+        .padding(8)   // consistent with the Charts window's edge padding
     }
 
     private func projectCard(_ project: ProjectConfig) -> some View {
@@ -98,30 +98,34 @@ struct SessionBlock: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 9) {
-                Circle().fill(statusColor).frame(width: 8, height: 8)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.title)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
+                Circle().fill(statusColor).frame(width: 7, height: 7)
+                VStack(alignment: .leading, spacing: 1) {
+                    // Title line + the Go/Resume affordance, aligned as a clean row.
+                    HStack(spacing: 8) {
+                        Text(row.title)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        Spacer(minLength: 6)
+                        Label(row.canGo ? "Go" : "Resume",
+                              systemImage: row.canGo ? "arrow.right.circle.fill" : "play.circle")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(cardAccent)
+                            .fixedSize()
+                    }
+                    // Secondary line: status · location · age (account dropped — it's
+                    // shown in the dashboard; here it was just clutter).
                     HStack(spacing: 5) {
                         Text(statusWord).foregroundStyle(statusColor)
-                        Text("·").foregroundStyle(.tertiary)
-                        Text(row.location).foregroundStyle(.secondary).lineLimit(1)
-                        Text(row.accountName).foregroundStyle(.tertiary).lineLimit(1)
-                        Spacer(minLength: 0)
+                        Text("· \(row.location)").foregroundStyle(.secondary).lineLimit(1)
+                        Spacer(minLength: 4)
                         Text(relativeAge(row.lastActivity, now: Date())).foregroundStyle(.tertiary)
                     }
                     .font(.caption2)
                 }
-                Label(row.canGo ? "Go" : "Resume",
-                      systemImage: row.canGo ? "arrow.right.circle.fill" : "play.circle")
-                    .labelStyle(.titleAndIcon)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .fixedSize()
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
             .background(blockBackground)
         }
@@ -129,13 +133,11 @@ struct SessionBlock: View {
         .help(row.cwd)
     }
 
-    @ViewBuilder private var blockBackground: some View {
-        let shape = RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
-        if isSnapshotRender {
-            shape.fill(.white.opacity(0.06)).overlay(shape.strokeBorder(.white.opacity(0.12)))
-        } else {
-            shape.fill(.black.opacity(0.22)).overlay(shape.strokeBorder(.white.opacity(0.08)))
-        }
+    /// A faint inset fill — NO border — so the session rows read as a quiet list
+    /// inside the project card, not a stack of bordered card-in-cards.
+    private var blockBackground: some View {
+        RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+            .fill(.white.opacity(isSnapshotRender ? 0.05 : 0.04))
     }
 
     private var statusColor: Color {
