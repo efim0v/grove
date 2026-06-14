@@ -361,6 +361,22 @@ final class ClaudeServiceTests: XCTestCase {
         XCTAssertNil(ClaudeService.parsePidCpuCommand("garbage"))
     }
 
+    func testMergeLiveFileRecordWinsAndKeepsFreshSessions() {
+        let file = [LiveProcess(pid: 1, sessionId: "A", cwd: "", status: "busy", accountName: "x"),
+                    LiveProcess(pid: 2, sessionId: "B", cwd: "", status: "waiting", accountName: "x")]
+        let table = [LiveProcess(pid: 9, sessionId: "A", cwd: "", status: "idle", accountName: ""),   // dup of A
+                     LiveProcess(pid: 3, sessionId: "C", cwd: "", status: "idle", accountName: ""),     // new resumed
+                     LiveProcess(pid: 4, sessionId: "", cwd: "/ws/fresh", status: "busy", accountName: "")] // fresh
+        let merged = ClaudeService.mergeLive(fileRecords: file, table: table)
+        let byId = Dictionary(merged.filter { !$0.sessionId.isEmpty }.map { ($0.sessionId, $0.status) },
+                              uniquingKeysWith: { a, _ in a })
+        XCTAssertEqual(byId["A"], "busy")          // file record wins over the table's idle
+        XCTAssertEqual(byId["B"], "waiting")
+        XCTAssertEqual(byId["C"], "idle")          // resumed-only session recovered from the table
+        XCTAssertEqual(merged.filter { $0.sessionId.isEmpty }.count, 1)   // the fresh one is kept
+        XCTAssertEqual(merged.filter { $0.sessionId == "A" }.count, 1)    // exactly one A
+    }
+
     func testIsBareClaudeCommandDetectsFreshCliOnly() {
         XCTAssertTrue(ClaudeService.isBareClaudeCommand("claude --model claude-opus-4-8"))
         XCTAssertTrue(ClaudeService.isBareClaudeCommand("/Users/x/.local/bin/claude"))

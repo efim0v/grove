@@ -270,11 +270,11 @@ public struct WorkspaceService {
             errors.append("cmux: \(error)")
         }
 
-        // Live Claude processes are path-INdependent (each call re-lists the
-        // sessions directory and probes every pid), so list them exactly once
-        // and filter per path below — one consistent snapshot for the whole
-        // scan. sessions(for:) IS cwd-keyed and stays per-path.
-        let allLiveProcesses = config.accounts.flatMap { claude.liveProcesses(account: $0) }
+        // ONE liveness snapshot for the whole scan, from the single source of truth
+        // (file records ∪ process table). Filtered per path below by the session's
+        // id membership OR its cwd, since resumed table entries carry an id but no
+        // cwd, while fresh ones carry a cwd but no id.
+        let allLiveProcesses = claude.allLiveProcesses(accounts: config.accounts)
 
         // Assemble feature workspaces (meta relative to parent branch when stacked).
         var workspaces: [FeatureWorkspace] = []
@@ -297,9 +297,11 @@ public struct WorkspaceService {
             let sessions = config.accounts
                 .flatMap { claude.sessions(for: umbrella, account: $0) }
                 .sorted { $0.lastActivity > $1.lastActivity }
-            let live = allLiveProcesses.filter {
-                let cwd = canonical($0.cwd)
-                return cwd == umbrella || cwd.hasPrefix(umbrella + "/")
+            let umbrellaSessionIds = Set(sessions.map { $0.id })
+            let live = allLiveProcesses.filter { p in
+                if !p.sessionId.isEmpty && umbrellaSessionIds.contains(p.sessionId) { return true }
+                let cwd = canonical(p.cwd)
+                return !cwd.isEmpty && (cwd == umbrella || cwd.hasPrefix(umbrella + "/"))
             }
             let matched = cmuxList.filter {
                 let dir = canonical($0.currentDirectory)
@@ -323,7 +325,10 @@ public struct WorkspaceService {
             let sessions = config.accounts
                 .flatMap { claude.sessions(for: cwd, account: $0) }
                 .sorted { $0.lastActivity > $1.lastActivity }
-            let live = allLiveProcesses.filter { canonical($0.cwd) == cwd }
+            let looseSessionIds = Set(sessions.map { $0.id })
+            let live = allLiveProcesses.filter { p in
+                (!p.sessionId.isEmpty && looseSessionIds.contains(p.sessionId)) || canonical(p.cwd) == cwd
+            }
             // cmux matching for loose worktrees: exact directory equality (spec §2:
             // all Claude/cmux actions are available for loose worktrees too).
             let matched = cmuxList.filter { canonical($0.currentDirectory) == cwd }

@@ -134,11 +134,16 @@ func cmdSessions(_ rest: [String]) async -> Int32 {
     // /private/var spellings of the same directory still match live processes.
     let cwd = canonicalPath(absolutePath(parsed.positionals[0]))
     let claude = ClaudeService()
+    let accounts = GroveConfig.defaultConfig.accounts
     var sessions: [ClaudeSession] = []
-    var live: [LiveProcess] = []
-    for account in GroveConfig.defaultConfig.accounts {
+    for account in accounts {
         sessions.append(contentsOf: claude.sessions(for: cwd, account: account))
-        live.append(contentsOf: claude.liveProcesses(account: account).filter { canonicalPath($0.cwd) == cwd })
+    }
+    // Single source of truth (file records ∪ process table), matched by session id
+    // OR cwd so resumed (id, no cwd) and fresh (cwd, no id) sessions both resolve.
+    let sessionIds = Set(sessions.map { $0.id })
+    let live = claude.allLiveProcesses(accounts: accounts).filter { p in
+        (!p.sessionId.isEmpty && sessionIds.contains(p.sessionId)) || canonicalPath(p.cwd) == cwd
     }
     sessions.sort { $0.lastActivity > $1.lastActivity }
     if parsed.flags.contains("--json") {

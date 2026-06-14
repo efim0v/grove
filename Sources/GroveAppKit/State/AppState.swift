@@ -303,10 +303,9 @@ extension AppState {
             return (id: p.id, roots: [expandTilde(p.path), wsRoot].filter { !$0.isEmpty })
         }
         let result = await Task.detached(priority: .utility) { () -> [UUID: [ProjectSessionRow]] in
-            // Per-account status records FIRST (real busy/idle/waiting), then the
-            // process-table fallback (recovers resumed sessions when no record exists).
-            let live = accounts.flatMap { claude.liveProcesses(account: $0) }
-                + claude.liveProcessesFromTable()
+            // Single source of truth (file records ∪ process table) — same data the
+            // project scan / Claude tab use, so no tab can disagree on liveness.
+            let live = claude.allLiveProcesses(accounts: accounts)
             var out: [UUID: [ProjectSessionRow]] = [:]
             for job in jobs {
                 let sessions = claude.recentSessions(underRoots: job.roots, accounts: accounts, limit: 2)

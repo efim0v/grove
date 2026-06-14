@@ -367,6 +367,39 @@ public final class ClaudeService: @unchecked Sendable {
         return result.sorted { $0.pid < $1.pid }
     }
 
+    /// THE single source of truth for live sessions across `accounts`: each
+    /// account's `sessions/<pid>.json` records (real busy/waiting/idle status when
+    /// present) UNIONed with the process-table scan (resumed + fresh sessions, which
+    /// the now-usually-empty records dir misses), deduped by sessionId. Every UI
+    /// surface and the CLI route through this so the Projects tab, the Claude tab,
+    /// the Workspaces badges, and the Accounts cards can never disagree on liveness.
+    /// Runs the process-table scan ONCE (not per account).
+    public func allLiveProcesses(accounts: [AccountConfig]) -> [LiveProcess] {
+        Self.mergeLive(fileRecords: accounts.flatMap { liveProcesses(account: $0) },
+                       table: liveProcessesFromTable())
+    }
+
+    /// Union of file records (which carry the REAL busy/waiting status — they win on
+    /// a sessionId tie) and process-table entries (fill the gaps), deduped by
+    /// sessionId. Fresh entries (empty sessionId, cwd-carried) are all kept. Pure.
+    static func mergeLive(fileRecords: [LiveProcess], table: [LiveProcess]) -> [LiveProcess] {
+        var result: [LiveProcess] = []
+        var seen = Set<String>()
+        for p in fileRecords where !p.sessionId.isEmpty && !seen.contains(p.sessionId) {
+            result.append(p)
+            seen.insert(p.sessionId)
+        }
+        for p in table {
+            if p.sessionId.isEmpty {
+                result.append(p)                       // fresh (cwd-carried) — keep all
+            } else if !seen.contains(p.sessionId) {
+                result.append(p)
+                seen.insert(p.sessionId)
+            }
+        }
+        return result.sorted { $0.pid < $1.pid }
+    }
+
     /// True for the claude CLI launched WITHOUT --resume (a fresh session): the
     /// executable basename is exactly "claude" and there's no resume flag. Excludes
     /// the cmux wrapper scripts (basename zsh/bash) and our own ps/grep lines.
