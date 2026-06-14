@@ -126,13 +126,16 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // RootView's dark scrim, clipped to the Apple-26 panel radius, hairline edge.
         // isOpaque=false + clear bg makes the window-server shadow follow the rounded
         // shape; invalidateShadow() on resize keeps it in sync.
-        // One fixed, transparent substrate shared with the Charts window (never
-        // dims on focus — see WindowSubstrate). Live-only (snapshots render RootView
-        // directly). The gray GlassCards provide the content surfaces.
-        let chrome = AnyView(RootView(state: state).windowChrome(radius: DesignRadius.panel))
+        // Clear, constant Liquid Glass via AppKit NSGlassEffectView — never frosted,
+        // never dims on focus (see GlassWindowSubstrate). The hairline border is
+        // drawn on the SwiftUI root; the gray GlassCards provide content surfaces.
+        let radius = DesignRadius.panel
+        let chrome = AnyView(RootView(state: state)
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(.white.opacity(0.10))))
         let h = NSHostingController(rootView: chrome)
         h.sizingOptions = [.preferredContentSize]
-        p.contentViewController = h
+        GlassWindowSubstrate.install(h, radius: radius, in: p)
         host = h
         // Resize the panel to the SwiftUI content on every tab/route change, then
         // re-pin the top-right corner so it grows inward instead of jumping.
@@ -171,12 +174,14 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         p.hasShadow = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.delegate = self
+        let radius = DesignRadius.panel
         let chrome = AnyView(ChartsSideContent(state: state)
             .frame(maxHeight: 820)
-            .windowChrome(radius: DesignRadius.panel))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(.white.opacity(0.10))))
         let h = NSHostingController(rootView: chrome)
         h.sizingOptions = [.preferredContentSize]
-        p.contentViewController = h
+        GlassWindowSubstrate.install(h, radius: radius, in: p)
         chartsHost = h
         chartsSizeObservation = h.observe(\.preferredContentSize) { [weak self] controller, _ in
             let size = controller.preferredContentSize
