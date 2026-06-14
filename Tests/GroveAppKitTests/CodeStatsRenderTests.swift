@@ -50,8 +50,9 @@ final class CodeStatsRenderTests: XCTestCase {
     }
 
     /// The LIVE path (isSnapshotRender=false) evaluates the real Swift Charts
-    /// LineMark/AreaMark and the checkbox toggles — a crash or broken chart
-    /// expression is caught even though offscreen pixels are blank.
+    /// per-day BarMark + the chart-overlay tap region, the period segmented
+    /// control, and the checkbox toggles — a crash or broken chart expression is
+    /// caught even though offscreen pixels are blank.
     func testStatsScreenLiveChartBranch() {
         let state = SnapshotMode.fixtureState()
         state.selectedTab = .stats
@@ -62,7 +63,26 @@ final class CodeStatsRenderTests: XCTestCase {
             .environment(\.isSnapshotRender, false)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 1
-        _ = renderer.cgImage   // forces body eval, incl. the live Chart code
+        _ = renderer.cgImage   // forces body eval, incl. the live BarMark code
+    }
+
+    /// The per-repo blocks render: the fixture seeds two repos, so the snapshot
+    /// path must draw the "Repositories" card without crashing.
+    func testStatsScreenRepoBlocksRender() {
+        let state = SnapshotMode.configuredState(for: .stats)
+        let id = state.selectedProjectID!
+        // Sanity: the fixture seeded the per-repo breakdown the blocks render from.
+        XCTAssertFalse((state.repoStats[id] ?? []).isEmpty)
+
+        let view = RootView(state: state)
+            .frame(width: projectSize.width, height: projectSize.height)
+            .environment(\.colorScheme, .dark)
+            .environment(\.isSnapshotRender, true)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        let image = renderer.cgImage
+        XCTAssertNotNil(image, "stats scene with repo blocks produced no image")
+        XCTAssertTrue(isNonBlank(image!), "stats scene with repo blocks rendered blank")
     }
 
     /// Empty (no stats, not scanning) and scanning states render without crashing.

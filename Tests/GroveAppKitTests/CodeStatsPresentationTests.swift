@@ -71,42 +71,6 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertEqual(totals.formatted, "0 lines · 0 files · 0% code")
     }
 
-    // MARK: - growthSeries
-
-    func testGrowthSeriesShortHistoryKeptVerbatim() {
-        let history = (0..<5).map { i in
-            CodeStatsPoint(date: Date(timeIntervalSince1970: Double(i) * 3600),
-                           totalLines: i * 100, code: i * 80, comment: i * 15, blank: i * 5,
-                           totalFiles: i)
-        }
-        let series = growthSeries(history)
-        XCTAssertEqual(series.count, 5)
-        XCTAssertEqual(series.map(\.totalLines), [0, 100, 200, 300, 400])
-        XCTAssertEqual(series.first?.date, history.first?.date)
-        XCTAssertEqual(series.first?.id, history.first?.date)
-    }
-
-    func testGrowthSeriesLongHistoryDownsampledKeepingEndpoints() {
-        let count = 1000
-        let history = (0..<count).map { i in
-            CodeStatsPoint(date: Date(timeIntervalSince1970: Double(i)),
-                           totalLines: i, code: i, comment: 0, blank: 0, totalFiles: 0)
-        }
-        let series = growthSeries(history)
-        XCTAssertLessThanOrEqual(series.count, 200)
-        XCTAssertGreaterThan(series.count, 1)
-        // First and last points are exact (endpoints preserved).
-        XCTAssertEqual(series.first?.totalLines, 0)
-        XCTAssertEqual(series.last?.totalLines, count - 1)
-        // Strictly increasing dates (no duplicate points after downsample).
-        XCTAssertEqual(series.map(\.date), series.map(\.date).sorted())
-        XCTAssertEqual(Set(series.map(\.date)).count, series.count)
-    }
-
-    func testGrowthSeriesEmpty() {
-        XCTAssertTrue(growthSeries([]).isEmpty)
-    }
-
     // MARK: - buildStatsTree
 
     /// Tree:
@@ -164,5 +128,251 @@ final class CodeStatsPresentationTests: XCTestCase {
         let rows = buildStatsTree(DirNode(name: "p", relativePath: "", children: []),
                                   ignoredFolders: [])
         XCTAssertTrue(rows.isEmpty)
+    }
+
+    // MARK: - dataProseBreakdown (Code vs Data/Prose split)
+
+    func testDataProseBreakdownClassifiesLanguages() {
+        let s = stats([
+            lang("Swift", files: 10, code: 1000, comment: 100, blank: 50),   // code
+            lang("Dart", files: 8, code: 800, comment: 40, blank: 20),       // code
+            lang("Markdown", files: 5, code: 300, comment: 0, blank: 30),    // data/prose
+            lang("JSON", files: 3, code: 200, comment: 0, blank: 0),         // data/prose
+            lang("YAML", files: 2, code: 50, comment: 0, blank: 5),          // data/prose
+        ])
+        let bd = dataProseBreakdown(s)
+        // Code lines = Swift.total (1150) + Dart.total (860) = 2010; files 18.
+        XCTAssertEqual(bd.codeLines, 1150 + 860)
+        XCTAssertEqual(bd.codeFiles, 18)
+        // Data/Prose = Markdown.total (330) + JSON.total (200) + YAML.total (55) = 585; files 10.
+        XCTAssertEqual(bd.dataProseLines, 330 + 200 + 55)
+        XCTAssertEqual(bd.dataProseFiles, 10)
+    }
+
+    func testDataProseTotalsFormatsGroupedThousands() {
+        let s = stats([
+            lang("Swift", files: 1, code: 281_989),
+            lang("Markdown", files: 1, code: 12_345),
+        ])
+        let bd = dataProseBreakdown(s)
+        XCTAssertEqual(bd.codeLinesText, "281,989")
+        XCTAssertEqual(bd.dataProseLinesText, "12,345")
+        XCTAssertEqual(bd.codeFilesText, "1")
+    }
+
+    func testDataProseBreakdownEmptyIsZero() {
+        let bd = dataProseBreakdown(stats([]))
+        XCTAssertEqual(bd.codeLines, 0)
+        XCTAssertEqual(bd.dataProseLines, 0)
+        XCTAssertEqual(bd.codeLinesText, "0")
+    }
+
+    // MARK: - Per-day deltas + period windows
+
+    private func historyPoints() -> [CodeStatsPoint] {
+        // 4 consecutive days. Per-day added=(i+1)*10, removed=i; cumulative is the
+        // running sum of (added-removed) starting at 100 so the fixture is internally
+        // consistent (cumulative diff == per-day net sum). Net steps: 10,19,28,37.
+        let day0 = Date(timeIntervalSince1970: 1_700_000_000)
+        var cum = 100
+        var points: [CodeStatsPoint] = []
+        for i in 0..<4 {
+            let added = (i + 1) * 10
+            let removed = i
+            cum += added - removed
+            points.append(CodeStatsPoint(date: day0.addingTimeInterval(Double(i) * 86_400),
+                                         totalLines: cum, code: cum, comment: 0, blank: 0,
+                                         totalFiles: 0, dayAdded: added, dayRemoved: removed))
+        }
+        return points
+    }
+
+    func testAggregateDayDeltasFromHistory() {
+        let dd = aggregateDayDeltas(historyPoints())
+        XCTAssertEqual(dd.map(\.dayAdded), [10, 20, 30, 40])
+        XCTAssertEqual(dd.map(\.dayRemoved), [0, 1, 2, 3])
+        XCTAssertEqual(dd[1].dayNet, 19)
+        XCTAssertEqual(dd[0].id, dd[0].date)
+    }
+
+    func testDeltaBetweenDatesIgnoresOutOfWindow() {
+        let dd = aggregateDayDeltas(historyPoints())
+        // Window [day1, day2] inclusive: added 20+30=50, removed 1+2=3.
+        let start = dd[1].date
+        let end = dd[2].date
+        let delta = deltaBetween(start: start, end: end, dayDeltas: dd)
+        XCTAssertEqual(delta.added, 50)
+        XCTAssertEqual(delta.removed, 3)
+        XCTAssertEqual(delta.net, 47)
+        XCTAssertEqual(delta.filesChanged, 0, "not derivable client-side")
+    }
+
+    func testPeriodDeltaWindows() {
+        let history = historyPoints()
+        let now = history.last!.date   // day3
+        // 7d window covers all 4 days (they span 3 days): added 100, removed 6.
+        let all7 = periodDelta(history, period: .d7, now: now)
+        XCTAssertEqual(all7.added, 10 + 20 + 30 + 40)
+        XCTAssertEqual(all7.removed, 0 + 1 + 2 + 3)
+        // "All" also covers everything.
+        let all = periodDelta(history, period: .all, now: now)
+        XCTAssertEqual(all.added, 100)
+    }
+
+    func testStatsPeriodStartAndDays() {
+        XCTAssertEqual(StatsPeriod.allCases.map(\.rawValue), ["7d", "30d", "90d", "All"])
+        XCTAssertEqual(StatsPeriod.d30.days, 30)
+        XCTAssertNil(StatsPeriod.all.days)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertEqual(StatsPeriod.d7.start(now: now),
+                       now.addingTimeInterval(-7 * 86_400))
+        XCTAssertEqual(StatsPeriod.all.start(now: now), .distantPast)
+    }
+
+    // MARK: - Delta triangles
+
+    func testDeltaTriangleUpDownFlat() {
+        let up = deltaTriangle(net: 1240)
+        XCTAssertEqual(up.direction, .up)
+        XCTAssertEqual(up.label, "▲ +1,240")
+        let down = deltaTriangle(net: -50)
+        XCTAssertEqual(down.direction, .down)
+        XCTAssertEqual(down.label, "▼ \u{2212}50", "uses U+2212 MINUS + abs value")
+        let flat = deltaTriangle(net: 0)
+        XCTAssertEqual(flat.direction, .flat)
+        XCTAssertEqual(flat.label, "±0")
+    }
+
+    // MARK: - Bar series + two-bar selection
+
+    func testBarSeriesFromHistoryKeepsFirstAndLast() {
+        let bars = barSeries(historyPoints())
+        XCTAssertEqual(bars.count, 4)
+        XCTAssertEqual(bars.map(\.cumulativeLines), [110, 129, 157, 194])
+        XCTAssertEqual(bars.first?.dayAdded, 10)
+        XCTAssertEqual(bars.last?.dayRemoved, 3)
+        XCTAssertEqual(bars.first?.id, bars.first?.date)
+    }
+
+    func testBarSeriesLongDownsampledKeepingEndpoints() {
+        let count = 1000
+        let day0 = Date(timeIntervalSince1970: 1_700_000_000)
+        let history = (0..<count).map { i in
+            CodeStatsPoint(date: day0.addingTimeInterval(Double(i) * 86_400),
+                           totalLines: i, code: i, comment: 0, blank: 0, totalFiles: 0,
+                           dayAdded: 1, dayRemoved: 0)
+        }
+        let bars = barSeries(history)
+        XCTAssertLessThanOrEqual(bars.count, 200)
+        XCTAssertEqual(bars.first?.cumulativeLines, 0)
+        XCTAssertEqual(bars.last?.cumulativeLines, count - 1)
+    }
+
+    func testBarSelectionDeltaNetMatchesCumulativeDiff() {
+        let bars = barSeries(historyPoints())
+        // Select day0 (cum 110) and day3 (cum 194): net = 84.
+        let d = barSelectionDelta(from: bars[0], to: bars[3], in: bars)
+        XCTAssertEqual(d.net, 84, "later.cumulative - earlier.cumulative")
+        // added sums (earlier, later]: days 1,2,3 -> 20+30+40 = 90; removed 1+2+3 = 6.
+        XCTAssertEqual(d.added, 90)
+        XCTAssertEqual(d.removed, 6)
+    }
+
+    func testBarSelectionDeltaOrderIndependent() {
+        let bars = barSeries(historyPoints())
+        let forward = barSelectionDelta(from: bars[0], to: bars[2], in: bars)
+        let backward = barSelectionDelta(from: bars[2], to: bars[0], in: bars)
+        XCTAssertEqual(forward, backward, "selecting in either order yields the same delta")
+        XCTAssertEqual(forward.net, 47, "cum 157 - cum 110")
+    }
+
+    func testBarSelectionReadoutFormat() {
+        let d = BarSelectionDelta(added: 1240, removed: 50, net: 1190)
+        XCTAssertEqual(barSelectionReadout(d),
+                       "+1,240 added · \u{2212}50 removed · net +1,190")
+        let neg = BarSelectionDelta(added: 10, removed: 60, net: -50)
+        XCTAssertEqual(barSelectionReadout(neg),
+                       "+10 added · \u{2212}60 removed · net \u{2212}50")
+    }
+
+    /// On a DOWNSAMPLED series, intermediate days are dropped so the retained per-day
+    /// `added`/`removed` sum can OVERSHOOT the true cumulative endpoint diff. The
+    /// readout's net must still equal the cumulative diff (authoritative net), not the
+    /// per-day `added − removed`. Regression guard for the old reconciliation hack,
+    /// which left `added − removed != net` on an overshoot.
+    func testBarSelectionDeltaNetAuthoritativeOnDownsampledOvershoot() {
+        let count = 1000   // > barMaxPoints (200) -> downsampled
+        let day0 = Date(timeIntervalSince1970: 1_700_000_000)
+        // Cumulative climbs slowly (+1/day) but each retained day reports heavy churn
+        // (added 100, removed 90 -> per-day net +10). So the per-day sum over a window
+        // wildly overshoots the cumulative diff once intermediate days are dropped.
+        var cum = 0
+        let history = (0..<count).map { i -> CodeStatsPoint in
+            cum += 1
+            return CodeStatsPoint(date: day0.addingTimeInterval(Double(i) * 86_400),
+                                  totalLines: cum, code: cum, comment: 0, blank: 0,
+                                  totalFiles: 0, dayAdded: 100, dayRemoved: 90)
+        }
+        let bars = barSeries(history)
+        XCTAssertLessThanOrEqual(bars.count, 200, "series is downsampled")
+        let d = barSelectionDelta(from: bars.first!, to: bars.last!, in: bars)
+        let cumulativeDiff = bars.last!.cumulativeLines - bars.first!.cumulativeLines
+        XCTAssertEqual(d.net, cumulativeDiff, "net == cumulative endpoint diff, not added − removed")
+        XCTAssertGreaterThan(d.added - d.removed, d.net,
+                             "per-day sum overshoots the cumulative diff (the dropped days)")
+        // The readout reflects the authoritative net, not the overshooting per-day sum.
+        XCTAssertTrue(barSelectionReadout(d).hasSuffix("net +\(groupedThousands(cumulativeDiff))"))
+    }
+
+    // MARK: - Per-repo cards
+
+    private func repoStat(_ name: String, branch: String, totalLines: Int,
+                          history: [RepoHistoryPoint]) -> RepoStats {
+        let cs = CodeStats(totalFiles: 1, totalLines: totalLines, code: totalLines,
+                           comment: 0, blank: 0,
+                           byLanguage: [LanguageStats(language: "Swift", files: 1,
+                                                      code: totalLines, comment: 0, blank: 0,
+                                                      total: totalLines)],
+                           scannedAt: Date(timeIntervalSince1970: 0), skippedBinary: 0)
+        return RepoStats(repoPath: "/tmp/\(name)", repoName: name, defaultBranch: branch,
+                         stats: cs, history: history, delta: .zero)
+    }
+
+    func testRepoCardsFormatDelta() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let day = now.addingTimeInterval(-2 * 86_400)
+        let repo = repoStat("app", branch: "main", totalLines: 12_481,
+                            history: [RepoHistoryPoint(date: day, netLines: 240,
+                                                       dayAdded: 300, dayRemoved: 60)])
+        let cards = repoCells([repo], period: .d7, now: now)
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertEqual(cards[0].repoName, "app")
+        XCTAssertEqual(cards[0].defaultBranch, "main")
+        XCTAssertEqual(cards[0].totalLinesText, "12,481")
+        // Period delta from per-day history: net = 300 - 60 = 240.
+        XCTAssertEqual(cards[0].delta.net, 240)
+        XCTAssertEqual(cards[0].triangle.direction, .up)
+        XCTAssertEqual(cards[0].triangle.label, "▲ +240")
+    }
+
+    func testRepoCellsSortByName() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let z = repoStat("zebra", branch: "main", totalLines: 1, history: [])
+        let a = repoStat("alpha", branch: "dev", totalLines: 2, history: [])
+        let m = repoStat("mid", branch: "main", totalLines: 3, history: [])
+        let cards = repoCells([z, a, m], period: .d30, now: now)
+        XCTAssertEqual(cards.map(\.repoName), ["alpha", "mid", "zebra"])
+    }
+
+    func testRepoCellsPeriodFiltersOutOfWindowDays() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let recent = now.addingTimeInterval(-3 * 86_400)   // in 7d window
+        let old = now.addingTimeInterval(-40 * 86_400)     // out of 7d window
+        let repo = repoStat("app", branch: "main", totalLines: 100, history: [
+            RepoHistoryPoint(date: old, netLines: 500, dayAdded: 500, dayRemoved: 0),
+            RepoHistoryPoint(date: recent, netLines: 510, dayAdded: 10, dayRemoved: 0),
+        ])
+        let cards = repoCells([repo], period: .d7, now: now)
+        XCTAssertEqual(cards[0].delta.added, 10, "old day excluded from 7d window")
     }
 }

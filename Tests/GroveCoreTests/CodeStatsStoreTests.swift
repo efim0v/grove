@@ -27,6 +27,36 @@ final class CodeStatsStoreTests: XCTestCase {
         XCTAssertEqual(loaded.points.first, p)
     }
 
+    func testPerDayAddedRemovedSurviveRoundTrip() throws {
+        let dir = try Fixture.tempDir("codestats-perday")
+        let store = CodeStatsStore(dir: dir)
+        let id = UUID()
+        let p = CodeStatsPoint(date: base, totalLines: 10, code: 8, comment: 1, blank: 1,
+                               totalFiles: 3, dayAdded: 42, dayRemoved: 7)
+        try store.append(projectID: id, point: p)
+        let loaded = store.load(projectID: id)
+        XCTAssertEqual(loaded.points.first?.dayAdded, 42)
+        XCTAssertEqual(loaded.points.first?.dayRemoved, 7)
+        XCTAssertEqual(loaded.points.first, p)
+    }
+
+    func testLegacyJSONWithoutPerDayKeysDecodesToZero() throws {
+        // A pre-existing history JSON written before dayAdded/dayRemoved existed must
+        // still decode, defaulting the missing per-day fields to 0.
+        let dir = try Fixture.tempDir("codestats-legacy")
+        let id = UUID()
+        let url = dir.appendingPathComponent("\(id.uuidString).json")
+        let legacy = """
+        {"points":[{"date":0,"totalLines":10,"code":8,"comment":1,"blank":1,"totalFiles":3}]}
+        """
+        try legacy.write(to: url, atomically: true, encoding: .utf8)
+        let loaded = CodeStatsStore(dir: dir).load(projectID: id)
+        XCTAssertEqual(loaded.points.count, 1)
+        XCTAssertEqual(loaded.points.first?.totalLines, 10)
+        XCTAssertEqual(loaded.points.first?.dayAdded, 0)
+        XCTAssertEqual(loaded.points.first?.dayRemoved, 0)
+    }
+
     func testMissingFileLoadsEmptyHistory() throws {
         let dir = try Fixture.tempDir("codestats-missing")
         let store = CodeStatsStore(dir: dir)

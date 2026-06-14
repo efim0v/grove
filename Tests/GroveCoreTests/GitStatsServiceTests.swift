@@ -190,6 +190,14 @@ final class GitStatsServiceTests: XCTestCase {
         XCTAssertEqual(history[1].netLines, 25)
         XCTAssertEqual(history[2].date, gmtStartOfDay(2025, 1, 3))
         XCTAssertEqual(history[2].netLines, 24, "two same-day commits collapse to end-of-day cumulative")
+        // Per-day added/removed: day1 +20 (f.txt 10 + f.py 10); day2 +5; day3 two commits
+        // ACCUMULATE — first trims f.py 15->12 (-3), second grows 12->14 (+2).
+        XCTAssertEqual(history[0].dayAdded, 20)
+        XCTAssertEqual(history[0].dayRemoved, 0)
+        XCTAssertEqual(history[1].dayAdded, 5)
+        XCTAssertEqual(history[1].dayRemoved, 0)
+        XCTAssertEqual(history[2].dayAdded, 2, "second same-day commit added 2")
+        XCTAssertEqual(history[2].dayRemoved, 3, "first same-day commit removed 3")
     }
 
     // MARK: - 5. Period delta added/removed/net/filesChanged
@@ -262,6 +270,12 @@ final class GitStatsServiceTests: XCTestCase {
         XCTAssertEqual(result.aggregateHistory.count, 2)
         XCTAssertEqual(result.aggregateHistory[0].totalLines, 4)
         XCTAssertEqual(result.aggregateHistory[1].totalLines, 11)
+        // Per-day added is POINT-IN-DAY (not carry-forward): day1 only A committed (+4),
+        // day2 only B committed (+7). A contributes 0 to day2's per-day added.
+        XCTAssertEqual(result.aggregateHistory[0].dayAdded, 4)
+        XCTAssertEqual(result.aggregateHistory[0].dayRemoved, 0)
+        XCTAssertEqual(result.aggregateHistory[1].dayAdded, 7)
+        XCTAssertEqual(result.aggregateHistory[1].dayRemoved, 0)
     }
 
     // MARK: - 8. Cache reuse on no-change; invalidation on edit / HEAD change
@@ -344,6 +358,11 @@ final class GitStatsServiceTests: XCTestCase {
         XCTAssertEqual(history.count, 2)
         XCTAssertEqual(history[0].netLines, 10)       // oldest day
         XCTAssertEqual(history[1].netLines, 15)       // cumulative
+        // Per-day added/removed are point-in-day (not cumulative): oldest +10, next +5.
+        XCTAssertEqual(history[0].dayAdded, 10)
+        XCTAssertEqual(history[0].dayRemoved, 0)
+        XCTAssertEqual(history[1].dayAdded, 5)
+        XCTAssertEqual(history[1].dayRemoved, 0)
     }
 
     /// Regression: `git log` emits reverse-GRAPH order, where a child commit can carry
@@ -373,6 +392,9 @@ final class GitStatsServiceTests: XCTestCase {
         XCTAssertEqual(history[1].date, gmtStartOfDay(2025, 1, 5))
         XCTAssertEqual(history[1].netLines, 15, "end-of-day cumulative after both commits")
         XCTAssertTrue(history[0].date < history[1].date, "history must be date-sorted oldest-first")
+        // Per-day added follows the same chronological re-sort: Jan1 +5, Jan5 +10.
+        XCTAssertEqual(history[0].dayAdded, 5)
+        XCTAssertEqual(history[1].dayAdded, 10)
     }
 
     /// End-to-end variant of the above against a REAL repo whose child commit has an

@@ -139,6 +139,19 @@ public enum CodeStatsEngine {
                                                   blockRequiresLineStart: blockAtLineStart))
     }
 
+    // MARK: Data/Prose classification
+
+    /// Languages classified as "Data/Prose" rather than "Code": structured-data and
+    /// markup formats whose line counts shouldn't inflate a headline "Code" number.
+    /// The names match `LanguageDefinition.name` strings in `languageTable` exactly.
+    public static let dataProseLanguages: Set<String> = ["Markdown", "JSON", "YAML", "TOML"]
+
+    /// True when `languageName` is a Data/Prose language (Markdown/JSON/YAML/TOML).
+    /// Robust to unknown/empty names (returns false).
+    public static func isDataProse(_ languageName: String) -> Bool {
+        dataProseLanguages.contains(languageName)
+    }
+
     /// Shipped languages (spec): extension → line/block comment syntax.
     public static let languageTable: [LanguageDefinition] = [
         lang("Swift",      ["swift"],                                   line: ["//"], block: [("/*", "*/")]),

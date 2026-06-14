@@ -157,6 +157,7 @@ public enum SnapshotMode {
         // in snapshot mode (routes are set directly), so these must be pre-seeded.
         state.codeStats = [project.id: fixtureCodeStats(now: now)]
         state.codeStatsHistory = [project.id: fixtureCodeStatsHistory(now: now)]
+        state.repoStats = [project.id: fixtureRepoStats(now: now)]
 
         // Projects-tab session previews (item 4): a running session mapped to a
         // cmux workspace (Go) and a waiting one (Resume).
@@ -584,18 +585,63 @@ public enum SnapshotMode {
                          byLanguage: langs, scannedAt: now, skippedBinary: 9)
     }
 
-    /// A short rising line history (oldest first) so the growth chart's manual
-    /// fallback draws a real upward curve offscreen.
+    /// A short rising line history (oldest first) so the growth chart's manual bar
+    /// fallback draws a real rising series offscreen. Each step also carries that day's
+    /// added/removed so the Totals delta-triangle and the bar-selection readout have
+    /// real values in snapshots.
     static func fixtureCodeStatsHistory(now: Date) -> [CodeStatsPoint] {
         func day(_ n: Double) -> Date { now.addingTimeInterval(-n * 86_400) }
         let totals = [38_200, 39_100, 41_500, 44_900, 46_300, 48_790]
+        var previous = 0
         return totals.enumerated().map { i, total in
-            CodeStatsPoint(date: day(Double(totals.count - 1 - i) * 6),
-                           totalLines: total,
-                           code: Int(Double(total) * 0.79), comment: Int(Double(total) * 0.10),
-                           blank: Int(Double(total) * 0.11),
-                           totalFiles: 280 + i * 6)
+            // Derive per-day added/removed from the cumulative step (a little churn so
+            // "removed" is non-zero): the net matches the cumulative delta.
+            let net = i == 0 ? total : total - previous
+            previous = total
+            let removed = i == 0 ? 0 : max(net / 4, 0)
+            let added = net + removed
+            return CodeStatsPoint(date: day(Double(totals.count - 1 - i) * 6),
+                                  totalLines: total,
+                                  code: Int(Double(total) * 0.79), comment: Int(Double(total) * 0.10),
+                                  blank: Int(Double(total) * 0.11),
+                                  totalFiles: 280 + i * 6,
+                                  dayAdded: added, dayRemoved: removed)
         }
+    }
+
+    /// Per-repo breakdown for the Stats tab's per-repo blocks: two repos with their own
+    /// branch, LOC, and a per-day history (oldest first) so each block's period delta
+    /// recomputes client-side like the real scan output.
+    static func fixtureRepoStats(now: Date) -> [RepoStats] {
+        func day(_ n: Double) -> Date { now.addingTimeInterval(-n * 86_400) }
+        func history(_ steps: [(net: Int, added: Int, removed: Int)]) -> [RepoHistoryPoint] {
+            var cumulative = 0
+            return steps.enumerated().map { i, s in
+                cumulative += s.net
+                return RepoHistoryPoint(date: day(Double(steps.count - 1 - i) * 6),
+                                        netLines: cumulative,
+                                        dayAdded: s.added, dayRemoved: s.removed)
+            }
+        }
+        func stats(files: Int, lines: Int) -> CodeStats {
+            CodeStats(totalFiles: files, totalLines: lines, code: Int(Double(lines) * 0.82),
+                      comment: Int(Double(lines) * 0.09), blank: Int(Double(lines) * 0.09),
+                      byLanguage: [], scannedAt: now, skippedBinary: 0)
+        }
+        return [
+            RepoStats(repoPath: "/Users/demo/Workspaces/acme.shop/media-pipeline",
+                      repoName: "media-pipeline",
+                      defaultBranch: "main", stats: stats(files: 184, lines: 31_400),
+                      history: history([(0, 0, 0), (640, 700, 60), (1_180, 1_300, 120),
+                                        (1_540, 1_720, 180), (820, 990, 170)]),
+                      delta: RepoDelta(added: 4_010, removed: 530, filesChanged: 22)),
+            RepoStats(repoPath: "/Users/demo/Workspaces/acme.shop/media-upload",
+                      repoName: "media-upload",
+                      defaultBranch: "develop", stats: stats(files: 96, lines: 17_390),
+                      history: history([(0, 0, 0), (310, 360, 50), (-120, 40, 160),
+                                        (540, 620, 80), (290, 330, 40)]),
+                      delta: RepoDelta(added: 1_350, removed: 330, filesChanged: 11)),
+        ]
     }
 
     // MARK: - Identity fixture (consumed by AccountsScreen in Task 22)

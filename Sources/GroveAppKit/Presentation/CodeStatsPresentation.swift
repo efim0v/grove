@@ -89,41 +89,6 @@ func groupedThousands(_ n: Int) -> String {
     return formatter.string(from: NSNumber(value: n)) ?? "\(n)"
 }
 
-// MARK: - Growth series (lines over time)
-
-/// One point on the "lines over time" chart. `id` is `date` so ForEach is stable.
-public struct GrowthPoint: Equatable, Sendable, Identifiable {
-    public var id: Date { date }
-    public let date: Date
-    public let totalLines: Int
-
-    public init(date: Date, totalLines: Int) {
-        self.date = date
-        self.totalLines = totalLines
-    }
-}
-
-/// The smallest history we'll downsample (below this every point is kept as-is).
-private let growthMaxPoints = 200
-
-/// Build the growth series from a project's history (oldest first). Long histories
-/// are evenly downsampled to at most `growthMaxPoints` points — the FIRST and LAST
-/// points are always kept so the curve's endpoints stay exact.
-public func growthSeries(_ history: [CodeStatsPoint]) -> [GrowthPoint] {
-    let points = history.map { GrowthPoint(date: $0.date, totalLines: $0.totalLines) }
-    guard points.count > growthMaxPoints else { return points }
-    // Even stride keeps the shape; force-include the last index so the tail is exact.
-    let stride = Double(points.count - 1) / Double(growthMaxPoints - 1)
-    var picked: [GrowthPoint] = []
-    var lastIndex = -1
-    for i in 0..<growthMaxPoints {
-        let index = Int((Double(i) * stride).rounded())
-        if index != lastIndex { picked.append(points[index]); lastIndex = index }
-    }
-    if let last = points.last, picked.last?.date != last.date { picked.append(last) }
-    return picked
-}
-
 // MARK: - Exclusion tree (mark folders excluded from stats scans)
 
 /// One row in the stats-exclusion folder picker. `relativePath` is the project-root-
@@ -172,4 +137,261 @@ public func buildStatsTree(_ root: DirNode, ignoredFolders: Set<String>) -> [Sta
     }
     walk(root, depth: 0, ancestorExcluded: false)
     return rows
+}
+
+// MARK: - Code vs Data/Prose split (two headline numbers)
+
+/// The Totals card's two headline numbers: "Code" lines (non-data languages) and
+/// "Data/Prose" lines (Markdown/JSON/YAML/TOML), plus their file counts. Line counts
+/// use each language's `total` so the headline matches the language-table rows.
+public struct DataProseTotals: Equatable, Sendable {
+    public let codeLines: Int
+    public let dataProseLines: Int
+    public let codeFiles: Int
+    public let dataProseFiles: Int
+    public let codeLinesText: String        // grouped thousands, e.g. "281,989"
+    public let dataProseLinesText: String
+    public let codeFilesText: String
+    public let dataProseFilesText: String
+
+    public init(codeLines: Int, dataProseLines: Int, codeFiles: Int, dataProseFiles: Int) {
+        self.codeLines = codeLines
+        self.dataProseLines = dataProseLines
+        self.codeFiles = codeFiles
+        self.dataProseFiles = dataProseFiles
+        self.codeLinesText = groupedThousands(codeLines)
+        self.dataProseLinesText = groupedThousands(dataProseLines)
+        self.codeFilesText = groupedThousands(codeFiles)
+        self.dataProseFilesText = groupedThousands(dataProseFiles)
+    }
+}
+
+/// Partition a scan's `byLanguage` into Code vs Data/Prose using
+/// `CodeStatsEngine.isDataProse`. "Lines" sums each language's `total`.
+public func dataProseBreakdown(_ stats: CodeStats) -> DataProseTotals {
+    var codeLines = 0, dataLines = 0, codeFiles = 0, dataFiles = 0
+    for l in stats.byLanguage {
+        if CodeStatsEngine.isDataProse(l.language) {
+            dataLines += l.total; dataFiles += l.files
+        } else {
+            codeLines += l.total; codeFiles += l.files
+        }
+    }
+    return DataProseTotals(codeLines: codeLines, dataProseLines: dataLines,
+                           codeFiles: codeFiles, dataProseFiles: dataFiles)
+}
+
+// MARK: - Per-day delta series + window recompute (period selection, no re-scan)
+
+/// One day's additions/removals (point-in-day, summed across repos). The screen sums
+/// these over any window to recompute period deltas client-side.
+public struct DayDelta: Equatable, Sendable, Identifiable {
+    public var id: Date { date }
+    public let date: Date
+    public let dayAdded: Int
+    public let dayRemoved: Int
+    public var dayNet: Int { dayAdded - dayRemoved }
+
+    public init(date: Date, dayAdded: Int, dayRemoved: Int) {
+        self.date = date
+        self.dayAdded = dayAdded
+        self.dayRemoved = dayRemoved
+    }
+}
+
+/// Map an aggregate history (CodeStatsPoint, oldest-first) to its per-day deltas.
+public func aggregateDayDeltas(_ history: [CodeStatsPoint]) -> [DayDelta] {
+    history.map { DayDelta(date: $0.date, dayAdded: $0.dayAdded, dayRemoved: $0.dayRemoved) }
+}
+
+/// Map a per-repo history (RepoHistoryPoint, oldest-first) to its per-day deltas.
+public func repoDayDeltas(_ history: [RepoHistoryPoint]) -> [DayDelta] {
+    history.map { DayDelta(date: $0.date, dayAdded: $0.dayAdded, dayRemoved: $0.dayRemoved) }
+}
+
+/// Sum `dayAdded`/`dayRemoved` over the inclusive date window `[start, end]`. Days
+/// outside the window are ignored. `filesChanged` is 0 (not derivable client-side).
+public func deltaBetween(start: Date, end: Date, dayDeltas: [DayDelta]) -> RepoDelta {
+    var added = 0, removed = 0
+    for d in dayDeltas where d.date >= start && d.date <= end {
+        added += d.dayAdded; removed += d.dayRemoved
+    }
+    return RepoDelta(added: added, removed: removed, filesChanged: 0)
+}
+
+/// The Totals card's period segmented-control model (7d / 30d / 90d / All).
+public enum StatsPeriod: String, CaseIterable, Identifiable, Sendable {
+    case d7 = "7d"
+    case d30 = "30d"
+    case d90 = "90d"
+    case all = "All"
+    public var id: String { rawValue }
+    /// Window length in days; `nil` for "All" (unbounded back to the start of history).
+    public var days: Int? {
+        switch self {
+        case .d7: return 7
+        case .d30: return 30
+        case .d90: return 90
+        case .all: return nil
+        }
+    }
+    /// Window start instant: `now − days·86400`, or `.distantPast` for "All".
+    public func start(now: Date) -> Date {
+        guard let days else { return .distantPast }
+        return now.addingTimeInterval(-Double(days) * 24 * 3600)
+    }
+}
+
+/// Convenience: recompute a period delta directly from an aggregate history.
+public func periodDelta(_ history: [CodeStatsPoint], period: StatsPeriod, now: Date) -> RepoDelta {
+    deltaBetween(start: period.start(now: now), end: now,
+                 dayDeltas: aggregateDayDeltas(history))
+}
+
+// MARK: - Delta-triangle formatting (shared by totals + repo cards)
+
+/// A formatted ▲/▼ delta. `direction` drives the tint (.up→primary, .down→negative,
+/// .flat→neutral); `label` is the display string ("▲ +1,240" / "▼ −50" / "±0").
+public struct DeltaTriangle: Equatable, Sendable {
+    public enum Direction: Sendable { case up, down, flat }
+    public let direction: Direction
+    public let label: String
+    public init(direction: Direction, label: String) {
+        self.direction = direction
+        self.label = label
+    }
+}
+
+/// Build a `DeltaTriangle` from a net line count. Positive → ▲ "+N"; negative → ▼ with
+/// a U+2212 MINUS and the absolute value; zero → "±0". Counts are grouped-thousands.
+public func deltaTriangle(net: Int) -> DeltaTriangle {
+    if net > 0 {
+        return DeltaTriangle(direction: .up, label: "▲ +\(groupedThousands(net))")
+    } else if net < 0 {
+        return DeltaTriangle(direction: .down, label: "▼ \u{2212}\(groupedThousands(abs(net)))")
+    } else {
+        return DeltaTriangle(direction: .flat, label: "±0")
+    }
+}
+
+// MARK: - Per-day bar model (growth chart)
+
+/// One bar: a day's carry-forward cumulative total plus that day's added/removed (so
+/// selecting two bars can show the window delta without a separate lookup).
+public struct BarPoint: Equatable, Sendable, Identifiable {
+    public var id: Date { date }
+    public let date: Date
+    public let cumulativeLines: Int   // = CodeStatsPoint.totalLines (carry-forward total)
+    public let dayAdded: Int
+    public let dayRemoved: Int
+    public init(date: Date, cumulativeLines: Int, dayAdded: Int, dayRemoved: Int) {
+        self.date = date
+        self.cumulativeLines = cumulativeLines
+        self.dayAdded = dayAdded
+        self.dayRemoved = dayRemoved
+    }
+}
+
+/// Build the per-day bar series from an aggregate history (oldest-first). Long
+/// histories are evenly downsampled to ≤ `barMaxPoints`, always keeping the FIRST and
+/// LAST day so the endpoints stay exact.
+public func barSeries(_ history: [CodeStatsPoint]) -> [BarPoint] {
+    let points = history.map {
+        BarPoint(date: $0.date, cumulativeLines: $0.totalLines,
+                 dayAdded: $0.dayAdded, dayRemoved: $0.dayRemoved)
+    }
+    guard points.count > barMaxPoints else { return points }
+    let stride = Double(points.count - 1) / Double(barMaxPoints - 1)
+    var picked: [BarPoint] = []
+    var lastIndex = -1
+    for i in 0..<barMaxPoints {
+        let index = Int((Double(i) * stride).rounded())
+        if index != lastIndex { picked.append(points[index]); lastIndex = index }
+    }
+    if let last = points.last, picked.last?.date != last.date { picked.append(last) }
+    return picked
+}
+
+/// The largest bar count we'll render before downsampling.
+private let barMaxPoints = 200
+
+// MARK: - Two-bar selection delta
+
+/// The delta between two selected bars. `added`/`removed` SUM each day's value over the
+/// half-open window (earlier, later] — the honest per-day churn within the selection.
+/// `net` is the AUTHORITATIVE cumulative difference (`later.cumulativeLines −
+/// earlier.cumulativeLines`), carried separately rather than derived from
+/// `added − removed`: after downsampling, intermediate days are dropped from `bars`,
+/// so the per-day sum can diverge from the true endpoint diff. Keeping `net` explicit
+/// means the readout's "net" is always exact, while `added`/`removed` honestly report
+/// the (possibly incomplete) per-day churn the bars retained.
+public struct BarSelectionDelta: Equatable, Sendable {
+    public let added: Int
+    public let removed: Int
+    public let net: Int
+    public init(added: Int, removed: Int, net: Int) {
+        self.added = added
+        self.removed = removed
+        self.net = net
+    }
+}
+
+/// Compute the delta between two selected bars. `bars` should be the full series the two
+/// points came from (used to sum the per-day churn inside the window).
+public func barSelectionDelta(from a: BarPoint, to b: BarPoint, in bars: [BarPoint]) -> BarSelectionDelta {
+    let earlier = a.date <= b.date ? a : b
+    let later = a.date <= b.date ? b : a
+    var added = 0, removed = 0
+    for bar in bars where bar.date > earlier.date && bar.date <= later.date {
+        added += bar.dayAdded; removed += bar.dayRemoved
+    }
+    // net uses the cumulative endpoints so it's exact even after downsampling, where the
+    // per-day (added − removed) sum may diverge from the true endpoint diff.
+    let net = later.cumulativeLines - earlier.cumulativeLines
+    return BarSelectionDelta(added: added, removed: removed, net: net)
+}
+
+/// Readout for a two-bar selection: "+X added · −Y removed · net Z" (U+2212 in the
+/// removed token; net carries an explicit sign). `net` is the authoritative cumulative
+/// diff, NOT `added − removed`, so it stays exact even on downsampled series.
+public func barSelectionReadout(_ d: BarSelectionDelta) -> String {
+    let net = d.net
+    let netText = net >= 0 ? "+\(groupedThousands(net))" : "\u{2212}\(groupedThousands(abs(net)))"
+    return "+\(groupedThousands(d.added)) added · \u{2212}\(groupedThousands(d.removed)) removed · net \(netText)"
+}
+
+// MARK: - Per-repo display blocks
+
+/// One per-repo block on the screen: name, default branch (read-only for now), total
+/// LOC, and a period delta with a formatted ▲/▼ triangle.
+public struct RepoCard: Equatable, Sendable, Identifiable {
+    public var id: String { repoName }
+    public let repoName: String
+    public let defaultBranch: String
+    public let totalLines: Int
+    public let totalLinesText: String
+    public let delta: RepoDelta
+    public let triangle: DeltaTriangle
+    public init(repoName: String, defaultBranch: String, totalLines: Int,
+                delta: RepoDelta) {
+        self.repoName = repoName
+        self.defaultBranch = defaultBranch
+        self.totalLines = totalLines
+        self.totalLinesText = groupedThousands(totalLines)
+        self.delta = delta
+        self.triangle = deltaTriangle(net: delta.net)
+    }
+}
+
+/// Build the per-repo blocks, sorted by repo name. Each block's delta is recomputed for
+/// `period` from that repo's per-day history (no re-scan), so switching the period
+/// updates every repo in lockstep with the Totals card.
+public func repoCells(_ repos: [RepoStats], period: StatsPeriod, now: Date) -> [RepoCard] {
+    repos.map { repo in
+        let delta = deltaBetween(start: period.start(now: now), end: now,
+                                 dayDeltas: repoDayDeltas(repo.history))
+        return RepoCard(repoName: repo.repoName, defaultBranch: repo.defaultBranch,
+                        totalLines: repo.stats.totalLines, delta: delta)
+    }
+    .sorted { $0.repoName < $1.repoName }
 }

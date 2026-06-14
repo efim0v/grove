@@ -8,9 +8,25 @@ import Foundation
 public struct RepoHistoryPoint: Sendable, Equatable, Codable {
     public let date: Date          // start-of-day (GMT) midnight
     public let netLines: Int       // cumulative (additions - deletions) through this day
-    public init(date: Date, netLines: Int) {
+    public let dayAdded: Int       // additions committed ON this day (point-in-day, not cumulative)
+    public let dayRemoved: Int     // deletions committed ON this day (point-in-day, not cumulative)
+    /// `dayAdded`/`dayRemoved` default to 0 so existing call sites and Codable decodes
+    /// of pre-existing JSON (which lack these keys) keep working.
+    public init(date: Date, netLines: Int, dayAdded: Int = 0, dayRemoved: Int = 0) {
         self.date = date
         self.netLines = netLines
+        self.dayAdded = dayAdded
+        self.dayRemoved = dayRemoved
+    }
+
+    // Custom decode so older persisted JSON (no dayAdded/dayRemoved keys) still loads,
+    // defaulting the missing per-day fields to 0.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.date = try c.decode(Date.self, forKey: .date)
+        self.netLines = try c.decode(Int.self, forKey: .netLines)
+        self.dayAdded = try c.decodeIfPresent(Int.self, forKey: .dayAdded) ?? 0
+        self.dayRemoved = try c.decodeIfPresent(Int.self, forKey: .dayRemoved) ?? 0
     }
 }
 
@@ -378,16 +394,25 @@ public struct GitStatsService: Sendable {
         let cal = gmtCalendar
         let chronological = commits.sorted { $0.date < $1.date }
         var running = 0
-        // Ordered list of days; last-write-wins on the cumulative per day.
+        // Ordered list of days; last-write-wins on the cumulative per day. The per-day
+        // added/removed ACCUMULATE across same-day commits (sum, not last-write-wins),
+        // while `netLines` carries the END-OF-DAY cumulative.
         var order: [Date] = []
         var byDay: [Date: Int] = [:]
+        var addedByDay: [Date: Int] = [:]
+        var removedByDay: [Date: Int] = [:]
         for commit in chronological {
             running += commit.added - commit.removed
             let day = cal.startOfDay(for: commit.date)
             if byDay[day] == nil { order.append(day) }
             byDay[day] = running
+            addedByDay[day, default: 0] += commit.added
+            removedByDay[day, default: 0] += commit.removed
         }
-        return order.map { RepoHistoryPoint(date: $0, netLines: byDay[$0]!) }
+        return order.map {
+            RepoHistoryPoint(date: $0, netLines: byDay[$0]!,
+                             dayAdded: addedByDay[$0] ?? 0, dayRemoved: removedByDay[$0] ?? 0)
+        }
     }
 
     /// Sums additions/deletions over commits within `[now - period, now]`, plus the
@@ -465,16 +490,25 @@ public struct GitStatsService: Sendable {
         guard !allDays.isEmpty else { return [] }
         return allDays.map { day in
             var total = 0
+            var dayAdded = 0, dayRemoved = 0
             for repo in repos {
-                // Last point on or before `day` (history is oldest-first).
+                // Cumulative net: last point on or before `day` (history is oldest-first).
                 var value = 0
                 for point in repo.history {
                     if point.date <= day { value = point.netLines } else { break }
                 }
                 total += value
+                // Per-day added/removed are POINT-IN-DAY (not carry-forward): only the
+                // repo's exact `day` point contributes; a repo with no commit that day
+                // adds 0. This is what lets the UI re-sum any window without a re-scan.
+                if let p = repo.history.first(where: { $0.date == day }) {
+                    dayAdded += p.dayAdded
+                    dayRemoved += p.dayRemoved
+                }
             }
             return CodeStatsPoint(date: day, totalLines: total, code: total,
-                                  comment: 0, blank: 0, totalFiles: 0)
+                                  comment: 0, blank: 0, totalFiles: 0,
+                                  dayAdded: dayAdded, dayRemoved: dayRemoved)
         }
     }
 

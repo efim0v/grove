@@ -9,13 +9,37 @@ public struct CodeStatsPoint: Codable, Sendable, Equatable {
     public let comment: Int
     public let blank: Int
     public let totalFiles: Int
-    public init(date: Date, totalLines: Int, code: Int, comment: Int, blank: Int, totalFiles: Int) {
+    /// That day's additions, summed across repos (point-in-day, not carry-forward).
+    /// Lets the UI sum any window's delta client-side with no re-scan.
+    public let dayAdded: Int
+    /// That day's removals, summed across repos (point-in-day, not carry-forward).
+    public let dayRemoved: Int
+    /// `dayAdded`/`dayRemoved` default to 0 so every existing constructor (e.g.
+    /// `barSeries`/store round-trips) and Codable decode of older JSON stays green.
+    public init(date: Date, totalLines: Int, code: Int, comment: Int, blank: Int,
+                totalFiles: Int, dayAdded: Int = 0, dayRemoved: Int = 0) {
         self.date = date
         self.totalLines = totalLines
         self.code = code
         self.comment = comment
         self.blank = blank
         self.totalFiles = totalFiles
+        self.dayAdded = dayAdded
+        self.dayRemoved = dayRemoved
+    }
+
+    // Custom decode so older persisted history JSON (no dayAdded/dayRemoved keys) loads,
+    // defaulting the missing per-day fields to 0.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.date = try c.decode(Date.self, forKey: .date)
+        self.totalLines = try c.decode(Int.self, forKey: .totalLines)
+        self.code = try c.decode(Int.self, forKey: .code)
+        self.comment = try c.decode(Int.self, forKey: .comment)
+        self.blank = try c.decode(Int.self, forKey: .blank)
+        self.totalFiles = try c.decode(Int.self, forKey: .totalFiles)
+        self.dayAdded = try c.decodeIfPresent(Int.self, forKey: .dayAdded) ?? 0
+        self.dayRemoved = try c.decodeIfPresent(Int.self, forKey: .dayRemoved) ?? 0
     }
 }
 
