@@ -99,21 +99,9 @@ public struct RootView: View {
             }
             .frame(width: size.width, height: size.height)
             .frame(maxHeight: maxPanelHeight)   // caps the height-adaptive screens
-            .transition(navTransition)
+            .transition(.opacity)
         }
-        // Slide transitions would otherwise draw outside the panel frame.
         .clipped()
-    }
-
-    /// Push: new screen slides in from the trailing edge while the old one
-    /// leaves through the leading edge; pop mirrors it. Both combine with
-    /// opacity so the move never looks like a hard wipe.
-    private var navTransition: AnyTransition {
-        state.routeIsForward
-            ? .asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
-                          removal: .move(edge: .leading).combined(with: .opacity))
-            : .asymmetric(insertion: .move(edge: .leading).combined(with: .opacity),
-                          removal: .move(edge: .trailing).combined(with: .opacity))
     }
 
     // MARK: - Error banner (spec §7): dismissable; cmux failures get a

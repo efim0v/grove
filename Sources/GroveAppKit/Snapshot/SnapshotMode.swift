@@ -621,6 +621,22 @@ public enum SnapshotMode {
         return state
     }
 
+    /// Renders the heavier screens once offscreen so the FIRST real navigation
+    /// isn't paying SwiftUI's cold body-build + layout cost (the "first run is
+    /// slow, then snappy" effect). Uses isolated fixture state (never ~/.claude)
+    /// with isSnapshotRender, and discards the rendered image.
+    @MainActor
+    static func prewarm() {
+        for scene in [SnapshotScene.rootWorkspaces, .settings, .charts] {
+            let content = view(for: scene)
+                .environment(\.isSnapshotRender, true)
+                .environment(\.colorScheme, .dark)
+            let renderer = ImageRenderer(content: content)
+            renderer.scale = 1
+            _ = renderer.cgImage
+        }
+    }
+
     @MainActor
     static func view(for scene: SnapshotScene) -> AnyView {
         // The Charts side window renders its standalone content, NOT the main shell

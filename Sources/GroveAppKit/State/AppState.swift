@@ -151,7 +151,9 @@ public final class AppState: ObservableObject {
             selectedProjectID = id
             refreshTask = Task { await self.refresh() }
         }
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+        // A short ease (no spring bounce) so the cross-fade settles cleanly while the
+        // window resizes — simpler and more native than a sliding spring.
+        withAnimation(.easeInOut(duration: 0.16)) {
             route = target
         }
     }

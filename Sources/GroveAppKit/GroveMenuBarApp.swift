@@ -97,6 +97,9 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         item.isVisible = true
         statusItem = item
         GroveLog.menubar.info("launched; statusItem.isVisible=\(item.isVisible, privacy: .public)")
+        // Warm the heavier screens offscreen shortly after launch so the first
+        // navigation is snappy (deferred so the menu-bar icon appears instantly).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { SnapshotMode.prewarm() }
     }
 
     // MARK: - Panel lifecycle
@@ -146,15 +149,15 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         return p
     }
 
-    /// Resizes the panel to `size` (the SwiftUI content) and re-pins the top-right
-    /// corner to the icon — so a content-size change never re-centers/jumps it.
-    /// The Charts side window follows the main panel's left edge.
+    /// Resizes the MAIN (projects) panel to its SwiftUI content. The main panel is
+    /// the one that changes size often, so it sits on the LEFT and grows leftward —
+    /// its right edge stays glued just left of the fixed, icon-anchored Charts
+    /// window, which never moves on a route change.
     private func applyContentSize(_ size: NSSize) {
         guard let p = panel, size.width > 1, size.height > 1 else { return }
         if p.frame.size != size { p.setContentSize(size) }
-        repositionToAnchor()
+        dockMainLeftOfCharts()
         p.invalidateShadow()
-        repositionChartsPanel()
     }
 
     /// Builds (once) the borderless Charts side window — same chrome as the main
@@ -201,29 +204,45 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         let capped = NSSize(width: size.width,
                             height: min(size.height, (visible?.height ?? size.height) - 8))
         if p.frame.size != capped { p.setContentSize(capped) }
-        repositionChartsPanel()
+        anchorChartsToIcon()
+        dockMainLeftOfCharts()   // the Charts window moved → re-glue the main panel
         p.invalidateShadow()
     }
 
-    /// Glues the Charts window beside the main panel, tops aligned — left of it by
-    /// default, falling back to the right when there's no room on the left. Both
-    /// axes are clamped so the window is always fully on-screen.
-    private func repositionChartsPanel() {
-        guard let charts = chartsPanel, let main = panel else { return }
-        let gap: CGFloat = 8
+    /// Anchors the CHARTS window's top-RIGHT corner to the status-item icon. Charts
+    /// is the FIXED reference (it rarely changes size), so it owns the icon anchor.
+    /// Clamped fully on-screen.
+    private func anchorChartsToIcon() {
+        guard let charts = chartsPanel else { return }
         let size = charts.frame.size
-        let mainFrame = main.frame
         let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        // Prefer left of the main panel; if that runs off the left edge, dock right.
-        var x = mainFrame.minX - gap - size.width
-        if x < visible.minX + 4 { x = mainFrame.maxX + gap }
+        var x = anchorRightX - size.width
         x = max(visible.minX + 4, min(x, visible.maxX - size.width - 4))
-        // Align the tops, but keep the whole window on-screen (top ≤ maxY, bottom ≥ minY).
-        var y = mainFrame.maxY - size.height
+        var y = anchorTopY - size.height
         y = max(visible.minY + 4, min(y, visible.maxY - size.height - 4))
         let origin = NSPoint(x: x, y: y)
         if charts.frame.origin != origin { charts.setFrameOrigin(origin) }
+    }
+
+    /// Docks the MAIN (projects) window to the LEFT of the anchored Charts window —
+    /// right edge a gap left of Charts' left edge, tops aligned — so it grows
+    /// leftward as routes change. Falls back to the right of Charts if there's no
+    /// room on the left; both axes clamped on-screen.
+    private func dockMainLeftOfCharts() {
+        guard let main = panel, let charts = chartsPanel else { return }
+        let gap: CGFloat = 8
+        let size = main.frame.size
+        let chartsFrame = charts.frame
+        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        var x = chartsFrame.minX - gap - size.width
+        if x < visible.minX + 4 { x = chartsFrame.maxX + gap }
+        x = max(visible.minX + 4, min(x, visible.maxX - size.width - 4))
+        var y = chartsFrame.maxY - size.height
+        y = max(visible.minY + 4, min(y, visible.maxY - size.height - 4))
+        let origin = NSPoint(x: x, y: y)
+        if main.frame.origin != origin { main.setFrameOrigin(origin) }
     }
 
     @objc private func togglePanel() {
@@ -233,23 +252,23 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
     private func showPanel() {
         guard let button = statusItem?.button, let buttonWindow = button.window else { return }
         let p = makePanel()
+        let cp = makeChartsPanel()
         let iconRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
         anchorRightX = iconRect.maxX
         anchorTopY = iconRect.minY - 6            // small gap below the menu bar
         anchorScreen = buttonWindow.screen
-        if let h = host, h.preferredContentSize.width > 1 {
-            applyContentSize(h.preferredContentSize)
-        } else {
-            repositionToAnchor()
-        }
         state.isPanelOpen = true                  // starts RootView's refresh loop
-        // Charts side window: built, sized, and glued to the main panel's left
-        // edge BEFORE either is ordered in, so it never appears mispositioned.
-        let cp = makeChartsPanel()
+        // Charts is the icon-anchored fixed window (RIGHT); the projects panel docks
+        // to its LEFT. Size + place both BEFORE ordering in so neither flashes.
         if let ch = chartsHost, ch.preferredContentSize.height > 1 {
             applyChartsContentSize(ch.preferredContentSize)
         } else {
-            repositionChartsPanel()
+            anchorChartsToIcon()
+        }
+        if let h = host, h.preferredContentSize.width > 1 {
+            applyContentSize(h.preferredContentSize)
+        } else {
+            dockMainLeftOfCharts()
         }
         NSApp.activate(ignoringOtherApps: true)   // key window + keyboard for an .accessory app
         cp.orderFront(nil)                         // display-only; main keeps key
@@ -264,35 +283,21 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         removeOutsideClickMonitor()
     }
 
-    /// Any resize re-pins the main panel's TOP-RIGHT corner to the icon (so it
-    /// grows left/down instead of jumping) and re-glues the Charts side window to
-    /// its left edge. A resize of the Charts window only re-glues that window.
+    /// A main-panel resize re-docks it to the left of the fixed Charts window; a
+    /// Charts resize re-anchors Charts to the icon, then re-docks the main panel.
     func windowDidResize(_ notification: Notification) {
         let resized = notification.object as? NSWindow
         // A resize delivered while the window is hidden (a SwiftUI layout pass during
         // orderOut) must not reposition with stale anchors — showPanel re-anchors.
         guard resized?.isVisible == true else { return }
         if resized === chartsPanel {
-            repositionChartsPanel()
+            anchorChartsToIcon()
             chartsPanel?.invalidateShadow()
+            dockMainLeftOfCharts()
         } else if resized === panel {
-            repositionToAnchor()
+            dockMainLeftOfCharts()
             panel?.invalidateShadow()
-            repositionChartsPanel()
         }
-    }
-
-    private func repositionToAnchor() {
-        guard let p = panel else { return }
-        let size = p.frame.size
-        var x = anchorRightX - size.width             // right edge aligned to the icon
-        var y = anchorTopY - size.height              // top just below the menu bar
-        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        x = max(visible.minX + 4, min(x, visible.maxX - size.width - 4))
-        y = max(visible.minY + 4, y)
-        let origin = NSPoint(x: x, y: y)
-        if p.frame.origin != origin { p.setFrameOrigin(origin) }
     }
 
     // MARK: - Outside-click dismissal
