@@ -322,10 +322,8 @@ final class AppStateCodeStatsTests: XCTestCase {
         let state = makeState()
         let tree = await state.statsDirectoryTree(projectID: project.id)
         let root = try XCTUnwrap(tree)
-        let rows = buildStatsTree(root, ignoredFolders: ["vendor"])
-        XCTAssertEqual(Set(rows.map(\.relativePath)), ["sub", "vendor"])
-        let vendor = try XCTUnwrap(rows.first { $0.relativePath == "vendor" })
-        XCTAssertTrue(vendor.isExcluded)
+        // The skeleton walks directories only; the project root carries the two folders.
+        XCTAssertEqual(Set(root.children.map(\.relativePath)), ["sub", "vendor"])
     }
 
     // MARK: - removeProject cleanup
@@ -342,7 +340,6 @@ final class AppStateCodeStatsTests: XCTestCase {
         XCTAssertNil(state.codeStats[project.id])
         XCTAssertNil(state.codeStatsHistory[project.id])
         XCTAssertNil(state.repoStats[project.id])
-        XCTAssertNil(state.codeStatsDelta[project.id])
         XCTAssertFalse(FileManager.default.fileExists(atPath: historyFile.path),
                        "the per-project history file must be deleted on removeProject")
     }

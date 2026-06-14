@@ -114,32 +114,6 @@ public func languageBars(_ stats: CodeStats, metric: LanguageMetric = .code) -> 
 
 // MARK: - Headline totals
 
-/// The one-line headline: "12,481 lines · 384 files · 71% code". `codePercent`
-/// is code over total lines (0 when empty). Grouped thousands for the human counts.
-public struct StatsTotals: Equatable, Sendable {
-    public let totalLines: Int
-    public let totalFiles: Int
-    public let codePercent: Int          // 0…100, rounded
-    public let formatted: String
-
-    public init(totalLines: Int, totalFiles: Int, codePercent: Int, formatted: String) {
-        self.totalLines = totalLines
-        self.totalFiles = totalFiles
-        self.codePercent = codePercent
-        self.formatted = formatted
-    }
-}
-
-public func statsTotals(_ stats: CodeStats) -> StatsTotals {
-    let percent = stats.totalLines > 0
-        ? Int((Double(stats.code) / Double(stats.totalLines) * 100).rounded()) : 0
-    let lines = groupedThousands(stats.totalLines)
-    let files = groupedThousands(stats.totalFiles)
-    return StatsTotals(totalLines: stats.totalLines, totalFiles: stats.totalFiles,
-                       codePercent: percent,
-                       formatted: "\(lines) lines · \(files) files · \(percent)% code")
-}
-
 /// Thousands-grouped integer: 12481 -> "12,481". Deterministic (POSIX locale).
 func groupedThousands(_ n: Int) -> String {
     let formatter = NumberFormatter()
@@ -149,56 +123,6 @@ func groupedThousands(_ n: Int) -> String {
     formatter.groupingSeparator = ","
     formatter.groupingSize = 3
     return formatter.string(from: NSNumber(value: n)) ?? "\(n)"
-}
-
-// MARK: - Exclusion tree (mark folders excluded from stats scans)
-
-/// One row in the stats-exclusion folder picker. `relativePath` is the project-root-
-/// relative directory path (the stable id AND the key written to
-/// `ProjectConfig.statsIgnoredFolders`); `depth` is the indent level (root's
-/// children are depth 0); `isExcluded` reflects whether this folder is currently
-/// excluded — either because it is itself in `ignoredFolders`, or because an
-/// ANCESTOR is (an excluded folder hides its whole subtree from the scan).
-public struct StatsTreeRow: Equatable, Sendable, Identifiable {
-    public var id: String { relativePath }
-    public let name: String
-    public let depth: Int
-    public let relativePath: String
-    public let isExcluded: Bool
-    /// True when the exclusion is INHERITED from an excluded ancestor (so the view
-    /// can show the checkbox as disabled/derived rather than a directly-set toggle).
-    public let excludedByAncestor: Bool
-
-    public init(name: String, depth: Int, relativePath: String,
-                isExcluded: Bool, excludedByAncestor: Bool) {
-        self.name = name
-        self.depth = depth
-        self.relativePath = relativePath
-        self.isExcluded = isExcluded
-        self.excludedByAncestor = excludedByAncestor
-    }
-}
-
-/// Flatten a `DirNode` skeleton into display rows, marking each folder excluded
-/// when it (or an ancestor) is in `ignoredFolders`. Pure: no I/O. The root node
-/// itself is NOT emitted (it's the project, never excludable); its children start
-/// at depth 0. Children are emitted depth-first in `DirNode.children` order (the
-/// scanner already sorts them by name), so the rows read as an indented tree.
-public func buildStatsTree(_ root: DirNode, ignoredFolders: Set<String>) -> [StatsTreeRow] {
-    var rows: [StatsTreeRow] = []
-    func walk(_ node: DirNode, depth: Int, ancestorExcluded: Bool) {
-        for child in node.children {
-            let selfExcluded = ignoredFolders.contains(child.relativePath)
-            let excluded = ancestorExcluded || selfExcluded
-            rows.append(StatsTreeRow(name: child.name, depth: depth,
-                                     relativePath: child.relativePath,
-                                     isExcluded: excluded,
-                                     excludedByAncestor: ancestorExcluded))
-            walk(child, depth: depth + 1, ancestorExcluded: excluded)
-        }
-    }
-    walk(root, depth: 0, ancestorExcluded: false)
-    return rows
 }
 
 // MARK: - Per-file directory tree (folders + files with summed LOC)
@@ -533,14 +457,16 @@ public func netLinesDelta(repo history: [RepoHistoryPoint], period: StatsPeriod,
 /// classified PER-DAY churn carried on each point. The classified fields are per-day
 /// (not cumulative), so we telescope them into a cumulative classified state and take
 /// the state difference across the window — equivalent to summing the per-day net
-/// (codeAdded − codeRemoved) over `(periodStart, now]`. This counts a churned line's NET
+/// (codeAdded − codeRemoved) over `[periodStart, now]`. This counts a churned line's NET
 /// effect once per day it changed; over the whole window it telescopes to the net code /
-/// data growth. Returns `(code, dataProse)` net line counts (may be negative).
+/// data growth. The window is INCLUSIVE on both ends (`[periodStart, now]`), matching
+/// `GitStatsService.delta`/`languageSplitDelta`. Returns `(code, dataProse)` net line
+/// counts (may be negative).
 public func netLinesDeltaByCategory(_ history: [CodeStatsPoint], period: StatsPeriod, now: Date)
     -> (code: Int, dataProse: Int) {
     let start = period.start(now: now)
     var codeNet = 0, dataNet = 0
-    for point in history where point.date > start && point.date <= now {
+    for point in history where point.date >= start && point.date <= now {
         codeNet += point.codeAdded - point.codeRemoved
         dataNet += point.dataAdded - point.dataRemoved
     }

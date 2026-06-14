@@ -100,9 +100,6 @@ public final class AppState: ObservableObject {
     /// alongside the aggregate by GitStatsService. Published for a LATER per-repo UI pass;
     /// the current screen reads only `codeStats`/`codeStatsHistory`.
     @Published public var repoStats: [UUID: [RepoStats]] = [:]
-    /// Per-project aggregate delta (added/removed/net/filesChanged) over the scan window,
-    /// summed across repos. Published for the later Totals up/down-triangle UI.
-    @Published public var codeStatsDelta: [UUID: RepoDelta] = [:]
     /// Per-project per-file list (project-root-relative path + classified line total +
     /// language), produced by the same scan that fills `codeStats`. Feeds the stats
     /// settings page's directory+file tree; honors the folder/.ignorestats exclusions.
@@ -287,7 +284,6 @@ public final class AppState: ObservableObject {
         codeStats.removeValue(forKey: id)
         codeStatsHistory.removeValue(forKey: id)
         repoStats.removeValue(forKey: id)
-        codeStatsDelta.removeValue(forKey: id)
         gitStatsCacheByProject.removeValue(forKey: id)
         statsStore.delete(projectID: id)
         if selectedProjectID == id {
@@ -1024,7 +1020,7 @@ extension AppState {
     private var statsStore: CodeStatsStore { CodeStatsStore(dir: statsStoreDir) }
 
     /// Scans the project's code per-GIT-REPO (GitStatsService), updates the aggregate
-    /// `codeStats`, the per-repo `repoStats`/`codeStatsDelta` breakdown, and overwrites
+    /// `codeStats`, the per-repo `repoStats` breakdown, and overwrites
     /// `codeStatsHistory` with the git-derived per-day series. Built like refreshUsage:
     /// the project's path, scan depth, excluded repos, and that project's git-stats
     /// cache are captured OFF the main actor in a `.utility` Task.detached; the git
@@ -1074,10 +1070,9 @@ extension AppState {
             statsRescanPending.remove(projectID)
             return
         }
-        // Aggregate feeds the existing screen; the per-repo breakdown + delta are new.
+        // Aggregate feeds the existing screen; the per-repo breakdown is new.
         codeStats[projectID] = result.stats.aggregate
         repoStats[projectID] = result.stats.repos
-        codeStatsDelta[projectID] = result.stats.aggregateDelta
         statsFiles[projectID] = result.stats.files
         gitStatsCacheByProject[projectID] = result.cache
 
@@ -1138,7 +1133,7 @@ extension AppState {
     }
 
     /// I/O-light directory skeleton for the exclusion picker (off the main actor —
-    /// it walks dirs but reads no files). `buildStatsTree` turns the result into rows.
+    /// it walks dirs but reads no files).
     public func statsDirectoryTree(projectID: UUID) async -> DirNode? {
         guard let project = config.projects.first(where: { $0.id == projectID }) else { return nil }
         let path = project.path

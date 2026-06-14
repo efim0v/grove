@@ -47,9 +47,8 @@ public struct CodeStats: Sendable, Equatable, Codable {
 /// A lightweight directory-tree skeleton: a folder's project-root-relative path,
 /// its leaf `name`, and its child directories (files are NOT modelled — only the
 /// folder structure the stats-exclusion tree needs). Emitted by
-/// `CodeStatsScanner.directoryTree` (the only I/O step); `buildStatsTree` then
-/// turns it into display rows with NO further filesystem access, so the tree
-/// marking stays pure and unit-testable. `relativePath` is "" for the root.
+/// `CodeStatsScanner.directoryTree` (the only I/O step). `relativePath` is "" for
+/// the root.
 public struct DirNode: Sendable, Equatable {
     public let name: String
     public let relativePath: String

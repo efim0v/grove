@@ -577,7 +577,7 @@ public enum SnapshotMode {
 
     /// A canned multi-language tally so the Stats tab renders bars + the per-language
     /// table + the totals header. `byLanguage` is sorted DESC by code, like the real
-    /// scanner; totals sum the languages so statsTotals' percentage is consistent.
+    /// scanner; totals sum the languages so the code/data percentage is consistent.
     static func fixtureCodeStats(now: Date) -> CodeStats {
         let langs = [
             LanguageStats(language: "Swift", files: 142, code: 18_420, comment: 3_180, blank: 2_640, total: 24_240),

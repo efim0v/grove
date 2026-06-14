@@ -65,7 +65,7 @@ final class CodeStatsRenderTests: XCTestCase {
             .environment(\.isSnapshotRender, false)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 1
-        _ = renderer.cgImage   // forces body eval, incl. the live churn-scroller strip
+        _ = renderer.cgImage   // forces body eval, incl. the live cumulative chart (ScrollView strip)
     }
 
     /// The per-repo blocks render: the fixture seeds two repos, so the snapshot
