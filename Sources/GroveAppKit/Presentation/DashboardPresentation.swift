@@ -35,7 +35,7 @@ private func trim(_ v: Double) -> String {
 
 /// One limit bar. Color grades by REMAINING capacity (reuses `CapacityLevel`).
 public struct LimitCard: Equatable, Sendable {
-    public enum Window: String, Equatable, Sendable { case fiveHour, weekly }
+    public enum Window: String, Equatable, Sendable { case fiveHour, weekly, weeklySonnet }
     public let window: Window
     public let title: String
     public let systemImage: String
@@ -46,14 +46,21 @@ public struct LimitCard: Equatable, Sendable {
     public let note: String               // "On track" / "limit close" / "no data"
     public let noteIsWarning: Bool
     public let hasData: Bool
+    /// 5-hour session trend (nil for other cards / no history): the average and
+    /// previous peak across completed 5h sessions, for the "vs avg" delta.
+    public let averagePercent: Double?
+    public let previousPercent: Double?
 
     public init(window: Window, title: String, systemImage: String,
-                usedPercentage: Double, resetsAt: String?, hasData: Bool, now: Date) {
+                usedPercentage: Double, resetsAt: String?, hasData: Bool, now: Date,
+                averagePercent: Double? = nil, previousPercent: Double? = nil) {
         self.window = window
         self.title = title
         self.systemImage = systemImage
         self.usedPercentage = hasData ? usedPercentage : 0
         self.hasData = hasData
+        self.averagePercent = averagePercent
+        self.previousPercent = previousPercent
         let remaining = max(0, 1 - usedPercentage / 100)
         self.level = !hasData ? .noData
             : (remaining > 0.5 ? .plenty : (remaining > 0.1 ? .tight : .critical))
@@ -222,11 +229,32 @@ public struct DashboardColumn: Equatable, Sendable, Identifiable {
     public let title: String
     public let fiveHour: LimitCard
     public let weekly: LimitCard
+    /// 7-day Sonnet limit (reference's "Weekly Sonnet"). Rendered only when it has
+    /// data — its source (OAuth) may be unavailable.
+    public let weeklySonnet: LimitCard
     public let daily: [DailyUsageBar]
     public let models: [ModelShare]
     public let tokens: [TokenRow]
     public let costToday: Double
     public let costMonth: Double
+}
+
+/// 5-hour session trend from the capture history: the average and previous PEAK
+/// used-% across COMPLETED 5h sessions (windows whose reset is already past).
+/// Captures are grouped by their reset instant (rounded to 10 min to absorb
+/// epoch-vs-ISO formatting differences between statusline and OAuth sources).
+public func fiveHourSessionTrend(_ snapshots: [UsageSnapshot], now: Date)
+    -> (previous: Double?, average: Double?) {
+    var peakByWindow: [Int: (reset: Date, peak: Double)] = [:]
+    for snap in snapshots {
+        guard let w = snap.fiveHour, let raw = w.resetsAt, let reset = parseISODate(raw) else { continue }
+        let bucket = Int((reset.timeIntervalSince1970 / 600).rounded())
+        peakByWindow[bucket] = (reset, max(peakByWindow[bucket]?.peak ?? 0, w.usedPercentage))
+    }
+    let completed = peakByWindow.values.filter { $0.reset <= now }.sorted { $0.reset < $1.reset }
+    guard !completed.isEmpty else { return (nil, nil) }
+    let average = completed.map(\.peak).reduce(0, +) / Double(completed.count)
+    return (completed.last?.peak, average)
 }
 
 /// Most-recent capture of an account's snapshot list (by capturedAt).
@@ -239,16 +267,23 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
                              snapshots: [UsageSnapshot], now: Date) -> DashboardColumn {
     let fh = currentWindow(snapshots, { $0.fiveHour }, now: now)
     let wk = currentWindow(snapshots, { $0.sevenDay }, now: now)
+    let sonnet = currentWindow(snapshots, { $0.sevenDaySonnet }, now: now)
+    let trend = fiveHourSessionTrend(snapshots, now: now)
     let five = LimitCard(window: .fiveHour, title: "5-Hour Session", systemImage: "clock",
                          usedPercentage: fh?.usedPercentage ?? 0, resetsAt: fh?.resetsAt,
-                         hasData: fh != nil, now: now)
+                         hasData: fh != nil, now: now,
+                         averagePercent: trend.average, previousPercent: trend.previous)
     let weekly = LimitCard(window: .weekly, title: "Weekly Limit", systemImage: "calendar",
                            usedPercentage: wk?.usedPercentage ?? 0, resetsAt: wk?.resetsAt,
                            hasData: wk != nil, now: now)
+    let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "calendar.badge.clock",
+                                 usedPercentage: sonnet?.usedPercentage ?? 0, resetsAt: sonnet?.resetsAt,
+                                 hasData: sonnet != nil, now: now)
     return DashboardColumn(
         title: name,
         fiveHour: five,
         weekly: weekly,
+        weeklySonnet: weeklySonnet,
         daily: dailyUsageBars(analytics?.daily ?? [], now: now),
         models: modelShares(analytics?.sessions ?? [:]),
         tokens: tokenRows(today: analytics?.today ?? UsageTotals(),
@@ -263,20 +298,28 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
                              snapshotsByAccount: [String: [UsageSnapshot]],
                              aggregateFiveHour: RateLimitModel.Aggregate,
                              aggregateWeekly: RateLimitModel.Aggregate,
+                             aggregateSonnet: RateLimitModel.Aggregate,
                              now: Date) -> DashboardColumn {
     let allCaptures = snapshotsByAccount.values.flatMap { $0 }
     // Aggregate limit "used%" = 1 - tier-weighted remaining fraction.
     let fiveUsed = aggregateFiveHour.total > 0 ? (1 - aggregateFiveHour.fraction) * 100 : 0
     let weeklyUsed = aggregateWeekly.total > 0 ? (1 - aggregateWeekly.fraction) * 100 : 0
+    let sonnetUsed = aggregateSonnet.total > 0 ? (1 - aggregateSonnet.fraction) * 100 : 0
     // Soonest reset across accounts for each window (most urgent shown).
     let fiveReset = soonestReset(allCaptures.compactMap { $0.fiveHour }, now: now)
     let weeklyReset = soonestReset(allCaptures.compactMap { $0.sevenDay }, now: now)
+    let sonnetReset = soonestReset(allCaptures.compactMap { $0.sevenDaySonnet }, now: now)
+    let trend = fiveHourSessionTrend(allCaptures, now: now)
     let five = LimitCard(window: .fiveHour, title: "5-Hour Session", systemImage: "clock",
                          usedPercentage: fiveUsed, resetsAt: fiveReset,
-                         hasData: aggregateFiveHour.total > 0, now: now)
+                         hasData: aggregateFiveHour.total > 0, now: now,
+                         averagePercent: trend.average, previousPercent: trend.previous)
     let weekly = LimitCard(window: .weekly, title: "Weekly Limit", systemImage: "calendar",
                            usedPercentage: weeklyUsed, resetsAt: weeklyReset,
                            hasData: aggregateWeekly.total > 0, now: now)
+    let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "calendar.badge.clock",
+                                 usedPercentage: sonnetUsed, resetsAt: sonnetReset,
+                                 hasData: aggregateSonnet.total > 0, now: now)
 
     let mergedDaily = mergeDailyUsage(analyticsByAccount.values.map { $0.daily })
     var allSessions: [String: SessionUsage] = [:]
@@ -288,6 +331,7 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
         title: "Overall",
         fiveHour: five,
         weekly: weekly,
+        weeklySonnet: weeklySonnet,
         daily: dailyUsageBars(mergedDaily, now: now),
         models: modelShares(allSessions),
         tokens: tokenRows(today: today, thisMonth: month),

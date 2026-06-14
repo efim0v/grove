@@ -14,36 +14,25 @@ extension EnvironmentValues {
     }
 }
 
-/// Card chrome used across the app: Liquid Glass over a dark translucent fill
-/// ("darkened screens inside a glass window", spec §6). The dark fill sits
-/// closest to the content; .glassEffect supplies the glass material behind it.
-/// In snapshot mode the glass is replaced by a hairline border so the card —
-/// and everything inside it — stays visible to the agent reading the PNG.
-/// Corners follow the Apple 26 system (DesignRadius.card, continuous), and the
-/// card declares itself as the container shape so nested ConcentricRectangle
-/// elements (repo chips etc.) resolve concentric radii against it.
+/// Card chrome used across the app: a GRAY translucent substrate floating on the
+/// window's transparent Liquid Glass. The glass is the WINDOW (set on the panel);
+/// the content blocks are these neutral gray cards with a pronounced Apple-26
+/// continuous radius and a hairline top-edge highlight. A plain fill (not
+/// .glassEffect) keeps the card — and everything inside it — visible both live and
+/// in the offscreen snapshot renderer. The card declares itself the container
+/// shape so nested ConcentricRectangle elements resolve concentric radii against it.
 public struct GlassCard: ViewModifier {
-    @Environment(\.isSnapshotRender) private var isSnapshotRender
-
     public init() {}
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: DesignRadius.card, style: .continuous)
     }
 
-    @ViewBuilder
     public func body(content: Content) -> some View {
-        if isSnapshotRender {
-            content
-                .background(.white.opacity(0.06), in: shape)
-                .overlay(shape.strokeBorder(.white.opacity(0.15)))
-                .containerShape(shape)
-        } else {
-            content
-                .background(.black.opacity(0.28), in: shape)
-                .glassEffect(.regular, in: shape)
-                .containerShape(shape)
-        }
+        content
+            .background(Color(white: 0.20).opacity(0.78), in: shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.10)))
+            .containerShape(shape)
     }
 }
 

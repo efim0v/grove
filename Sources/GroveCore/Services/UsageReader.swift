@@ -26,11 +26,15 @@ public struct UsageSnapshot: Sendable, Equatable {
     public let totalCostUSD: Double?
     public let fiveHour: CapturedWindow?
     public let sevenDay: CapturedWindow?
+    /// 7-day Sonnet-specific window. The statusline never emits it; it's populated
+    /// from Anthropic's OAuth usage API (seven_day_sonnet). nil when unavailable.
+    public let sevenDaySonnet: CapturedWindow?
     // Public init so cross-module callers/tests can construct a snapshot directly.
     public init(accountName: String, sessionId: String, capturedAt: Date?, cwd: String?,
                 modelId: String?, modelDisplayName: String?, effort: String?,
                 contextUsedPercentage: Double?, totalInputTokens: Int?, totalCostUSD: Double?,
-                fiveHour: CapturedWindow?, sevenDay: CapturedWindow?) {
+                fiveHour: CapturedWindow?, sevenDay: CapturedWindow?,
+                sevenDaySonnet: CapturedWindow? = nil) {
         self.accountName = accountName
         self.sessionId = sessionId
         self.capturedAt = capturedAt
@@ -43,6 +47,7 @@ public struct UsageSnapshot: Sendable, Equatable {
         self.totalCostUSD = totalCostUSD
         self.fiveHour = fiveHour
         self.sevenDay = sevenDay
+        self.sevenDaySonnet = sevenDaySonnet
     }
 }
 
@@ -85,6 +90,7 @@ public struct UsageReader: Sendable {
             let rateLimits = raw["rate_limits"] as? [String: Any]
             let fiveHour = Self.window(rateLimits?["five_hour"] as? [String: Any])
             let sevenDay = Self.window(rateLimits?["seven_day"] as? [String: Any])
+            let sevenDaySonnet = Self.window(rateLimits?["seven_day_sonnet"] as? [String: Any])
 
             snapshots.append(UsageSnapshot(
                 accountName: accountName,
@@ -98,7 +104,8 @@ public struct UsageReader: Sendable {
                 totalInputTokens: totalInputTokens,
                 totalCostUSD: totalCostUSD,
                 fiveHour: fiveHour,
-                sevenDay: sevenDay))
+                sevenDay: sevenDay,
+                sevenDaySonnet: sevenDaySonnet))
         }
         return snapshots.sorted { $0.sessionId < $1.sessionId }
     }

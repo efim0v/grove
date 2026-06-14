@@ -155,13 +155,11 @@ final class AppStateGapTests: XCTestCase {
                        5 * 0.78, accuracy: 1e-9)
     }
 
-    func testRefreshUsageSkipsOAuthWhenStatuslineAlreadyHasLimits() async throws {
+    func testRefreshUsagePrefersOAuthOverStatuslineAndKeepsHistory() async throws {
         let s = state()
-        let dir = try FixtureLite.tempDir("oauth-skip")
+        let dir = try FixtureLite.tempDir("oauth-primary")
         let now = Date(timeIntervalSince1970: 1_750_000_000)
-        // Seed a REAL statusline capture on disk so the refresh's file read yields a
-        // fresh 5h window (refreshUsage rebuilds snaps from disk, so an in-memory
-        // seed wouldn't survive — the capture must exist as a file).
+        // Seed a REAL statusline capture on disk (the refresh rebuilds snaps from disk).
         let usageDir = dir.appendingPathComponent("grove/usage")
         try FileManager.default.createDirectory(at: usageDir, withIntermediateDirectories: true)
         let resets = ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))
@@ -172,11 +170,23 @@ final class AppStateGapTests: XCTestCase {
         """
         try capture.write(to: usageDir.appendingPathComponent("c.json"), atomically: true, encoding: .utf8)
         s.config.accounts = [AccountConfig(name: "default", configDir: dir.path)]
+        // OAuth is now ALWAYS consulted (it's the only source of the Sonnet window).
         var oauthCalled = false
-        s.oauthLimitsOverride = { _, _ in oauthCalled = true; return nil }
+        s.oauthLimitsOverride = { _, _ in
+            oauthCalled = true
+            return OAuthUsage(fiveHour: OAuthWindow(utilization: 12, resetsAt: resets),
+                              sevenDay: OAuthWindow(utilization: 5, resetsAt: resets),
+                              sevenDaySonnet: OAuthWindow(utilization: 8, resetsAt: resets),
+                              sevenDayOpus: nil)
+        }
         await s.refreshUsage(now: now)
-        XCTAssertFalse(oauthCalled, "statusline already supplies limits → no OAuth fetch")
-        XCTAssertEqual(s.snapshotsByAccount["default"]?.first?.fiveHour?.usedPercentage, 30)
+        XCTAssertTrue(oauthCalled, "OAuth is fetched for every account (Sonnet source)")
+        let snaps = s.snapshotsByAccount["default"] ?? []
+        // The statusline capture is kept (history) AND the OAuth capture is appended.
+        XCTAssertTrue(snaps.contains { $0.fiveHour?.usedPercentage == 30 }, "statusline capture kept")
+        XCTAssertTrue(snaps.contains { $0.sevenDaySonnet?.usedPercentage == 8 }, "OAuth Sonnet folded in")
+        // currentWindow prefers the latest (OAuth) capture for the live 5h reading.
+        XCTAssertEqual(currentWindow(snaps, { $0.sevenDaySonnet }, now: now)?.usedPercentage, 8)
     }
 
     func testInstallAndDisableMonitoringToggleFlag() throws {

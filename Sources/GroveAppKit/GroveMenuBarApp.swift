@@ -124,11 +124,14 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // isOpaque=false + clear bg makes the window-server shadow follow the rounded
         // shape; invalidateShadow() on resize keeps it in sync.
         let radius = DesignRadius.panel
+        // Real Liquid Glass for the window itself — transparent, refractive (not a
+        // flat blur). The content sits on this glass; gray cards (GlassCard) provide
+        // the content surfaces. Live-only path (snapshots render RootView directly).
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         let chrome = AnyView(RootView(state: state)
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(.white.opacity(0.08))))
+            .glassEffect(.regular, in: shape)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.12))))
         let h = NSHostingController(rootView: chrome)
         h.sizingOptions = [.preferredContentSize]
         p.contentViewController = h
@@ -171,12 +174,12 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         p.delegate = self
         let radius = DesignRadius.panel
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         let chrome = AnyView(ChartsSideContent(state: state)
             .frame(maxHeight: 820)
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(.white.opacity(0.08))))
+            .glassEffect(.regular, in: shape)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.12))))
         let h = NSHostingController(rootView: chrome)
         h.sizingOptions = [.preferredContentSize]
         p.contentViewController = h

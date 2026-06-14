@@ -192,10 +192,11 @@ final class DashboardPresentationTests: XCTestCase {
         let column = overallDashboard(
             analyticsByAccount: ["a": analytics],
             snapshotsByAccount: ["a": [snap(captured: now, five: CapturedWindow(usedPercentage: 25, resetsAt: nil))]],
-            aggregateFiveHour: aggregate, aggregateWeekly: aggregate, now: now)
+            aggregateFiveHour: aggregate, aggregateWeekly: aggregate, aggregateSonnet: aggregate, now: now)
         XCTAssertEqual(column.title, "Overall")
         XCTAssertEqual(column.fiveHour.usedPercentage, 25, accuracy: 1e-9)
         XCTAssertTrue(column.fiveHour.hasData)
+        XCTAssertTrue(column.weeklySonnet.hasData)
         XCTAssertEqual(column.tokens[0].input, 100)    // today summed
         XCTAssertEqual(column.costToday, 2, accuracy: 1e-9)
         XCTAssertEqual(column.models.first?.model, "opus")
@@ -204,9 +205,37 @@ final class DashboardPresentationTests: XCTestCase {
     func testOverallDashboardNoDataIsNeutral() {
         let empty = RateLimitModel.Aggregate(remaining: 0, total: 0)
         let column = overallDashboard(analyticsByAccount: [:], snapshotsByAccount: [:],
-                                      aggregateFiveHour: empty, aggregateWeekly: empty, now: now)
+                                      aggregateFiveHour: empty, aggregateWeekly: empty,
+                                      aggregateSonnet: empty, now: now)
         XCTAssertEqual(column.fiveHour.level, .noData)
         XCTAssertFalse(column.weekly.hasData)
+        XCTAssertFalse(column.weeklySonnet.hasData)
+    }
+
+    func testFiveHourSessionTrendAveragesCompletedSessionsOnly() {
+        let iso = ISO8601DateFormatter()
+        let recentPast = iso.string(from: now.addingTimeInterval(-3 * 3_600))
+        let olderPast = iso.string(from: now.addingTimeInterval(-9 * 3_600))
+        let future = iso.string(from: now.addingTimeInterval(3_600))
+        let snaps = [
+            // two captures in the SAME completed window → peak (50) wins
+            snap(captured: now.addingTimeInterval(-3 * 3_600), five: CapturedWindow(usedPercentage: 30, resetsAt: recentPast)),
+            snap(captured: now.addingTimeInterval(-3 * 3_600), five: CapturedWindow(usedPercentage: 50, resetsAt: recentPast)),
+            snap(captured: now.addingTimeInterval(-9 * 3_600), five: CapturedWindow(usedPercentage: 40, resetsAt: olderPast)),
+            // current window (reset in the future) is EXCLUDED from the trend
+            snap(captured: now, five: CapturedWindow(usedPercentage: 99, resetsAt: future)),
+        ]
+        let trend = fiveHourSessionTrend(snaps, now: now)
+        XCTAssertEqual(trend.average ?? 0, 45, accuracy: 1e-9)   // (50 + 40) / 2
+        XCTAssertEqual(trend.previous, 50)                        // latest completed window's peak
+    }
+
+    func testFiveHourSessionTrendEmptyWhenNoCompletedWindows() {
+        let future = ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))
+        let trend = fiveHourSessionTrend(
+            [snap(captured: now, five: CapturedWindow(usedPercentage: 20, resetsAt: future))], now: now)
+        XCTAssertNil(trend.average)
+        XCTAssertNil(trend.previous)
     }
 
     func testSoonestResetPicksNearestFuture() {

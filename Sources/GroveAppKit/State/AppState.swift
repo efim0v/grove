@@ -693,7 +693,16 @@ extension AppState {
                 .appendingPathComponent("Grove/bin").path
     }
 
-    public enum LimitWindow { case fiveHour, sevenDay }
+    public enum LimitWindow { case fiveHour, sevenDay, sevenDaySonnet }
+
+    /// Selects a window from a snapshot for the given `LimitWindow`.
+    static func pick(_ window: LimitWindow) -> (UsageSnapshot) -> CapturedWindow? {
+        switch window {
+        case .fiveHour:       return { $0.fiveHour }
+        case .sevenDay:       return { $0.sevenDay }
+        case .sevenDaySonnet: return { $0.sevenDaySonnet }
+        }
+    }
 
     /// Reads capture snapshots + analytics across accounts (called on the scan tick).
     /// `now` injected; defaults to Date() ONLY at the production call site.
@@ -721,18 +730,14 @@ extension AppState {
             return (snaps, byAcc)
         }.value
         var snaps = result.snaps
-        // OAuth fallback (item 1.3): accounts whose statusline emitted no fresh
-        // limit window get their limits from Anthropic's usage API — e.g. a
-        // lightly-used custom account whose limits show on anthropic.com but never
-        // reach the local statusline. The default account (statusline present) is
-        // skipped, so no extra network call or Keychain prompt for it.
+        // OAuth limits from Anthropic's usage API, folded in as the latest capture
+        // for EVERY account. This is the authoritative source AND the only one that
+        // carries the 7-day Sonnet window (the statusline emits only five_hour /
+        // seven_day). Cached ≥3min in the client, so this is at most one request
+        // per account per few minutes; failures fall back to the statusline captures.
         let provider: @Sendable (String, Date) async -> OAuthUsage? =
             oauthLimitsOverride ?? { [oauthClient] dir, now in try? await oauthClient.usage(configDir: dir, now: now) }
         for job in jobs {
-            let existing = snaps[job.name] ?? []
-            let hasStatuslineLimits = currentWindow(existing, { $0.fiveHour }, now: now) != nil
-                || currentWindow(existing, { $0.sevenDay }, now: now) != nil
-            if hasStatuslineLimits { continue }
             guard let usage = await provider(job.dir, now),
                   let snap = Self.oauthSnapshot(accountName: job.name, usage: usage, now: now) else { continue }
             snaps[job.name, default: []].append(snap)
@@ -754,11 +759,12 @@ extension AppState {
         }
         let five = window(usage.fiveHour)
         let seven = window(usage.sevenDay)
-        guard five != nil || seven != nil else { return nil }
+        let sonnet = window(usage.sevenDaySonnet)
+        guard five != nil || seven != nil || sonnet != nil else { return nil }
         return UsageSnapshot(accountName: accountName, sessionId: "oauth", capturedAt: now, cwd: nil,
                              modelId: nil, modelDisplayName: nil, effort: nil,
                              contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
-                             fiveHour: five, sevenDay: seven)
+                             fiveHour: five, sevenDay: seven, sevenDaySonnet: sonnet)
     }
 
     private func tier(for account: AccountConfig) -> String? {
@@ -780,7 +786,7 @@ extension AppState {
     public func aggregateRemaining(window: LimitWindow, now: Date) -> RateLimitModel.Aggregate {
         let accounts: [RateLimitModel.AccountWindow] = config.accounts.compactMap { account in
             let snaps = snapshotsByAccount[account.name] ?? []
-            let captured = currentWindow(snaps, { window == .fiveHour ? $0.fiveHour : $0.sevenDay }, now: now)
+            let captured = currentWindow(snaps, Self.pick(window), now: now)
             guard let used = captured?.usedPercentage else { return nil }
             return RateLimitModel.AccountWindow(tier: tier(for: account), usedPercentage: used)
         }
@@ -795,7 +801,7 @@ extension AppState {
     public func aggregateReset(window: LimitWindow, now: Date) -> Date? {
         let windows: [CapturedWindow] = config.accounts.compactMap { account in
             let snaps = snapshotsByAccount[account.name] ?? []
-            return currentWindow(snaps, { window == .fiveHour ? $0.fiveHour : $0.sevenDay }, now: now)
+            return currentWindow(snaps, Self.pick(window), now: now)
         }
         return soonestReset(windows, now: now).flatMap(parseISODate)
     }

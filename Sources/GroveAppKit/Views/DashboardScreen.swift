@@ -28,6 +28,7 @@ struct DashboardScreen: View {
             snapshotsByAccount: state.snapshotsByAccount,
             aggregateFiveHour: state.aggregateRemaining(window: .fiveHour, now: now),
             aggregateWeekly: state.aggregateRemaining(window: .sevenDay, now: now),
+            aggregateSonnet: state.aggregateRemaining(window: .sevenDaySonnet, now: now),
             now: now)
         return [overall] + perAccount
     }
@@ -39,11 +40,11 @@ struct DashboardScreen: View {
         } else {
             let index = min(max(state.chartsScopeIndex, 0), cols.count - 1)
             // Sizes to the cards' natural height (no scroll); the panel grows to fit.
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 switcher(scopes: cols, index: index)
                 DashboardColumnView(column: cols[index], isSnapshotRender: isSnapshotRender)
             }
-            .padding(12)
+            .padding(8)
             .frame(maxWidth: .infinity)
         }
     }
@@ -116,9 +117,12 @@ struct DashboardColumnView: View {
     let isSnapshotRender: Bool
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             LimitCardView(card: column.fiveHour)
             LimitCardView(card: column.weekly)
+            if column.weeklySonnet.hasData {
+                LimitCardView(card: column.weeklySonnet)
+            }
             DailyUsageCardView(bars: column.daily, isSnapshotRender: isSnapshotRender)
             TokenUsageCardView(rows: column.tokens, models: column.models)
         }
@@ -131,10 +135,12 @@ struct LimitCardView: View {
     let card: LimitCard
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
+                // Smaller title (caption-sized, like "Resets in" but full opacity).
                 Label(card.title, systemImage: card.systemImage)
-                    .font(.callout.weight(.semibold))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
                     .labelStyle(.titleAndIcon)
                 Spacer()
                 Text("\(Int(card.usedPercentage.rounded()))%")
@@ -143,7 +149,7 @@ struct LimitCardView: View {
                     .monospacedDigit()
             }
             ProgressBar(fraction: card.usedPercentage / 100, color: levelColor(card.level))
-                .frame(height: 9)
+                .frame(height: 5)
             HStack(spacing: 6) {
                 Text(resetText)
                     .font(.caption)
@@ -155,9 +161,31 @@ struct LimitCardView: View {
                     .foregroundStyle(noteColor)
                     .fixedSize()
             }
+            sessionTrend
         }
-        .padding(12)
+        .padding(10)
         .glassCard()
+    }
+
+    /// 5-hour card only: how this session compares to your recent ones — the
+    /// average and previous session peaks, plus the signed delta vs the average.
+    @ViewBuilder private var sessionTrend: some View {
+        if let avg = card.averagePercent {
+            HStack(spacing: 6) {
+                Text("avg \(Int(avg.rounded()))%")
+                    .foregroundStyle(.secondary)
+                if let prev = card.previousPercent {
+                    Text("· prev \(Int(prev.rounded()))%").foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 6)
+                let delta = card.usedPercentage - avg
+                Text("\(delta >= 0 ? "+" : "−")\(Int(abs(delta).rounded()))% vs avg")
+                    .foregroundStyle(delta <= 0 ? .green : .orange)
+                    .fixedSize()
+            }
+            .font(.caption2)
+            .monospacedDigit()
+        }
     }
 
     private var resetText: String {
@@ -215,7 +243,7 @@ struct DailyUsageCardView: View {
         Chart(bars) { bar in
             BarMark(x: .value("Day", bar.label),
                     y: .value("Tokens", bar.totalTokens),
-                    width: .ratio(0.6))
+                    width: .ratio(0.42))
                 .foregroundStyle(intensityColor(bar.intensity)
                     .opacity(hoverLabel == nil || hoverLabel == bar.label ? 1 : 0.4))
                 .cornerRadius(4)
@@ -247,7 +275,7 @@ struct DailyUsageCardView: View {
                 VStack(spacing: 4) {
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .fill(intensityColor(bar.intensity))
-                        .frame(height: max(2, CGFloat(bar.totalTokens) / CGFloat(maxTokens) * 70))
+                        .frame(width: 13, height: max(2, CGFloat(bar.totalTokens) / CGFloat(maxTokens) * 70))
                     Text(bar.label).font(.system(size: 8)).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .bottom)

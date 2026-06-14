@@ -43,6 +43,7 @@ final class DashboardRenderTests: XCTestCase {
             snapshotsByAccount: state.snapshotsByAccount,
             aggregateFiveHour: state.aggregateRemaining(window: .fiveHour, now: now),
             aggregateWeekly: state.aggregateRemaining(window: .sevenDay, now: now),
+            aggregateSonnet: state.aggregateRemaining(window: .sevenDaySonnet, now: now),
             now: now)
         // isSnapshotRender:false -> the real Chart {} expressions execute.
         render(DashboardColumnView(column: overall, isSnapshotRender: false))
@@ -53,7 +54,8 @@ final class DashboardRenderTests: XCTestCase {
     func testDashboardColumnHandlesEmptyData() {
         let empty = RateLimitModel.Aggregate(remaining: 0, total: 0)
         let column = overallDashboard(analyticsByAccount: [:], snapshotsByAccount: [:],
-                                      aggregateFiveHour: empty, aggregateWeekly: empty, now: Date())
+                                      aggregateFiveHour: empty, aggregateWeekly: empty,
+                                      aggregateSonnet: empty, now: Date())
         // Exercises the "no data" / "not enough captures" / empty-bars branches.
         render(DashboardColumnView(column: column, isSnapshotRender: false))
         render(DashboardColumnView(column: column, isSnapshotRender: true))

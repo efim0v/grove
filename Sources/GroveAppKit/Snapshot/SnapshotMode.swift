@@ -56,7 +56,7 @@ public enum SnapshotMode {
         var size: CGSize {
             switch self {
             case .projects: return CGSize(width: 460, height: 520)
-            case .charts: return CGSize(width: 290, height: 720)
+            case .charts: return CGSize(width: 290, height: 800)
             case .rootWorkspaces, .workspacesExpanded, .graph, .sessions:
                 return CGSize(width: 760, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)
@@ -193,7 +193,19 @@ public enum SnapshotMode {
             effort: "high", contextUsedPercentage: 42,
             totalInputTokens: 184_300, totalCostUSD: 6.42,
             fiveHour: CapturedWindow(usedPercentage: 30, resetsAt: reset(2 * 3_600)),
-            sevenDay: CapturedWindow(usedPercentage: 45, resetsAt: reset(3 * 86_400)))
+            sevenDay: CapturedWindow(usedPercentage: 45, resetsAt: reset(3 * 86_400)),
+            sevenDaySonnet: CapturedWindow(usedPercentage: 22, resetsAt: reset(3 * 86_400)))
+        // Two COMPLETED 5h sessions (reset in the past) so the session-trend
+        // (avg/prev) renders: peaks 53% then 40% → avg 46%, prev 53%.
+        func histSnap(_ id: String, used: Double, resetAgo: TimeInterval) -> UsageSnapshot {
+            UsageSnapshot(accountName: "default", sessionId: id, capturedAt: now.addingTimeInterval(-resetAgo),
+                          cwd: nil, modelId: nil, modelDisplayName: nil, effort: nil,
+                          contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
+                          fiveHour: CapturedWindow(usedPercentage: used, resetsAt: reset(-resetAgo)),
+                          sevenDay: nil)
+        }
+        let hist = [histSnap("s-h1", used: 53, resetAgo: 5 * 3_600),
+                    histSnap("s-h2", used: 40, resetAgo: 10 * 3_600)]
         let workSnap = UsageSnapshot(
             accountName: "work", sessionId: "s-mu-1",
             capturedAt: now.addingTimeInterval(-120),
@@ -202,8 +214,9 @@ public enum SnapshotMode {
             effort: "medium", contextUsedPercentage: 18,
             totalInputTokens: 92_100, totalCostUSD: 1.87,
             fiveHour: CapturedWindow(usedPercentage: 70, resetsAt: reset(1 * 3_600)),
-            sevenDay: CapturedWindow(usedPercentage: 60, resetsAt: reset(4 * 86_400)))
-        return ["default": [defaultSnap], "work": [workSnap]]
+            sevenDay: CapturedWindow(usedPercentage: 60, resetsAt: reset(4 * 86_400)),
+            sevenDaySonnet: CapturedWindow(usedPercentage: 35, resetsAt: reset(4 * 86_400)))
+        return ["default": [defaultSnap] + hist, "work": [workSnap]]
     }
 
     /// 7 calendar-day token buckets with a reference-like profile (a couple of

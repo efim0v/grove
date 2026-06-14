@@ -22,13 +22,11 @@ public struct RootView: View {
             errorBanner
             routedScreen
         }
-        // The MenuBarExtra(.window) panel ALREADY wraps this content in the
-        // system's Liquid Glass chrome; the dark scrim implements "darkened
-        // screens inside a glass window". A root-level .glassEffect here would
-        // stack glass on glass and turn muddy, so the panel keeps the system
-        // material and only declares the Apple 26 container shape for
-        // concentric nesting underneath.
-        .background(.black.opacity(0.35))
+        // The panel supplies the transparent Liquid Glass backdrop; keep only a
+        // very faint scrim here so header/footer text stays legible over a bright
+        // desktop without darkening the glass (the content surfaces are the gray
+        // GlassCards). The container shape drives concentric nesting underneath.
+        .background(.black.opacity(0.12))
         .containerShape(.rect(cornerRadius: DesignRadius.panel, style: .continuous))
         // Keyed on isPanelOpen: the panel hides via orderOut (which does NOT
         // cancel a plain .task), so the loop must stop itself when the panel
