@@ -42,6 +42,7 @@ public enum SnapshotMode {
         case workspacesExpanded = "workspaces-expanded"
         case createSheet = "create-sheet"
         case graph = "graph"
+        case stats = "stats"
         case sessions = "sessions"
         case accounts = "accounts"
         case accountsUsage = "accounts-usage"
@@ -57,7 +58,7 @@ public enum SnapshotMode {
             switch self {
             case .projects: return CGSize(width: 460, height: 520)
             case .charts: return CGSize(width: 290, height: 800)
-            case .rootWorkspaces, .workspacesExpanded, .graph, .sessions:
+            case .rootWorkspaces, .workspacesExpanded, .graph, .stats, .sessions:
                 return CGSize(width: 760, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)
             case .accounts, .accountsUsage: return CGSize(width: 560, height: 480)
@@ -149,6 +150,13 @@ public enum SnapshotMode {
         // max_20x vs default_claude_max_20x mismatch.
         state.tierOverride = ["default": "default_claude_max_20x",
                               "work": "default_claude_max_5x"]
+
+        // Code-stats fixture (Stage 5): a canned CodeStats + a short history so the
+        // Stats tab renders the totals header, language bars/table, and the growth
+        // chart's MANUAL (non-Charts) fallback offscreen. The `.task` scan never runs
+        // in snapshot mode (routes are set directly), so these must be pre-seeded.
+        state.codeStats = [project.id: fixtureCodeStats(now: now)]
+        state.codeStatsHistory = [project.id: fixtureCodeStatsHistory(now: now)]
 
         // Projects-tab session previews (item 4): a running session mapped to a
         // cmux workspace (Go) and a waiting one (Resume).
@@ -554,6 +562,42 @@ public enum SnapshotMode {
         ]
     }
 
+    // MARK: - Code-stats fixture (consumed by CodeStatsScreen in Stage 5)
+
+    /// A canned multi-language tally so the Stats tab renders bars + the per-language
+    /// table + the totals header. `byLanguage` is sorted DESC by code, like the real
+    /// scanner; totals sum the languages so statsTotals' percentage is consistent.
+    static func fixtureCodeStats(now: Date) -> CodeStats {
+        let langs = [
+            LanguageStats(language: "Swift", files: 142, code: 18_420, comment: 3_180, blank: 2_640, total: 24_240),
+            LanguageStats(language: "TypeScript/JavaScript", files: 96, code: 11_900, comment: 1_540, blank: 1_810, total: 15_250),
+            LanguageStats(language: "Python", files: 38, code: 4_310, comment: 920, blank: 760, total: 5_990),
+            LanguageStats(language: "Shell", files: 14, code: 820, comment: 210, blank: 160, total: 1_190),
+            LanguageStats(language: "Markdown", files: 22, code: 1_640, comment: 0, blank: 480, total: 2_120),
+        ]
+        let code = langs.reduce(0) { $0 + $1.code }
+        let comment = langs.reduce(0) { $0 + $1.comment }
+        let blank = langs.reduce(0) { $0 + $1.blank }
+        let files = langs.reduce(0) { $0 + $1.files }
+        return CodeStats(totalFiles: files, totalLines: code + comment + blank,
+                         code: code, comment: comment, blank: blank,
+                         byLanguage: langs, scannedAt: now, skippedBinary: 9)
+    }
+
+    /// A short rising line history (oldest first) so the growth chart's manual
+    /// fallback draws a real upward curve offscreen.
+    static func fixtureCodeStatsHistory(now: Date) -> [CodeStatsPoint] {
+        func day(_ n: Double) -> Date { now.addingTimeInterval(-n * 86_400) }
+        let totals = [38_200, 39_100, 41_500, 44_900, 46_300, 48_790]
+        return totals.enumerated().map { i, total in
+            CodeStatsPoint(date: day(Double(totals.count - 1 - i) * 6),
+                           totalLines: total,
+                           code: Int(Double(total) * 0.79), comment: Int(Double(total) * 0.10),
+                           blank: Int(Double(total) * 0.11),
+                           totalFiles: 280 + i * 6)
+        }
+    }
+
     // MARK: - Identity fixture (consumed by AccountsScreen in Task 22)
 
     /// Deterministic identities for accounts.png: "default" is logged in,
@@ -600,6 +644,12 @@ public enum SnapshotMode {
             state.route = .createWorkspace(projectID)
         case .graph:
             state.selectedTab = .graph
+            state.route = .project(projectID)
+        case .stats:
+            // The fixture pre-seeds codeStats + codeStatsHistory, so the Stats tab
+            // renders the totals header, language bars/table, and the growth chart's
+            // manual (non-Charts) fallback offscreen.
+            state.selectedTab = .stats
             state.route = .project(projectID)
         case .sessions:
             state.selectedTab = .sessions

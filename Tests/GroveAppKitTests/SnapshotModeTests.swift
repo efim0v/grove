@@ -42,7 +42,7 @@ final class SnapshotModeTests: XCTestCase {
     func testScenesHaveContractFileNames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.allCases.map(\.fileName),
                        ["projects.png", "charts.png", "root-workspaces.png", "workspaces-expanded.png",
-                        "create-sheet.png", "graph.png", "sessions.png", "accounts.png",
+                        "create-sheet.png", "graph.png", "stats.png", "sessions.png", "accounts.png",
                         "accounts-usage.png", "settings.png", "error-banner.png"])
     }
 
@@ -62,6 +62,8 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertEqual(state(.workspacesExpanded).route, .project(projectID))
         XCTAssertEqual(state(.graph).route, .project(projectID))
         XCTAssertEqual(state(.graph).selectedTab, .graph)
+        XCTAssertEqual(state(.stats).route, .project(projectID))
+        XCTAssertEqual(state(.stats).selectedTab, .stats)
         XCTAssertEqual(state(.sessions).route, .project(projectID))
         XCTAssertEqual(state(.sessions).selectedTab, .sessions)
         XCTAssertEqual(state(.accounts).route, .accounts)
@@ -95,6 +97,7 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertEqual(SnapshotMode.SnapshotScene.rootWorkspaces.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.workspacesExpanded.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.graph.size, CGSize(width: 760, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.stats.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.sessions.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.createSheet.size, CGSize(width: 540, height: 560))
         XCTAssertEqual(SnapshotMode.SnapshotScene.accounts.size, CGSize(width: 560, height: 480))

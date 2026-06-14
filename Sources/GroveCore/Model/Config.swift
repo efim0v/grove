@@ -23,6 +23,10 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
     /// name and its workspaces so projects are easy to tell apart. nil = derive a
     /// stable default from the project id. Back-compat: absent from old JSON → nil.
     public var accentColor: String?
+    /// Project-root-relative folder paths excluded from code-stats scans (in
+    /// addition to `.gitignore` / `.ignorestats` and the always-skipped dirs).
+    /// Back-compat: absent from old JSON decodes to [] (see init(from:)).
+    public var statsIgnoredFolders: [String]
 
     public init(
         id: UUID = UUID(),
@@ -38,7 +42,8 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         seedFiles: [SeedFile] = [],
         defaultModel: String? = nil,
         defaultEffort: String? = nil,
-        accentColor: String? = nil
+        accentColor: String? = nil,
+        statsIgnoredFolders: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -54,12 +59,13 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         self.defaultModel = defaultModel
         self.defaultEffort = defaultEffort
         self.accentColor = accentColor
+        self.statsIgnoredFolders = statsIgnoredFolders
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, path, workspacesRoot, branchTemplate, baseBranchOverrides
         case postCreateHooks, excludedRepos, scanDepth, defaultAccount, seedFiles
-        case defaultModel, defaultEffort, accentColor
+        case defaultModel, defaultEffort, accentColor, statsIgnoredFolders
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,6 +84,7 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         defaultModel = try c.decodeIfPresent(String.self, forKey: .defaultModel)
         defaultEffort = try c.decodeIfPresent(String.self, forKey: .defaultEffort)
         accentColor = try c.decodeIfPresent(String.self, forKey: .accentColor)
+        statsIgnoredFolders = try c.decodeIfPresent([String].self, forKey: .statsIgnoredFolders) ?? []
     }
 }
 

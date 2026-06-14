@@ -122,6 +122,7 @@ struct ProjectScreen: View {
         switch state.selectedTab {
         case .workspaces: WorkspacesScreen(state: state)
         case .graph: GraphScreen(state: state)
+        case .stats: CodeStatsScreen(state: state)
         case .sessions: SessionsScreen(state: state)
         }
     }

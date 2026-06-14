@@ -14,6 +14,8 @@ final class ConfigDecodeTests: XCTestCase {
         XCTAssertNil(p.defaultAccount)
         XCTAssertNil(p.defaultModel)
         XCTAssertNil(p.defaultEffort)
+        XCTAssertEqual(p.statsIgnoredFolders, [],
+                       "statsIgnoredFolders must decode to [] when absent from old JSON")
     }
 
     func testMinimalAccountAndConfigDecodeToDefaults() throws {
@@ -36,7 +38,8 @@ final class ConfigDecodeTests: XCTestCase {
             baseBranchOverrides: ["r": "dev"], postCreateHooks: ["r": "make"], excludedRepos: ["x"],
             scanDepth: 2, defaultAccount: "work",
             seedFiles: [SeedFile(source: "CLAUDE.md", mode: .copy, dest: .eachRepo)],
-            defaultModel: "m", defaultEffort: "high")
+            defaultModel: "m", defaultEffort: "high",
+            statsIgnoredFolders: ["vendor", "src/generated"])
         let cfg = GroveConfig(
             version: 1, workspacesRootTemplate: "~/W/{project}", projects: [project],
             accounts: [AccountConfig(name: "work", configDir: "~/.x", sharedStore: true,

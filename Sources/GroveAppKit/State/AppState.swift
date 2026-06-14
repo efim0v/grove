@@ -8,14 +8,16 @@ import GroveCore
 public enum MainTab: String, CaseIterable {
     case workspaces
     case graph
+    case stats
     case sessions
 
     /// Tab-strip label. `sessions` reads "Claude" (the strip is
-    /// Workspaces | Graph | Claude).
+    /// Workspaces | Graph | Stats | Claude).
     public var label: String {
         switch self {
         case .workspaces: return "Workspaces"
         case .graph: return "Graph"
+        case .stats: return "Stats"
         case .sessions: return "Claude"
         }
     }
@@ -77,6 +79,15 @@ public final class AppState: ObservableObject {
     /// Branch pickers fall back to the resolved default while a repo is absent.
     @Published public var branchesByRepo: [String: [String]] = [:]
 
+    /// Per-project code-stats snapshot (Stage 4), filled lazily by refreshCodeStats
+    /// from the stats screen's .task (NOT the global refresh). Empty until scanned.
+    @Published public var codeStats: [UUID: CodeStats] = [:]
+    /// Per-project code-stats history (the "lines over time" series), loaded from the
+    /// stats store and grown by each refreshCodeStats append.
+    @Published public var codeStatsHistory: [UUID: [CodeStatsPoint]] = [:]
+    /// True only while a code-stats scan is in flight (drives the screen's spinner).
+    @Published public var isStatsScanning: Bool = false
+
     private let configStore: ConfigStore
 
     /// Persistent service instances. Their mtime parse-caches MUST survive across
@@ -84,6 +95,15 @@ public final class AppState: ObservableObject {
     /// re-parsed every transcript from scratch on the 15s loop (item 2 perf bug).
     private let claude = ClaudeService()
     private let usageAnalytics = UsageAnalytics()
+
+    /// Persistent code-stats scanner; the per-project mtime/size cache below must
+    /// survive across refreshes so steady-state scans only re-read changed files.
+    private let statsScanner = CodeStatsScanner()
+    /// Per-project file classification cache, keyed by project UUID then absolute
+    /// file path. Mutated only on the main actor (the detached scan takes a COPY of
+    /// the relevant project's cache and returns the updated one — same pattern as
+    /// refreshUsage's off-main work).
+    private var statsCacheByProject: [UUID: [String: CachedFile]] = [:]
 
     /// Test seam: when set, every cmux interaction uses this service instead of
     /// a real `CmuxService()` (which would resolve and invoke the real cmux
@@ -111,6 +131,11 @@ public final class AppState: ObservableObject {
     /// into. nil = the real ~/Library/Application Support/Grove/bin. TESTS set a
     /// temp dir so install never writes under the real app-support tree.
     internal var statuslineScriptDirOverride: String?
+
+    /// Test seam: the directory the per-project code-stats history files live in.
+    /// nil = the real ~/Library/Application Support/Grove/stats. TESTS set a temp
+    /// dir so history persistence never writes under the real app-support tree.
+    internal var statsStoreDirOverride: String?
 
     /// Test seam: account tiers (organizationRateLimitTier). nil = read from each
     /// account's .claude.json oauthAccount. TESTS inject so aggregate math is hermetic.
@@ -218,6 +243,12 @@ public final class AppState: ObservableObject {
     public func removeProject(id: UUID) {
         config.projects.removeAll { $0.id == id }
         snapshots.removeValue(forKey: id)
+        // Drop all per-project code-stats state and delete its history file so a
+        // re-added project at the same path starts clean (the UUID differs anyway).
+        codeStats.removeValue(forKey: id)
+        codeStatsHistory.removeValue(forKey: id)
+        statsCacheByProject.removeValue(forKey: id)
+        statsStore.delete(projectID: id)
         if selectedProjectID == id {
             selectedProjectID = config.projects.first?.id
             resetGraph()
@@ -933,5 +964,92 @@ extension AppState {
         config.accounts[i].monitoring = false
         config.accounts[i].savedStatusline = nil
         persist()
+    }
+}
+
+// MARK: - Code stats
+
+extension AppState {
+    /// The directory holding per-project code-stats history files. Production:
+    /// ~/Library/Application Support/Grove/stats; tests inject statsStoreDirOverride.
+    private var statsStoreDir: URL {
+        if let override = statsStoreDirOverride { return URL(fileURLWithPath: override) }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Grove/stats")
+    }
+
+    /// Built fresh from the resolved dir (a value type that just holds the URL). The
+    /// scanner + cache that must persist across ticks live on `self`, not here.
+    private var statsStore: CodeStatsStore { CodeStatsStore(dir: statsStoreDir) }
+
+    /// Scans the project's code, updates `codeStats`, persists/loads its history, and
+    /// grows `codeStatsHistory`. Built like refreshUsage: the project's path,
+    /// excluded folders, and that project's cache are captured OFF the main actor in
+    /// a `.utility` Task.detached; the heavy directory walk + file reads happen there
+    /// so they never freeze the panel. Results (and the updated cache) are assigned
+    /// back on the main actor, where the new total is coalesced into the store.
+    /// No-op for an unknown id. `isStatsScanning` brackets the whole operation.
+    public func refreshCodeStats(projectID: UUID, now: Date = Date()) async {
+        guard let project = config.projects.first(where: { $0.id == projectID }) else { return }
+        let path = project.path
+        let ignored = Set(project.statsIgnoredFolders)
+        let cache = statsCacheByProject[projectID] ?? [:]
+        let scanner = statsScanner
+
+        isStatsScanning = true
+        let result = await Task.detached(priority: .utility) {
+            () -> (stats: CodeStats, cache: [String: CachedFile]) in
+            var local = cache
+            let stats = scanner.scan(projectPath: path, extraIgnoredFolders: ignored,
+                                     now: now, cache: &local)
+            return (stats, local)
+        }.value
+        // A concurrent removeProject (or another refresh) may have run while detached;
+        // only commit if the project still exists.
+        guard config.projects.contains(where: { $0.id == projectID }) else {
+            isStatsScanning = false
+            return
+        }
+        codeStats[projectID] = result.stats
+        statsCacheByProject[projectID] = result.cache
+
+        let point = CodeStatsPoint(date: result.stats.scannedAt,
+                                   totalLines: result.stats.totalLines,
+                                   code: result.stats.code, comment: result.stats.comment,
+                                   blank: result.stats.blank, totalFiles: result.stats.totalFiles)
+        let store = statsStore
+        try? store.append(projectID: projectID, point: point)
+        codeStatsHistory[projectID] = store.load(projectID: projectID).points
+        isStatsScanning = false
+    }
+
+    /// Excludes (or re-includes) a project-root-relative folder from code-stats
+    /// scans: mutates `ProjectConfig.statsIgnoredFolders`, persists, and clears that
+    /// project's stats cache so the next refresh re-tallies without the stale
+    /// contributions of a folder whose exclusion just changed. No-op for an unknown
+    /// id, or when the requested state already holds.
+    public func setStatsFolderExcluded(projectID: UUID, relativePath: String, excluded: Bool) {
+        guard let i = config.projects.firstIndex(where: { $0.id == projectID }) else { return }
+        var folders = config.projects[i].statsIgnoredFolders
+        let alreadyExcluded = folders.contains(relativePath)
+        if excluded {
+            guard !alreadyExcluded else { return }
+            folders.append(relativePath)
+        } else {
+            guard alreadyExcluded else { return }
+            folders.removeAll { $0 == relativePath }
+        }
+        config.projects[i].statsIgnoredFolders = folders
+        statsCacheByProject[projectID] = [:]
+        persist()
+    }
+
+    /// I/O-light directory skeleton for the exclusion picker (off the main actor —
+    /// it walks dirs but reads no files). `buildStatsTree` turns the result into rows.
+    public func statsDirectoryTree(projectID: UUID) async -> DirNode? {
+        guard let project = config.projects.first(where: { $0.id == projectID }) else { return nil }
+        let path = project.path
+        let scanner = statsScanner
+        return await Task.detached(priority: .utility) { scanner.directoryTree(projectPath: path) }.value
     }
 }
