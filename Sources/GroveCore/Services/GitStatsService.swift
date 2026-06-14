@@ -600,7 +600,7 @@ public struct GitStatsService: Sendable {
     }
 
     /// GMT calendar so day bucketing is deterministic regardless of the host tz.
-    /// Public so the GroveAppKit presentation layer (`churnBarSeries`) can fill calendar
+    /// Public so the GroveAppKit presentation layer (`stackedRepoSeries`) can fill calendar
     /// days against the SAME tz the history was bucketed in.
     public static let gmtCalendar: Calendar = {
         var cal = Calendar(identifier: .gregorian)

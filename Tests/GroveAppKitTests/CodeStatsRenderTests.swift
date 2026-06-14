@@ -4,11 +4,11 @@ import SwiftUI
 import GroveCore
 
 /// Renders the Stats tab (Stage 5) in both the offscreen snapshot path (the manual,
-/// non-Charts churn-bar fallback) and the live path (the hand-drawn, horizontally-
-/// scrollable churn histogram — a `ScrollView` strip of per-day stacked bars with a
-/// `ScrollViewReader` and per-bar tap gesture; no Swift Charts), and asserts the snapshot
-/// scene produces a NON-BLANK image — content, not just an empty backdrop. Mirrors
-/// DashboardRenderTests / ViewStatesRenderTests.
+/// non-Charts stacked-bar fallback) and the live path (the hand-drawn, horizontally-
+/// scrollable cumulative codebase-size strip — a `ScrollView` of per-day stacked-by-repo
+/// bars with a `ScrollViewReader` and per-bar tap gesture; no Swift Charts), and asserts
+/// the snapshot scene produces a NON-BLANK image — content, not just an empty backdrop.
+/// Mirrors DashboardRenderTests / ViewStatesRenderTests.
 @MainActor
 final class CodeStatsRenderTests: XCTestCase {
     private let projectSize = CGSize(width: 760, height: 540)
@@ -52,10 +52,9 @@ final class CodeStatsRenderTests: XCTestCase {
     }
 
     /// The LIVE path (isSnapshotRender=false) evaluates the horizontally-scrollable
-    /// churn histogram (the per-day stacked ScrollView strip, its ScrollViewReader,
-    /// and the per-bar tap gesture), the period segmented control, and the
-    /// "Empty days" checkbox toggle — a crash or broken expression is caught even
-    /// though offscreen ScrollView pixels are blank.
+    /// cumulative stacked-by-repo strip (the per-day ScrollView, its ScrollViewReader,
+    /// and the per-bar tap gesture) and the period segmented control — a crash or broken
+    /// expression is caught even though offscreen ScrollView pixels are blank.
     func testStatsScreenLiveChartBranch() {
         let state = SnapshotMode.fixtureState()
         state.selectedTab = .stats

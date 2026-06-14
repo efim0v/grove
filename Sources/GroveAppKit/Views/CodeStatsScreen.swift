@@ -4,13 +4,14 @@ import GroveCore
 /// Code-stats tab (Stage 5): a per-project cloc-style breakdown rendered from the
 /// pure presentation models in CodeStatsPresentation. Gray cards stacked in a
 /// scroll: a totals header (big numbers), a language breakdown (horizontal bars +
-/// a small per-language table), a per-day churn histogram (lines over time).
+/// a small per-language table), a cumulative lines-over-time chart stacked by repo
+/// (one bar per day, height = total lines across repos, biggest repo at the bottom).
 /// Folder/file exclusion now lives on a separate page (StatsSettingsScreen),
 /// reached via the gear in the Totals header.
 ///
 /// The scan is lazy: `.task(id:)` triggers `state.refreshCodeStats` whenever the
 /// selected project changes, so opening the tab is what kicks off the (off-main)
-/// walk — the global 15s refresh never pays for stats. The churn histogram is a
+/// walk — the global 15s refresh never pays for stats. The stacked chart is a
 /// hand-drawn SwiftUI bar strip (no Swift Charts), but a `ScrollView`'s content is
 /// still not laid out under ImageRenderer, so `isSnapshotRender` swaps in a manual
 /// edge-to-edge bars fallback (same landmine the rest of the app handles).
@@ -22,18 +23,11 @@ struct CodeStatsScreen: View {
     /// Pure client-side recompute from the per-day history — never a re-scan.
     @State private var period: StatsPeriod = .d30
 
-    /// The currently-tapped churn day in the "Lines over time" histogram, if any.
-    /// Tapping a bar selects that calendar day → a "+added / −removed" tooltip above
-    /// the chart; tapping it again (or an empty day) clears. Live-only (the snapshot
-    /// path renders every bar without a selection).
-    @State private var selectedChurnDay: Date?
-
-    /// "Show empty days" toggle in the "Lines over time" header. OFF (default): the
-    /// dense histogram fills every calendar day but zero-churn (no-commit) days are
-    /// just empty space. ON: those days render as faint GRAY ticks so the gaps in
-    /// activity are visible-but-muted (per the reference: "no transparent gaps; a
-    /// toggle grays the empty days").
-    @State private var showEmptyDays: Bool = false
+    /// The currently-tapped day in the "Lines over time" stacked chart, if any. Tapping a
+    /// bar selects that calendar day → a tooltip above the chart with the day's total
+    /// codebase size + a per-repo breakdown; tapping it again clears. Live-only (the
+    /// snapshot path renders every bar without a selection).
+    @State private var selectedDay: Date?
 
     var body: some View {
         Group {
@@ -47,10 +41,10 @@ struct CodeStatsScreen: View {
         }
         .task(id: selectedProjectID) {
             guard let id = selectedProjectID else { return }
-            // A churn-day selection is scoped to one project's series; clear it so a
-            // stale date from the previous project can't resolve against a same-calendar
-            // day in the new one (bar dates are GMT start-of-day).
-            selectedChurnDay = nil
+            // A day selection is scoped to one project's series; clear it so a stale date
+            // from the previous project can't resolve against a same-calendar day in the
+            // new one (bar dates are GMT start-of-day).
+            selectedDay = nil
             await state.refreshCodeStats(projectID: id)
         }
     }
@@ -86,14 +80,15 @@ struct CodeStatsScreen: View {
     // MARK: - Totals header
 
     private func totalsCard(stats: CodeStats) -> some View {
-        // Both headline numbers (Code / Data·Prose), the file counts, and the period
-        // deltas are pure recomputes from already-scanned data — switching the period
-        // never triggers a git re-scan. The deltas are now CLASSIFIED per language
-        // group: each headline shows BOTH its honest gross additions (▲, blue) and
-        // deletions (▼, pink) from the per-day code/data-split churn series, instead of
-        // a single net triangle that hid the removed count.
+        // Both headline numbers (Code / Data·Prose), the file counts, and the period delta
+        // are pure recomputes from already-scanned data — switching the period never
+        // triggers a git re-scan. The delta is now a SINGLE overall NET line — how much the
+        // whole codebase grew (▲, blue) or shrank (▼, pink) over the period, a churn-free
+        // cumulative-state difference (a line churned 5× counts once). The honest two-sided
+        // added/removed churn display is gone (the user wanted "общая дельта", one number).
         let breakdown = dataProseBreakdown(stats)
-        let deltas = periodDeltasByCategory(history, period: period, now: .now)
+        let net = netLinesDelta(history, period: period, now: .now)
+        let triangle = deltaTriangle(net: net)
         // File-count delta isn't derivable from line history client-side, so the file
         // caption stays a plain count (the per-day series carries only lines).
         return VStack(alignment: .leading, spacing: 10) {
@@ -119,18 +114,22 @@ struct CodeStatsScreen: View {
                 // languages ("code") vs data/prose languages ("data"). Distinct axis from
                 // the line-kind strip below, hence the "lines · N files" caption (it is
                 // total lines of the code-language group, not the code-only line kind).
-                //
-                // The period delta under each headline is now CLASSIFIED to match its
-                // VALUE: the Code column shows the code-language churn (▲ added / ▼ removed)
-                // and Data/Prose shows its OWN data/prose churn — no more static ±0, and no
-                // more shared churn that inflated Code with JSON/Markdown commits. Both
-                // sides are shown so the additions don't masquerade as net growth.
                 headlineNumber(value: breakdown.codeLinesText,
-                               caption: "code · \(breakdown.codeFilesText) files",
-                               delta: deltas.code)
+                               caption: "code · \(breakdown.codeFilesText) files")
                 headlineNumber(value: breakdown.dataProseLinesText,
-                               caption: "data · \(breakdown.dataProseFilesText) files",
-                               delta: deltas.dataProse)
+                               caption: "data · \(breakdown.dataProseFilesText) files")
+            }
+            // ONE overall net delta for the whole project over the selected period: ▲ blue
+            // when it grew, ▼ pink when it shrank, ±0 gray when flat. The period control
+            // above drives this; the bars chart below has its own (decoupled) window.
+            HStack(spacing: 6) {
+                Text(triangle.label)
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(triangleColor(triangle.direction))
+                Text("net over \(period.rawValue)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             // The LINE-KIND breakdown: every line classified Code / Comment / Blank across
             // ALL languages. A different partition than the headline's language groups (so
@@ -155,7 +154,7 @@ struct CodeStatsScreen: View {
         .glassCard()
     }
 
-    /// The 7d / 30d / 90d / All segmented control. Pure-SwiftUI (Buttons) so it renders
+    /// The 7d / 30d / 90d / 180d / 360d segmented control. Pure-SwiftUI (Buttons) so it renders
     /// identically live and offscreen — AppKit Picker(.segmented) draws as an error
     /// placeholder under ImageRenderer, and the live-only nature of selection means a
     /// snapshot just shows the current period highlighted.
@@ -189,28 +188,16 @@ struct CodeStatsScreen: View {
             .strokeBorder(.white.opacity(0.10)))
     }
 
-    /// One headline column: a big number, the period's HONEST two-sided churn (▲ added in
-    /// blue AND ▼ removed in pink, side by side), and a caption. Showing both counts means
-    /// the additions never masquerade as net growth — a refactor window reads as a large ▲
-    /// next to an equally large ▼. When a side is zero it renders a muted "±0".
-    private func headlineNumber(value: String, caption: String,
-                                delta: CategoryDelta) -> some View {
+    /// One headline column: a big number and a caption. The period delta is no longer
+    /// per-column (it was the misleading two-sided added/removed churn) — there is now a
+    /// single overall net line shown once under both headlines in `totalsCard`.
+    private func headlineNumber(value: String, caption: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(value)
                 .font(.system(size: 26, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
-            HStack(spacing: 8) {
-                Text(delta.addedText)
-                    .foregroundStyle(delta.added > 0 ? Palette.primary : Palette.neutral)
-                Text(delta.removedText)
-                    .foregroundStyle(delta.removed > 0 ? Palette.negative : Palette.neutral)
-            }
-            .font(.caption2.weight(.medium))
-            .monospacedDigit()
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
             Text(caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -366,12 +353,15 @@ struct CodeStatsScreen: View {
         let repos = state.repoStats[selectedProjectID ?? UUID()] ?? []
         if !repos.isEmpty {
             let cards = repoCells(repos, period: period, now: .now)
+            // The same stable name→color map the stacked chart's segments + legend use, so
+            // a repo's swatch here matches its slice in "Lines over time".
+            let colors = repoColorMap(repos)
             VStack(alignment: .leading, spacing: 8) {
                 CardLabel(title: repos.count > 1 ? "Repositories" : "Repository",
                           systemImage: "shippingbox")
                 VStack(spacing: 6) {
                     ForEach(cards) { card in
-                        repoBlock(card)
+                        repoBlock(card, color: colors[card.repoName] ?? Palette.primary)
                     }
                 }
             }
@@ -381,8 +371,12 @@ struct CodeStatsScreen: View {
         }
     }
 
-    private func repoBlock(_ card: RepoCard) -> some View {
+    private func repoBlock(_ card: RepoCard, color: Color) -> some View {
         HStack(spacing: 8) {
+            // The repo's legend swatch — matches its segment in the stacked chart.
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(color)
+                .frame(width: 8, height: 8)
             Text(card.repoName)
                 .font(.body.weight(.medium))
                 .lineLimit(1)
@@ -446,47 +440,60 @@ struct CodeStatsScreen: View {
             .background(.white.opacity(0.08), in: Capsule())
     }
 
-    // MARK: - Churn histogram ("Lines over time")
+    // MARK: - Stacked cumulative chart ("Lines over time")
 
     private let growthChartHeight: CGFloat = 120
     /// Each calendar-day bar's slot width (bar + 1px gap). 4pt at ~180 visible days
     /// fills a ~720pt plot — the dense reference look — while the ScrollView lets older
     /// days (back to the 1-year cap) scroll into view.
-    private let churnSlotWidth: CGFloat = 4
+    private let stackedSlotWidth: CGFloat = 4
 
-    /// The "Lines over time" card, now a DENSE per-day CHURN histogram: one thin bar per
-    /// calendar day in the window (no transparent gaps), each STACKED — a blue lower
-    /// segment for lines ADDED that day and a pink upper segment for lines REMOVED — with
-    /// the bar's height proportional to that day's TOTAL churn (added + removed). This is
-    /// NON-cumulative codebase activity, not a running total: it shows where the work
-    /// actually happened.
+    /// A stable repo name → color map for the stacked chart's segments + legend AND the
+    /// per-repo blocks' swatches. Repos are ordered by name (the same order `repoCells`
+    /// sorts by), so a repo keeps its color everywhere; the hue spreads across the brand
+    /// ramp via `repoColor`.
+    private func repoColorMap(_ repos: [RepoStats]) -> [String: Color] {
+        let names = repos.map(\.repoName).sorted()
+        var map: [String: Color] = [:]
+        for (i, name) in names.enumerated() {
+            map[name] = repoColor(index: i, count: names.count)
+        }
+        return map
+    }
+
+    /// The "Lines over time" card: a DENSE per-day CUMULATIVE codebase-size chart, one thin
+    /// bar per calendar day, each STACKED BY REPO — the biggest repo at the bottom, the
+    /// smallest on top — with the bar's height proportional to the TOTAL number of lines
+    /// across all repos that day. This is the running codebase SIZE ("how many lines REALLY
+    /// existed on a given day"), so the strip visibly GROWS left→right as repos accumulate
+    /// lines — NOT per-day churn.
     ///
-    /// The histogram's window is DECOUPLED from the Totals 7d/30d/90d/All period: the
-    /// series always spans the full 1-year cap (`churnBarMaxDaysBack`) so the strip is
-    /// genuinely scrollable, and it opens scrolled to today with ~`churnDefaultVisibleDays`
-    /// (6 months) filling the viewport. The Totals/Repos `period` only drives the delta
-    /// triangles, not this chart.
+    /// The chart's window is DECOUPLED from the Totals 7d/30d/90d period: the series always
+    /// spans the full 1-year cap (`stackedBarMaxDaysBack`) so the strip is genuinely
+    /// scrollable, and it opens scrolled to today with ~`stackedDefaultVisibleDays` (6
+    /// months) filling the viewport. The Totals/Repos `period` only drives the net delta.
     private func growthCard() -> some View {
-        let bars = churnBarSeries(history, daysBack: churnBarMaxDaysBack, now: .now)
-        let activeDays = bars.filter { $0.totalChurn > 0 }.count
+        let repos = state.repoStats[selectedProjectID ?? UUID()] ?? []
+        let bars = stackedRepoSeries(repos, daysBack: stackedBarMaxDaysBack, now: .now)
+        let colors = repoColorMap(repos)
+        let hasCode = bars.contains { $0.total > 0 }
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                CardLabel(title: "Lines over time", systemImage: "chart.bar.fill")
-                Spacer(minLength: 8)
-                emptyDaysToggle
-            }
-            churnReadout(bars, activeDays: activeDays)
-            if activeDays == 0 {
-                Text("No commit activity in this window yet.")
+            CardLabel(title: "Lines over time", systemImage: "chart.bar.fill")
+            stackedReadout(bars, repoCount: repos.count, colors: colors)
+            if !hasCode {
+                Text("No code history in this window yet.")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: growthChartHeight, alignment: .leading)
-            } else if isSnapshotRender {
-                // The manual stacked bars draw fine offscreen (Swift-Charts-free); the
-                // snapshot just trims to the most-recent visible window so the dense
-                // histogram reads without a horizontal scroller.
-                churnFallback(bars)
             } else {
-                churnScroller(bars)
+                if isSnapshotRender {
+                    // The manual stacked bars draw fine offscreen (Swift-Charts-free); the
+                    // snapshot just trims to the most-recent visible window so the dense
+                    // chart reads without a horizontal scroller.
+                    stackedFallback(bars, colors: colors)
+                } else {
+                    stackedScroller(bars, colors: colors)
+                }
+                stackedLegend(repos, colors: colors)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -494,42 +501,35 @@ struct CodeStatsScreen: View {
         .glassCard()
     }
 
-    /// "Show empty days" checkbox in the card header. OFF: no-commit days are blank space.
-    /// ON: they render as faint gray ticks so the gaps in activity are visible-but-muted.
-    /// Pure-SwiftUI (a Button, not an AppKit Toggle) so it renders identically live and
-    /// offscreen — like `periodControl`, AppKit checkboxes draw as error placeholders
-    /// under ImageRenderer.
-    private var emptyDaysToggle: some View {
-        Button {
-            showEmptyDays.toggle()
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: showEmptyDays ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(showEmptyDays ? Palette.primary : Color.secondary)
-                Text("Empty days")
-                    .foregroundStyle(.secondary)
-            }
-            .font(.caption2)
-        }
-        .buttonStyle(.plain)
-        .help("Show no-commit days as faint gray ticks")
-    }
-
-    /// The readout above the histogram: either the tapped day's "+added / −removed"
-    /// tooltip (tinted by which side dominates) or a neutral summary of the window's
-    /// active days. A churn day means a calendar day with at least one commit.
+    /// The readout above the chart: either the tapped day's total + per-repo breakdown
+    /// tooltip, or a neutral hint of how many repos are stacked. Tinted blue (the codebase
+    /// size axis). A day is selected by tapping a bar in the live strip.
     @ViewBuilder
-    private func churnReadout(_ bars: [ChurnBarPoint], activeDays: Int) -> some View {
-        if let day = selectedChurnDay, let bar = bars.first(where: { $0.date == day }) {
-            Text(churnDayReadout(bar))
-                .font(.caption.weight(.medium))
-                .monospacedDigit()
-                .foregroundStyle(bar.dayAdded >= bar.dayRemoved ? Palette.primary : Palette.negative)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+    private func stackedReadout(_ bars: [StackedDayBar], repoCount: Int,
+                                colors: [String: Color]) -> some View {
+        if let day = selectedDay, let bar = bars.first(where: { $0.date == day }) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(stackedDayReadout(bar))
+                    .font(.caption.weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Palette.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                if !bar.segments.isEmpty {
+                    // Per-repo breakdown of that day, biggest-first (segment order).
+                    Text(bar.segments
+                        .map { "\($0.repoName) \(groupedThousands($0.lines))" }
+                        .joined(separator: " · "))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                }
+            }
         } else {
-            Text("\(groupedThousands(activeDays)) active \(activeDays == 1 ? "day" : "days") · "
-                 + (isSnapshotRender ? "" : "tap a bar for that day’s churn"))
+            Text("\(repoCount) \(repoCount == 1 ? "repo" : "repos") stacked · "
+                 + (isSnapshotRender ? "codebase size over time" : "tap a bar for that day’s total"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -537,38 +537,44 @@ struct CodeStatsScreen: View {
         }
     }
 
-    /// One churn bar's lower (added, blue) tint. The tapped day renders full-strength;
-    /// every other bar slightly muted so the selection stands out (and at full strength
-    /// when nothing is selected). Factored into one helper so reference-image tuning
-    /// touches a single place.
-    private func addedFill(_ bar: ChurnBarPoint) -> Color {
-        guard selectedChurnDay != nil else { return Palette.primary }
-        return selectedChurnDay == bar.date ? Palette.primary : Palette.primary.opacity(0.45)
+    /// A compact wrapping legend mapping each repo to its stacked-chart color. Sorted by
+    /// name so it matches the segment/swatch order; truncates long names so it stays 1–2
+    /// lines.
+    private func stackedLegend(_ repos: [RepoStats], colors: [String: Color]) -> some View {
+        let names = repos.map(\.repoName).sorted()
+        return FlowingLegend(spacing: 10, rowSpacing: 4) {
+            ForEach(names, id: \.self) { name in
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(colors[name] ?? Palette.primary)
+                        .frame(width: 8, height: 8)
+                    Text(name)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+        }
     }
 
-    /// One churn bar's upper (removed, pink) tint, mirroring `addedFill`.
-    private func removedFill(_ bar: ChurnBarPoint) -> Color {
-        guard selectedChurnDay != nil else { return Palette.negative }
-        return selectedChurnDay == bar.date ? Palette.negative : Palette.negative.opacity(0.45)
-    }
-
-    /// The live histogram: a horizontally-scrollable strip of fixed-width per-day bars.
+    /// The live chart: a horizontally-scrollable strip of fixed-width per-day stacked bars.
     /// A `ScrollView(.horizontal)` (rather than a width-fitted Swift Chart) keeps the bar
     /// density crisp and constant — the series spans the full 1-year cap, so ~180 days
-    /// (`churnDefaultVisibleDays` × `churnSlotWidth` ≈ 720pt) fill the default viewport and
-    /// the remaining ~185 older days scroll in. Starts scrolled to the most-recent day. A
-    /// tap on any bar selects that day for the tooltip readout; tapping it clears it.
-    private func churnScroller(_ bars: [ChurnBarPoint]) -> some View {
-        let peak = churnPeak(bars)
+    /// (`stackedDefaultVisibleDays` × `stackedSlotWidth` ≈ 720pt) fill the default viewport
+    /// and the remaining ~185 older days scroll in. Starts scrolled to the most-recent day.
+    /// A tap on any bar selects that day for the tooltip readout; tapping it clears it.
+    private func stackedScroller(_ bars: [StackedDayBar], colors: [String: Color]) -> some View {
+        let peak = stackedPeak(bars)
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(alignment: .bottom, spacing: 0) {
                     ForEach(bars) { bar in
-                        churnBarColumn(bar, peak: peak)
-                            .frame(width: churnSlotWidth)
+                        stackedBarColumn(bar, peak: peak, colors: colors)
+                            .frame(width: stackedSlotWidth)
                             .id(bar.date)
                             .contentShape(Rectangle())
-                            .onTapGesture { toggleChurnSelection(bar) }
+                            .onTapGesture { toggleDaySelection(bar) }
                     }
                 }
                 .frame(height: growthChartHeight, alignment: .bottom)
@@ -578,42 +584,46 @@ struct CodeStatsScreen: View {
         }
     }
 
-    /// One day's column in the live strip: the stacked bar (blue added over pink removed),
-    /// or — for a zero-churn day — a faint gray baseline tick when "Empty days" is on, else
-    /// nothing. Uses a GeometryReader so segment heights normalize against the plot box.
-    private func churnBarColumn(_ bar: ChurnBarPoint, peak: Int) -> some View {
+    /// One day's column in the live strip: a bottom-anchored stack of per-repo segments,
+    /// BIGGEST repo at the bottom. `bar.segments` is biggest-first; a `VStack` lays its
+    /// children top→bottom, so we iterate `reversed()` (smallest first at the top) to put
+    /// the biggest at the bottom. The selected day renders full-strength; others muted when
+    /// a selection exists. Uses a GeometryReader so segment heights normalize against the
+    /// plot box.
+    private func stackedBarColumn(_ bar: StackedDayBar, peak: Int,
+                                  colors: [String: Color]) -> some View {
         GeometryReader { geo in
-            let h = churnBarHeights(bar, peak: peak, height: geo.size.height)
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
-                if bar.totalChurn == 0 {
-                    if showEmptyDays {
-                        // A faint 1px baseline tick marks a no-commit day.
-                        Rectangle()
-                            .fill(Palette.neutral.opacity(0.3))
-                            .frame(width: max(churnSlotWidth - 1, 1), height: 1)
-                    }
-                } else {
-                    // Pink (removed) sits ABOVE blue (added) — a stacked churn bar.
+                // reversed(): smallest on top, biggest at the bottom.
+                ForEach(Array(bar.segments.enumerated().reversed()), id: \.offset) { _, seg in
                     Rectangle()
-                        .fill(removedFill(bar))
-                        .frame(width: max(churnSlotWidth - 1, 1), height: h.removed)
-                    Rectangle()
-                        .fill(addedFill(bar))
-                        .frame(width: max(churnSlotWidth - 1, 1), height: h.added)
+                        .fill(segmentFill(seg, on: bar, colors: colors))
+                        .frame(width: max(stackedSlotWidth - 1, 1),
+                               height: stackedSegmentHeight(lines: seg.lines, peak: peak,
+                                                            height: geo.size.height))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .bottom)
         }
     }
 
+    /// One segment's tint: the repo's stable color, full-strength when nothing is selected
+    /// or this is the selected day, muted otherwise so the tapped bar stands out.
+    private func segmentFill(_ seg: StackedSegment, on bar: StackedDayBar,
+                             colors: [String: Color]) -> Color {
+        let base = colors[seg.repoName] ?? Palette.primary
+        guard selectedDay != nil else { return base }
+        return selectedDay == bar.date ? base : base.opacity(0.45)
+    }
+
     /// Tap handling: select the tapped day (showing its tooltip), or clear if it was
-    /// already selected. Zero-churn days clear any selection (nothing to show).
-    private func toggleChurnSelection(_ bar: ChurnBarPoint) {
-        if selectedChurnDay == bar.date || bar.totalChurn == 0 {
-            selectedChurnDay = nil
+    /// already selected. Empty (no-code) days clear any selection (nothing to show).
+    private func toggleDaySelection(_ bar: StackedDayBar) {
+        if selectedDay == bar.date || bar.total == 0 {
+            selectedDay = nil
         } else {
-            selectedChurnDay = bar.date
+            selectedDay = bar.date
         }
     }
 
@@ -621,46 +631,40 @@ struct CodeStatsScreen: View {
     /// ImageRenderer, and a ScrollView's content isn't laid out offscreen either, so the
     /// snapshot trims to the most-recent days that fit the card and draws them edge-to-
     /// edge). Selection is live-only, so every bar draws at full strength.
-    private func churnFallback(_ bars: [ChurnBarPoint]) -> some View {
+    private func stackedFallback(_ bars: [StackedDayBar], colors: [String: Color]) -> some View {
         GeometryReader { geo in
-            churnFallbackContent(bars, size: geo.size)
+            stackedFallbackContent(bars, size: geo.size, colors: colors)
         }
         .frame(height: growthChartHeight)
     }
 
-    /// The actual stacked rects for `churnFallback`, against a resolved `size`. Trims to
+    /// The actual stacked rects for `stackedFallback`, against a resolved `size`. Trims to
     /// the most-recent `floor(width / slot)` days so the offscreen strip fills the card
-    /// without a scroller, then draws each as a blue(added)-over-pink(removed) stack
-    /// proportional to its total churn. Pulled out of the GeometryReader closure so the
-    /// geometry math doesn't fight the ViewBuilder.
-    private func churnFallbackContent(_ bars: [ChurnBarPoint], size: CGSize) -> some View {
+    /// without a scroller, then draws each day as a bottom-up stack of per-repo segments
+    /// (biggest at the bottom) proportional to that day's total. Pulled out of the
+    /// GeometryReader closure so the geometry math doesn't fight the ViewBuilder.
+    private func stackedFallbackContent(_ bars: [StackedDayBar], size: CGSize,
+                                        colors: [String: Color]) -> some View {
         let w = size.width, h = size.height
-        let slot = max(churnSlotWidth, 1)
+        let slot = max(stackedSlotWidth, 1)
         let visibleCount = max(min(bars.count, Int(w / slot)), 1)
         let visible = Array(bars.suffix(visibleCount))
-        let peak = churnPeak(bars)
+        let peak = stackedPeak(bars)
         let barWidth = max(slot - 1, 1)
         return ZStack(alignment: .bottomLeading) {
             ForEach(Array(visible.enumerated()), id: \.element.id) { i, bar in
-                let heights = churnBarHeights(bar, peak: peak, height: h)
                 let x = CGFloat(i) * slot
-                if bar.totalChurn == 0 {
-                    if showEmptyDays {
+                // reversed(): smallest on top, biggest at the bottom.
+                VStack(spacing: 0) {
+                    ForEach(Array(bar.segments.enumerated().reversed()), id: \.offset) { _, seg in
                         Rectangle()
-                            .fill(Palette.neutral.opacity(0.3))
-                            .frame(width: barWidth, height: 1)
-                            .offset(x: x, y: 0)
-                            .frame(maxHeight: .infinity, alignment: .bottom)
+                            .fill(colors[seg.repoName] ?? Palette.primary)
+                            .frame(width: barWidth,
+                                   height: stackedSegmentHeight(lines: seg.lines, peak: peak, height: h))
                     }
-                } else {
-                    // Bottom blue (added) + pink (removed) stacked above it.
-                    VStack(spacing: 0) {
-                        Rectangle().fill(Palette.negative).frame(width: barWidth, height: heights.removed)
-                        Rectangle().fill(Palette.primary).frame(width: barWidth, height: heights.added)
-                    }
-                    .offset(x: x, y: 0)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
                 }
+                .offset(x: x, y: 0)
+                .frame(maxHeight: .infinity, alignment: .bottom)
             }
         }
     }
@@ -689,5 +693,51 @@ struct CodeStatsScreen: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// A minimal left-to-right wrapping flow `Layout` for the repo legend: places each child
+/// at its ideal size, wrapping to a new row when the next child would overflow the
+/// proposed width. Deterministic, so it renders identically live and offscreen (unlike a
+/// width-driven `ScrollView`, which doesn't lay out under ImageRenderer).
+struct FlowingLegend: Layout {
+    var spacing: CGFloat = 8
+    var rowSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var rowWidth: CGFloat = 0, rowHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0, totalHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if rowWidth > 0 && rowWidth + spacing + size.width > maxWidth {
+                totalWidth = max(totalWidth, rowWidth)
+                totalHeight += rowHeight + rowSpacing
+                rowWidth = 0; rowHeight = 0
+            }
+            rowWidth += (rowWidth > 0 ? spacing : 0) + size.width
+            rowHeight = max(rowHeight, size.height)
+        }
+        totalWidth = max(totalWidth, rowWidth)
+        totalHeight += rowHeight
+        return CGSize(width: min(totalWidth, maxWidth), height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout Void) {
+        let maxWidth = bounds.width
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX && x - bounds.minX + size.width > maxWidth {
+                x = bounds.minX
+                y += rowHeight + rowSpacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading,
+                          proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }

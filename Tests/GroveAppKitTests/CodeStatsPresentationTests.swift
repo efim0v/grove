@@ -321,66 +321,18 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertEqual(bd.codeLinesText, "0")
     }
 
-    // MARK: - Per-day deltas + period windows
-
-    private func historyPoints() -> [CodeStatsPoint] {
-        // 4 consecutive days. Per-day added=(i+1)*10, removed=i; cumulative is the
-        // running sum of (added-removed) starting at 100 so the fixture is internally
-        // consistent (cumulative diff == per-day net sum). Net steps: 10,19,28,37.
-        let day0 = Date(timeIntervalSince1970: 1_700_000_000)
-        var cum = 100
-        var points: [CodeStatsPoint] = []
-        for i in 0..<4 {
-            let added = (i + 1) * 10
-            let removed = i
-            cum += added - removed
-            points.append(CodeStatsPoint(date: day0.addingTimeInterval(Double(i) * 86_400),
-                                         totalLines: cum, code: cum, comment: 0, blank: 0,
-                                         totalFiles: 0, dayAdded: added, dayRemoved: removed))
-        }
-        return points
-    }
-
-    func testAggregateDayDeltasFromHistory() {
-        let dd = aggregateDayDeltas(historyPoints())
-        XCTAssertEqual(dd.map(\.dayAdded), [10, 20, 30, 40])
-        XCTAssertEqual(dd.map(\.dayRemoved), [0, 1, 2, 3])
-        XCTAssertEqual(dd[1].dayNet, 19)
-        XCTAssertEqual(dd[0].id, dd[0].date)
-    }
-
-    func testDeltaBetweenDatesIgnoresOutOfWindow() {
-        let dd = aggregateDayDeltas(historyPoints())
-        // Window [day1, day2] inclusive: added 20+30=50, removed 1+2=3.
-        let start = dd[1].date
-        let end = dd[2].date
-        let delta = deltaBetween(start: start, end: end, dayDeltas: dd)
-        XCTAssertEqual(delta.added, 50)
-        XCTAssertEqual(delta.removed, 3)
-        XCTAssertEqual(delta.net, 47)
-        XCTAssertEqual(delta.filesChanged, 0, "not derivable client-side")
-    }
-
-    func testPeriodDeltaWindows() {
-        let history = historyPoints()
-        let now = history.last!.date   // day3
-        // 7d window covers all 4 days (they span 3 days): added 100, removed 6.
-        let all7 = periodDelta(history, period: .d7, now: now)
-        XCTAssertEqual(all7.added, 10 + 20 + 30 + 40)
-        XCTAssertEqual(all7.removed, 0 + 1 + 2 + 3)
-        // "All" also covers everything.
-        let all = periodDelta(history, period: .all, now: now)
-        XCTAssertEqual(all.added, 100)
-    }
+    // MARK: - Period windows
 
     func testStatsPeriodStartAndDays() {
-        XCTAssertEqual(StatsPeriod.allCases.map(\.rawValue), ["7d", "30d", "90d", "All"])
+        XCTAssertEqual(StatsPeriod.allCases.map(\.rawValue), ["7d", "30d", "90d", "180d", "360d"])
         XCTAssertEqual(StatsPeriod.d30.days, 30)
-        XCTAssertNil(StatsPeriod.all.days)
+        XCTAssertEqual(StatsPeriod.d180.days, 180)
+        XCTAssertEqual(StatsPeriod.d360.days, 360)
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         XCTAssertEqual(StatsPeriod.d7.start(now: now),
                        now.addingTimeInterval(-7 * 86_400))
-        XCTAssertEqual(StatsPeriod.all.start(now: now), .distantPast)
+        XCTAssertEqual(StatsPeriod.d360.start(now: now),
+                       now.addingTimeInterval(-360 * 86_400))
     }
 
     // MARK: - Delta triangles
@@ -397,213 +349,273 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertEqual(flat.label, "±0")
     }
 
-    // MARK: - CategoryDelta (honest ▲added / ▼removed) + periodDeltasByCategory
+    // MARK: - Net-lines delta (cumulative-state difference, churn-free)
 
-    func testCategoryDeltaFormatting() {
-        let both = CategoryDelta(added: 1240, removed: 120)
-        XCTAssertEqual(both.added, 1240)
-        XCTAssertEqual(both.removed, 120)
-        XCTAssertEqual(both.addedText, "▲ +1,240")
-        XCTAssertEqual(both.removedText, "▼ \u{2212}120", "removed uses U+2212 MINUS")
-        // Zero on either side renders "±0" (no triangle).
-        let onlyAdded = CategoryDelta(added: 500, removed: 0)
-        XCTAssertEqual(onlyAdded.addedText, "▲ +500")
-        XCTAssertEqual(onlyAdded.removedText, "±0")
-        let onlyRemoved = CategoryDelta(added: 0, removed: 90)
-        XCTAssertEqual(onlyRemoved.addedText, "±0")
-        XCTAssertEqual(onlyRemoved.removedText, "▼ \u{2212}90")
-        let none = CategoryDelta(added: 0, removed: 0)
-        XCTAssertEqual(none.addedText, "±0")
-        XCTAssertEqual(none.removedText, "±0")
-    }
-
-    func testPeriodDeltasByCategory() {
+    func testNetLinesDeltaAggregateStateDifference() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         func day(_ back: Int) -> Date { now.addingTimeInterval(-Double(back) * 86_400) }
-        // 3 in-window days + 1 out-of-window (40d back, outside a 30d window).
+        // Cumulative codebase size over time (totalLines is carried-forward state).
+        let history = [
+            CodeStatsPoint(date: day(40), totalLines: 100, code: 100, comment: 0, blank: 0, totalFiles: 0,
+                           dayAdded: 100, dayRemoved: 0),   // before a 30d window
+            CodeStatsPoint(date: day(20), totalLines: 300, code: 300, comment: 0, blank: 0, totalFiles: 0,
+                           dayAdded: 200, dayRemoved: 0),
+            CodeStatsPoint(date: day(5), totalLines: 500, code: 500, comment: 0, blank: 0, totalFiles: 0,
+                           dayAdded: 200, dayRemoved: 0),
+        ]
+        // 30d window: size now (500) − size as of (now − 30d) carried-forward = the day(40)
+        // point's 100 (last ≤ now−30d) → net 400. Churn-free state difference.
+        XCTAssertEqual(netLinesDelta(history, period: .d30, now: now), 400)
+        // 7d window: size now (500) − size as of (now − 7d) = day(20)'s 300 → net 200.
+        XCTAssertEqual(netLinesDelta(history, period: .d7, now: now), 200)
+        // A window wider than all history: baseline is 0 (before the first point) → full 500.
+        XCTAssertEqual(netLinesDelta(history, period: .d180, now: now), 500)
+    }
+
+    func testNetLinesDeltaIgnoresIntermediateChurn() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func day(_ back: Int) -> Date { now.addingTimeInterval(-Double(back) * 86_400) }
+        // The codebase churned heavily mid-window (size went 100→1000→120) but the NET
+        // state difference over the window is just end − start = 120 − 100 = 20, NOT the
+        // gross churn — a line churned many times counts once.
+        let history = [
+            CodeStatsPoint(date: day(10), totalLines: 100, code: 100, comment: 0, blank: 0, totalFiles: 0),
+            CodeStatsPoint(date: day(6), totalLines: 1000, code: 1000, comment: 0, blank: 0, totalFiles: 0),
+            CodeStatsPoint(date: day(2), totalLines: 120, code: 120, comment: 0, blank: 0, totalFiles: 0),
+        ]
+        // Window start (now − 7d) lands between day(10) and day(6) → baseline 100; now → 120.
+        XCTAssertEqual(netLinesDelta(history, period: .d7, now: now), 20)
+    }
+
+    func testNetLinesDeltaRepoFromHistoryPositiveAndNegative() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func day(_ back: Int) -> Date { now.addingTimeInterval(-Double(back) * 86_400) }
+        // A repo that GREW over the window.
+        let grew = [
+            RepoHistoryPoint(date: day(20), netLines: 200),
+            RepoHistoryPoint(date: day(3), netLines: 350),
+        ]
+        XCTAssertEqual(netLinesDelta(repo: grew, period: .d7, now: now), 150,
+                       "350 − (carried-forward 200 as of now−7d) = 150")
+        // A repo that SHRANK over the window → negative net (▼).
+        let shrank = [
+            RepoHistoryPoint(date: day(20), netLines: 900),
+            RepoHistoryPoint(date: day(3), netLines: 600),
+        ]
+        let net = netLinesDelta(repo: shrank, period: .d7, now: now)
+        XCTAssertEqual(net, -300)
+        XCTAssertEqual(deltaTriangle(net: net).direction, .down)
+    }
+
+    func testNetLinesDeltaEmptyHistoryIsZero() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertEqual(netLinesDelta([], period: .d30, now: now), 0)
+        XCTAssertEqual(netLinesDelta(repo: [], period: .d30, now: now), 0)
+    }
+
+    func testNetLinesDeltaByCategoryTelescopesPerDayNet() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        func day(_ back: Int) -> Date { now.addingTimeInterval(-Double(back) * 86_400) }
         let history = [
             CodeStatsPoint(date: day(40), totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
-                           dayAdded: 1000, dayRemoved: 0, codeAdded: 1000, codeRemoved: 0,
-                           dataAdded: 0, dataRemoved: 0),  // OUT of the 30d window
+                           codeAdded: 1000, codeRemoved: 0, dataAdded: 0, dataRemoved: 0),  // OUT of 30d
             CodeStatsPoint(date: day(20), totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
-                           dayAdded: 300, dayRemoved: 40, codeAdded: 250, codeRemoved: 30,
-                           dataAdded: 50, dataRemoved: 10),
-            CodeStatsPoint(date: day(10), totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
-                           dayAdded: 120, dayRemoved: 200, codeAdded: 100, codeRemoved: 180,
-                           dataAdded: 20, dataRemoved: 20),
-            CodeStatsPoint(date: day(1), totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
-                           dayAdded: 60, dayRemoved: 5, codeAdded: 40, codeRemoved: 5,
-                           dataAdded: 20, dataRemoved: 0),
+                           codeAdded: 250, codeRemoved: 30, dataAdded: 50, dataRemoved: 10),
+            CodeStatsPoint(date: day(5), totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
+                           codeAdded: 100, codeRemoved: 180, dataAdded: 20, dataRemoved: 5),
         ]
-        let split = periodDeltasByCategory(history, period: .d30, now: now)
-        // Code over the 3 in-window days: added 250+100+40=390, removed 30+180+5=215.
-        XCTAssertEqual(split.code.added, 390)
-        XCTAssertEqual(split.code.removed, 215)
-        // Data over the same window: added 50+20+20=90, removed 10+20+0=30.
-        XCTAssertEqual(split.dataProse.added, 90)
-        XCTAssertEqual(split.dataProse.removed, 30)
-        // The 40d-back day (codeAdded 1000) is excluded from the 30d window.
-        // "All" includes it.
-        let all = periodDeltasByCategory(history, period: .all, now: now)
-        XCTAssertEqual(all.code.added, 1390)
+        // 30d window (start > day(40), so the 1000 is excluded): code net = (250−30)+(100−180)
+        // = 220 − 80 = 140; data net = (50−10)+(20−5) = 40 + 15 = 55.
+        let split = netLinesDeltaByCategory(history, period: .d30, now: now)
+        XCTAssertEqual(split.code, 140)
+        XCTAssertEqual(split.dataProse, 55)
     }
 
-    // MARK: - Churn bar series (dense, day-filled, 1yr cap)
+    // MARK: - Stacked cumulative bars (codebase size over time, by repo)
 
-    func testChurnBarSeriesFillsAllDays() throws {
-        let cal = GitStatsService.gmtCalendar
-        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 30, hour: 12))!
-        // A 30-day window with commits on the boundary days and one in the middle.
-        func dayStart(_ d: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: d))! }
-        let history = [
-            CodeStatsPoint(date: dayStart(1), totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
-                           dayAdded: 100, dayRemoved: 10),
-            CodeStatsPoint(date: dayStart(15), totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
-                           dayAdded: 50, dayRemoved: 5),
-            CodeStatsPoint(date: dayStart(30), totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
-                           dayAdded: 20, dayRemoved: 2),
-        ]
-        let bars = churnBarSeries(history, period: .d30, now: now)
-        // 30d window: now − 30·86400 = May 31 12:00 → startOfDay May 31; through June 30
-        // start-of-day. Inclusive of both endpoints that is 31 calendar days, all filled.
-        XCTAssertEqual(bars.count, 31, "every calendar day in the window is filled (no gaps)")
-        XCTAssertEqual(bars.first?.date, cal.date(from: DateComponents(year: 2025, month: 5, day: 31)))
-        XCTAssertEqual(bars.last?.date, dayStart(30))
-        // Dates are strictly consecutive (+1 day apart), oldest first.
-        for i in 1..<bars.count {
-            let gap = bars[i].date.timeIntervalSince(bars[i - 1].date)
-            XCTAssertEqual(gap, 86_400, accuracy: 1, "consecutive calendar days, no gaps")
-        }
-        // 3 commit days carry churn; the rest are zero-churn (filled, not transparent).
-        let nonZero = bars.filter { $0.totalChurn > 0 }
-        XCTAssertEqual(nonZero.count, 3)
-        XCTAssertEqual(bars.filter { $0.totalChurn == 0 }.count, 28)
-        // The commit-day bars carry the right stacked segments.
-        let d1 = try XCTUnwrap(bars.first { $0.date == dayStart(1) })
-        XCTAssertEqual(d1.dayAdded, 100)
-        XCTAssertEqual(d1.dayRemoved, 10)
-        XCTAssertEqual(d1.totalChurn, 110)
+    private func repoWithHistory(_ name: String, _ points: [RepoHistoryPoint]) -> RepoStats {
+        let total = points.map(\.netLines).max() ?? 0
+        let cs = CodeStats(totalFiles: 1, totalLines: total, code: total, comment: 0, blank: 0,
+                           byLanguage: [], scannedAt: Date(timeIntervalSince1970: 0), skippedBinary: 0)
+        return RepoStats(repoPath: "/tmp/\(name)", repoName: name, defaultBranch: "main",
+                         stats: cs, history: points, delta: .zero)
     }
 
-    func testChurnBarSeriesCapAt1Year() {
+    func testStackedRepoSeriesCarryForward() throws {
         let cal = GitStatsService.gmtCalendar
-        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 30, hour: 12))!
-        // A 2-year-spanning history; "All" should still cap the drawn window at 1 year.
-        var history: [CodeStatsPoint] = []
-        var d = cal.date(from: DateComponents(year: 2023, month: 1, day: 1))!
-        while d <= cal.startOfDay(for: now) {
-            history.append(CodeStatsPoint(date: d, totalLines: 0, code: 0, comment: 0, blank: 0,
-                                          totalFiles: 0, dayAdded: 1, dayRemoved: 0))
-            d = cal.date(byAdding: .day, value: 7, to: d)!  // weekly points
-        }
-        let bars = churnBarSeries(history, period: .all, now: now)
-        XCTAssertLessThanOrEqual(bars.count, 366, "1-year (366 incl. leap) cap on drawn bars")
-        // No bar older than now − 365d.
-        let cutoff = cal.date(byAdding: .day, value: -churnBarMaxDaysBack, to: now)!
-        XCTAssertTrue(bars.allSatisfy { $0.date >= cal.startOfDay(for: cutoff) },
-                      "no drawn bar predates the 1-year cap")
-        // Still day-filled within the cap (consecutive days).
+        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 5, hour: 12))!
+        func d(_ day: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: day))! }
+        // Repo A: net 100 on day 1, net 300 on day 3. On day 2 it must carry 100 forward.
+        let a = repoWithHistory("A", [
+            RepoHistoryPoint(date: d(1), netLines: 100),
+            RepoHistoryPoint(date: d(3), netLines: 300),
+        ])
+        let bars = stackedRepoSeries([a], daysBack: 4, now: now)   // window June 1…5
+        func bar(_ day: Int) -> StackedDayBar { bars.first { $0.date == d(day) }! }
+        XCTAssertEqual(bar(1).total, 100)
+        XCTAssertEqual(bar(2).total, 100, "carries day-1 value forward on a no-commit day")
+        XCTAssertEqual(bar(3).total, 300)
+        XCTAssertEqual(bar(4).total, 300, "carries day-3 value forward")
+        XCTAssertEqual(bar(5).total, 300)
+    }
+
+    func testStackedRepoSeriesAbsentBeforeFirstCommit() {
+        let cal = GitStatsService.gmtCalendar
+        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 6, hour: 12))!
+        func d(_ day: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: day))! }
+        // First commit on day 5 → days 1…4 contribute 0 (no segment for this repo).
+        let a = repoWithHistory("A", [RepoHistoryPoint(date: d(5), netLines: 400)])
+        let bars = stackedRepoSeries([a], daysBack: 5, now: now)   // window June 1…6
+        let early = bars.first { $0.date == d(2) }!
+        XCTAssertEqual(early.total, 0)
+        XCTAssertTrue(early.segments.isEmpty, "repo absent before its first commit = no segment")
+        let after = bars.first { $0.date == d(5) }!
+        XCTAssertEqual(after.total, 400)
+        XCTAssertEqual(after.segments.map(\.repoName), ["A"])
+    }
+
+    func testStackedRepoSeriesOrderingBiggestAtBottom() {
+        let cal = GitStatsService.gmtCalendar
+        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 2, hour: 12))!
+        func d(_ day: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: day))! }
+        let big = repoWithHistory("zeta", [RepoHistoryPoint(date: d(1), netLines: 900)])
+        let small = repoWithHistory("alpha", [RepoHistoryPoint(date: d(1), netLines: 100)])
+        let tie = repoWithHistory("beta", [RepoHistoryPoint(date: d(1), netLines: 100)])
+        let bars = stackedRepoSeries([small, big, tie], daysBack: 1, now: now)
+        let bar = bars.first { $0.date == d(2) }!
+        // Biggest first; the two 100-line repos tie and sort by name (alpha < beta).
+        XCTAssertEqual(bar.segments.map(\.repoName), ["zeta", "alpha", "beta"])
+        XCTAssertEqual(bar.segments.map(\.lines), [900, 100, 100])
+        XCTAssertEqual(bar.total, 1100)
+    }
+
+    func testStackedRepoSeriesTotalsAndDayFill() {
+        let cal = GitStatsService.gmtCalendar
+        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 10, hour: 12))!
+        func d(_ day: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: day))! }
+        let a = repoWithHistory("A", [RepoHistoryPoint(date: d(2), netLines: 200)])
+        let b = repoWithHistory("B", [RepoHistoryPoint(date: d(4), netLines: 50)])
+        let bars = stackedRepoSeries([a, b], daysBack: 9, now: now)   // June 1…10 = 10 bars
+        XCTAssertEqual(bars.count, 10, "window is fully day-filled: daysBack + 1")
+        // Strictly consecutive calendar days, oldest first.
         for i in 1..<bars.count {
             XCTAssertEqual(bars[i].date.timeIntervalSince(bars[i - 1].date), 86_400, accuracy: 1)
         }
+        // total always equals the sum of its segments.
+        for bar in bars { XCTAssertEqual(bar.total, bar.segments.reduce(0) { $0 + $1.lines }) }
+        // Once both repos exist (day ≥ 4) the day's total is 200 + 50 = 250.
+        XCTAssertEqual(bars.first { $0.date == d(6) }!.total, 250)
     }
 
-    func testChurnBarSeriesEmptyHistory() {
-        let now = Date(timeIntervalSince1970: 1_700_000_000)
-        // Even with NO history, the window is fully filled with zero-churn bars (no gaps).
-        // 7d window inclusive of both endpoints = 8 calendar days.
-        let bars = churnBarSeries([], period: .d7, now: now)
-        XCTAssertEqual(bars.count, 8)
-        XCTAssertTrue(bars.allSatisfy { $0.totalChurn == 0 })
+    func testStackedRepoSeriesIsMonotonicOnAllAdditions() {
+        let cal = GitStatsService.gmtCalendar
+        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 6, hour: 12))!
+        func d(_ day: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: day))! }
+        // Two repos whose cumulative netLines only ever rise → the stacked total never
+        // decreases left→right (the codebase-size chart grows).
+        let a = repoWithHistory("A", [
+            RepoHistoryPoint(date: d(1), netLines: 100),
+            RepoHistoryPoint(date: d(3), netLines: 250),
+            RepoHistoryPoint(date: d(5), netLines: 400),
+        ])
+        let b = repoWithHistory("B", [
+            RepoHistoryPoint(date: d(2), netLines: 50),
+            RepoHistoryPoint(date: d(4), netLines: 90),
+        ])
+        let bars = stackedRepoSeries([a, b], daysBack: 5, now: now)
+        let totals = bars.map(\.total)
+        for i in 1..<totals.count {
+            XCTAssertGreaterThanOrEqual(totals[i], totals[i - 1], "all-additions ⇒ non-decreasing")
+        }
+        XCTAssertEqual(totals.last, 490, "final size = A(400) + B(90)")
     }
 
-    /// The live histogram window is DECOUPLED from the Totals delta period: it always
-    /// asks for the full 1-year span (`daysBack:`), so the strip is genuinely scrollable
-    /// regardless of which 7d/30d/90d/All the deltas show. A 1-year request yields the
-    /// full ~366 day-filled bars; a tiny request still day-fills exactly its window.
-    func testChurnBarSeriesDaysBackDecoupledFromPeriod() {
+    func testStackedRepoSeriesCapAndDaysBackClamp() {
         let cal = GitStatsService.gmtCalendar
         let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 30, hour: 12))!
-        // Sparse history (one old commit) — the window must NOT shrink to the data.
-        let history = [
-            CodeStatsPoint(date: cal.date(from: DateComponents(year: 2025, month: 1, day: 10))!,
-                           totalLines: 0, code: 0, comment: 0, blank: 0, totalFiles: 0,
-                           dayAdded: 100, dayRemoved: 10),
-        ]
-        // Full 1-year span: 365 days back through today inclusive = 366 day-filled bars.
-        let year = churnBarSeries(history, daysBack: churnBarMaxDaysBack, now: now)
-        XCTAssertEqual(year.count, 366, "the full 1-year strip is built so it's scrollable")
-        XCTAssertEqual(year.last?.date, cal.startOfDay(for: now))
-        XCTAssertEqual(year.filter { $0.totalChurn > 0 }.count, 1, "only the one commit day has churn")
-        // The default-viewport span is a strict subset of the full strip (scroll-back room).
-        XCTAssertGreaterThan(year.count, churnDefaultVisibleDays,
-                             "the 1-year strip has older days to scroll back to beyond the default viewport")
-        // A request beyond the cap is clamped to 1 year (presentation-only bound).
-        let capped = churnBarSeries(history, daysBack: 10_000, now: now)
-        XCTAssertEqual(capped.count, 366, "daysBack is clamped to the 1-year cap")
+        let a = repoWithHistory("A", [
+            RepoHistoryPoint(date: cal.date(from: DateComponents(year: 2024, month: 1, day: 1))!,
+                             netLines: 100),
+        ])
+        // daysBack beyond the 1-year cap clamps to 365 back + today = 366 bars.
+        let capped = stackedRepoSeries([a], daysBack: 10_000, now: now)
+        XCTAssertEqual(capped.count, 366, "daysBack clamps to the 1-year cap")
+        // The full-year request has more days than the default viewport (scroll-back room).
+        XCTAssertGreaterThan(capped.count, stackedDefaultVisibleDays)
         // A small explicit window day-fills exactly its span (7 back + today = 8).
-        let week = churnBarSeries(history, daysBack: 7, now: now)
+        let week = stackedRepoSeries([a], daysBack: 7, now: now)
         XCTAssertEqual(week.count, 8)
     }
 
-    // MARK: - Churn bar geometry (peak, stacked segment heights) + tooltip
+    func testStackedRepoSeriesNegativeNetLinesClampedToZero() {
+        let cal = GitStatsService.gmtCalendar
+        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 2, hour: 12))!
+        func d(_ day: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: day))! }
+        // A pathological negative cumulative (shouldn't happen, but be safe) draws as 0.
+        let a = repoWithHistory("A", [RepoHistoryPoint(date: d(1), netLines: -50)])
+        let bar = stackedRepoSeries([a], daysBack: 1, now: now).first { $0.date == d(2) }!
+        XCTAssertEqual(bar.total, 0)
+        XCTAssertTrue(bar.segments.isEmpty, "a repo can't show negative lines on screen")
+    }
 
-    func testChurnPeakIsMaxTotalChurnFlooredAtOne() {
-        let day = Date(timeIntervalSince1970: 1_700_000_000)
+    func testStackedPeakFlooredAtOne() {
+        let cal = GitStatsService.gmtCalendar
+        func d(_ day: Int) -> Date { cal.date(from: DateComponents(year: 2025, month: 6, day: day))! }
         let bars = [
-            ChurnBarPoint(date: day, dayAdded: 100, dayRemoved: 20),                       // 120
-            ChurnBarPoint(date: day.addingTimeInterval(86_400), dayAdded: 300, dayRemoved: 50), // 350 (peak)
-            ChurnBarPoint(date: day.addingTimeInterval(172_800), dayAdded: 0, dayRemoved: 0),    // 0
+            StackedDayBar(date: d(1), segments: [StackedSegment(repoName: "A", lines: 100)]),
+            StackedDayBar(date: d(2), segments: [StackedSegment(repoName: "A", lines: 350)]),
         ]
-        XCTAssertEqual(churnPeak(bars), 350)
-        // An all-zero (or empty) series floors at 1 so the view never divides by zero.
-        XCTAssertEqual(churnPeak([ChurnBarPoint(date: day, dayAdded: 0, dayRemoved: 0)]), 1)
-        XCTAssertEqual(churnPeak([]), 1)
+        XCTAssertEqual(stackedPeak(bars), 350)
+        // All-zero / empty series floors at 1 so the view never divides by zero.
+        XCTAssertEqual(stackedPeak([StackedDayBar(date: d(1), segments: [])]), 1)
+        XCTAssertEqual(stackedPeak([]), 1)
     }
 
-    func testChurnBarHeightsStackProportionalToTotalChurn() {
-        let day = Date(timeIntervalSince1970: 1_700_000_000)
-        // peak = 200; a day with added 100 / removed 50 (total 150) over a 120pt plot.
-        let bar = ChurnBarPoint(date: day, dayAdded: 100, dayRemoved: 50)
-        let h = churnBarHeights(bar, peak: 200, height: 120)
-        // added = 100/200*120 = 60; removed = 50/200*120 = 30; total = 90 (= 150/200*120).
-        XCTAssertEqual(h.added, 60, accuracy: 0.001)
-        XCTAssertEqual(h.removed, 30, accuracy: 0.001)
-        XCTAssertEqual(h.total, 90, accuracy: 0.001)
-        // The peak day fills the whole plot.
-        let peakBar = ChurnBarPoint(date: day, dayAdded: 150, dayRemoved: 50)  // total 200 = peak
-        XCTAssertEqual(churnBarHeights(peakBar, peak: 200, height: 120).total, 120, accuracy: 0.001)
+    func testStackedSegmentHeightProportionalAndFloored() {
+        // 200-line repo against a 400 peak over a 120pt plot = 60pt.
+        XCTAssertEqual(stackedSegmentHeight(lines: 200, peak: 400, height: 120), 60, accuracy: 0.001)
+        // The peak repo fills the whole plot.
+        XCTAssertEqual(stackedSegmentHeight(lines: 400, peak: 400, height: 120), 120, accuracy: 0.001)
+        // A tiny-but-present repo floors at 1px so it isn't invisible.
+        XCTAssertEqual(stackedSegmentHeight(lines: 1, peak: 1_000_000, height: 120), 1)
+        // A zero-line repo draws nothing.
+        XCTAssertEqual(stackedSegmentHeight(lines: 0, peak: 400, height: 120), 0)
     }
 
-    func testChurnBarHeightsZeroDayIsFlat() {
-        let day = Date(timeIntervalSince1970: 1_700_000_000)
-        let h = churnBarHeights(ChurnBarPoint(date: day, dayAdded: 0, dayRemoved: 0),
-                                peak: 200, height: 120)
-        XCTAssertEqual(h.added, 0)
-        XCTAssertEqual(h.removed, 0)
-        XCTAssertEqual(h.total, 0, "a true zero-churn day draws no stacked segment")
-    }
-
-    func testChurnBarHeightsTinyNonZeroSegmentFlooredAtOnePixel() {
-        let day = Date(timeIntervalSince1970: 1_700_000_000)
-        // A real-but-tiny day (1 added against a 1,000,000 peak) still shows a ≥1px sliver
-        // per non-zero segment so it isn't invisible; the (zero) removed segment stays 0.
-        let h = churnBarHeights(ChurnBarPoint(date: day, dayAdded: 1, dayRemoved: 0),
-                                peak: 1_000_000, height: 120)
-        XCTAssertEqual(h.added, 1, "non-zero added floors at 1px")
-        XCTAssertEqual(h.removed, 0, "zero removed stays flat (no spurious sliver)")
-    }
-
-    func testChurnDayReadoutFormatsBothSides() {
+    func testStackedDayReadoutFormatsTotal() {
         let cal = GitStatsService.gmtCalendar
         let day = cal.date(from: DateComponents(year: 2026, month: 6, day: 14))!
-        let bar = ChurnBarPoint(date: day, dayAdded: 1_240, dayRemoved: 120)
-        XCTAssertEqual(churnDayReadout(bar), "Jun 14 · +1,240 \u{2212}120",
-                       "short GMT date + honest +added / −removed (U+2212 minus)")
-        // A zero-churn day reads "no commits".
-        let empty = ChurnBarPoint(date: day, dayAdded: 0, dayRemoved: 0)
-        XCTAssertEqual(churnDayReadout(empty), "Jun 14 · no commits")
-        XCTAssertEqual(churnDayDateText(day), "Jun 14")
+        let bar = StackedDayBar(date: day, segments: [
+            StackedSegment(repoName: "media-pipeline", lines: 31_400),
+            StackedSegment(repoName: "media-upload", lines: 17_390),
+        ])
+        XCTAssertEqual(stackedDayReadout(bar), "Jun 14 · 48,790 lines")
+        // A day before any code reads "no code yet".
+        let empty = StackedDayBar(date: day, segments: [])
+        XCTAssertEqual(stackedDayReadout(empty), "Jun 14 · no code yet")
+        // The short GMT date formatter (POSIX, GMT) backing the readout.
+        XCTAssertEqual(shortDayDateText(day), "Jun 14")
+    }
+
+    // MARK: - Per-repo color ramp
+
+    func testRepoColorSingleRepoIsPrimary() {
+        XCTAssertEqual(repoColor(index: 0, count: 1), Palette.primary)
+    }
+
+    func testRepoColorSpreadAcrossRampAndDistinct() {
+        // 3 repos spread across the heat ramp: first = primary (t=0), last = negative (t=1),
+        // and all three are visibly distinct.
+        let c0 = repoColor(index: 0, count: 3)
+        let c1 = repoColor(index: 1, count: 3)
+        let c2 = repoColor(index: 2, count: 3)
+        XCTAssertEqual(c0, Palette.heat(0))
+        XCTAssertEqual(c2, Palette.heat(1))
+        XCTAssertNotEqual(c0, c1)
+        XCTAssertNotEqual(c1, c2)
+        XCTAssertNotEqual(c0, c2)
+        // Out-of-range index is clamped (no crash, stays in palette).
+        XCTAssertEqual(repoColor(index: 99, count: 3), repoColor(index: 2, count: 3))
     }
 
     // MARK: - Per-repo cards
@@ -631,8 +643,8 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertEqual(cards[0].repoName, "app")
         XCTAssertEqual(cards[0].defaultBranch, "main")
         XCTAssertEqual(cards[0].totalLinesText, "12,481")
-        // Period delta from per-day history: net = 300 - 60 = 240.
-        XCTAssertEqual(cards[0].delta.net, 240)
+        // NET delta = (cumulative netLines as of now) − (as of now − 7d) = 240 − 0 = 240.
+        XCTAssertEqual(cards[0].net, 240)
         XCTAssertEqual(cards[0].triangle.direction, .up)
         XCTAssertEqual(cards[0].triangle.label, "▲ +240")
     }
@@ -666,6 +678,8 @@ final class CodeStatsPresentationTests: XCTestCase {
             RepoHistoryPoint(date: recent, netLines: 510, dayAdded: 10, dayRemoved: 0),
         ])
         let cards = repoCells([repo], period: .d7, now: now)
-        XCTAssertEqual(cards[0].delta.added, 10, "old day excluded from 7d window")
+        // NET delta = netLines as of now (510) − as of now−7d (the 40d-back point's 500) = 10.
+        // The pre-window growth (the old day's 500) is the baseline, not counted in the window.
+        XCTAssertEqual(cards[0].net, 10, "only in-window growth counts; old baseline excluded")
     }
 }
