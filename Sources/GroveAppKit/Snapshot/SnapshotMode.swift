@@ -608,12 +608,18 @@ public enum SnapshotMode {
             previous = total
             let removed = i == 0 ? 0 : max(net / 4, 0)
             let added = net + removed
+            // ~80% of each day's churn is code, ~20% data/prose (markdown), so the
+            // honest Code/Data triangles have real, distinct values in snapshots.
+            let codeAdded = Int(Double(added) * 0.8)
+            let codeRemoved = Int(Double(removed) * 0.8)
             return CodeStatsPoint(date: day(Double(totals.count - 1 - i) * 6),
                                   totalLines: total,
                                   code: Int(Double(total) * 0.79), comment: Int(Double(total) * 0.10),
                                   blank: Int(Double(total) * 0.11),
                                   totalFiles: 280 + i * 6,
-                                  dayAdded: added, dayRemoved: removed)
+                                  dayAdded: added, dayRemoved: removed,
+                                  codeAdded: codeAdded, codeRemoved: codeRemoved,
+                                  dataAdded: added - codeAdded, dataRemoved: removed - codeRemoved)
         }
     }
 
@@ -622,13 +628,19 @@ public enum SnapshotMode {
     /// recomputes client-side like the real scan output.
     static func fixtureRepoStats(now: Date) -> [RepoStats] {
         func day(_ n: Double) -> Date { now.addingTimeInterval(-n * 86_400) }
-        func history(_ steps: [(net: Int, added: Int, removed: Int)]) -> [RepoHistoryPoint] {
+        // `dataFraction` of each day's churn is data/prose; the rest is code. media-pipeline
+        // is code-heavy (0), media-upload is mixed (some markdown/json churn).
+        func history(_ steps: [(net: Int, added: Int, removed: Int)], dataFraction: Double) -> [RepoHistoryPoint] {
             var cumulative = 0
             return steps.enumerated().map { i, s in
                 cumulative += s.net
+                let dataAdded = Int(Double(s.added) * dataFraction)
+                let dataRemoved = Int(Double(s.removed) * dataFraction)
                 return RepoHistoryPoint(date: day(Double(steps.count - 1 - i) * 6),
                                         netLines: cumulative,
-                                        dayAdded: s.added, dayRemoved: s.removed)
+                                        dayAdded: s.added, dayRemoved: s.removed,
+                                        codeAdded: s.added - dataAdded, codeRemoved: s.removed - dataRemoved,
+                                        dataAdded: dataAdded, dataRemoved: dataRemoved)
             }
         }
         func stats(files: Int, lines: Int) -> CodeStats {
@@ -641,13 +653,13 @@ public enum SnapshotMode {
                       repoName: "media-pipeline",
                       defaultBranch: "main", stats: stats(files: 184, lines: 31_400),
                       history: history([(0, 0, 0), (640, 700, 60), (1_180, 1_300, 120),
-                                        (1_540, 1_720, 180), (820, 990, 170)]),
+                                        (1_540, 1_720, 180), (820, 990, 170)], dataFraction: 0),
                       delta: RepoDelta(added: 4_010, removed: 530, filesChanged: 22)),
             RepoStats(repoPath: "/Users/demo/Workspaces/acme.shop/media-upload",
                       repoName: "media-upload",
                       defaultBranch: "develop", stats: stats(files: 96, lines: 17_390),
                       history: history([(0, 0, 0), (310, 360, 50), (-120, 40, 160),
-                                        (540, 620, 80), (290, 330, 40)]),
+                                        (540, 620, 80), (290, 330, 40)], dataFraction: 0.25),
                       delta: RepoDelta(added: 1_350, removed: 330, filesChanged: 11)),
         ]
     }

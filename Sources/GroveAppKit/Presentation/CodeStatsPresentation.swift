@@ -466,91 +466,193 @@ public func deltaTriangle(net: Int) -> DeltaTriangle {
     }
 }
 
-// MARK: - Per-day bar model (growth chart)
+// MARK: - Honest two-sided category delta (▲ added AND ▼ removed)
 
-/// One bar: a day's carry-forward cumulative total plus that day's added/removed (so
-/// selecting two bars can show the window delta without a separate lookup).
-public struct BarPoint: Equatable, Sendable, Identifiable {
+/// Both sides of a category's churn over a period: ▲ added (growth) AND ▼ removed
+/// (deletions), each pre-formatted. Unlike `DeltaTriangle` (a single net triangle that
+/// HID the removed count and made "+X" look like net growth), this carries BOTH counts
+/// so the Totals card can show the honest gross additions and deletions, classified.
+/// `addedText` is "▲ +1,240" (or "±0"); `removedText` is "▼ −120" (U+2212 minus, or "±0").
+public struct CategoryDelta: Equatable, Sendable {
+    public let added: Int
+    public let removed: Int
+    public let addedText: String      // "▲ +1,240" / "±0"
+    public let removedText: String    // "▼ −120"   / "±0"
+
+    public init(added: Int, removed: Int) {
+        self.added = added
+        self.removed = removed
+        // Format exactly like deltaTriangle: grouped thousands + U+2212 minus, "±0" when 0.
+        self.addedText = added > 0 ? "▲ +\(groupedThousands(added))" : "±0"
+        self.removedText = removed > 0 ? "▼ \u{2212}\(groupedThousands(removed))" : "±0"
+    }
+}
+
+/// Extract the Code and Data/Prose deltas (each a `CategoryDelta` with BOTH added and
+/// removed) from an aggregate history over a period. Sums the classified per-day
+/// `codeAdded`/`codeRemoved`/`dataAdded`/`dataRemoved` across the window `[start, now]`.
+/// Pure; used by the Totals card to show two honest triangles per headline.
+public func periodDeltasByCategory(_ history: [CodeStatsPoint], period: StatsPeriod, now: Date)
+    -> (code: CategoryDelta, dataProse: CategoryDelta) {
+    let start = period.start(now: now)
+    var codeAdded = 0, codeRemoved = 0, dataAdded = 0, dataRemoved = 0
+    for point in history where point.date >= start && point.date <= now {
+        codeAdded += point.codeAdded
+        codeRemoved += point.codeRemoved
+        dataAdded += point.dataAdded
+        dataRemoved += point.dataRemoved
+    }
+    return (
+        code: CategoryDelta(added: codeAdded, removed: codeRemoved),
+        dataProse: CategoryDelta(added: dataAdded, removed: dataRemoved)
+    )
+}
+
+// MARK: - Churn bars (dense, day-filled, non-cumulative)
+
+/// One stacked churn bar: a single calendar DAY with that day's lines ADDED (blue
+/// lower segment) and lines REMOVED (pink upper segment). `totalChurn = dayAdded +
+/// dayRemoved` is the bar's height — this is NON-cumulative codebase activity, not the
+/// running total. Days are calendar-filled (no transparent gaps): a day with no commit
+/// is a zero-churn bar (`dayAdded == dayRemoved == 0`).
+public struct ChurnBarPoint: Equatable, Sendable, Identifiable {
     public var id: Date { date }
-    public let date: Date
-    public let cumulativeLines: Int   // = CodeStatsPoint.totalLines (carry-forward total)
-    public let dayAdded: Int
-    public let dayRemoved: Int
-    public init(date: Date, cumulativeLines: Int, dayAdded: Int, dayRemoved: Int) {
+    public let date: Date              // start-of-day (GMT)
+    public let dayAdded: Int           // blue segment height
+    public let dayRemoved: Int         // pink segment height
+    public var totalChurn: Int { dayAdded + dayRemoved }
+
+    public init(date: Date, dayAdded: Int, dayRemoved: Int) {
         self.date = date
-        self.cumulativeLines = cumulativeLines
         self.dayAdded = dayAdded
         self.dayRemoved = dayRemoved
     }
 }
 
-/// Build the per-day bar series from an aggregate history (oldest-first). Long
-/// histories are evenly downsampled to ≤ `barMaxPoints`, always keeping the FIRST and
-/// LAST day so the endpoints stay exact.
-public func barSeries(_ history: [CodeStatsPoint]) -> [BarPoint] {
-    let points = history.map {
-        BarPoint(date: $0.date, cumulativeLines: $0.totalLines,
-                 dayAdded: $0.dayAdded, dayRemoved: $0.dayRemoved)
+/// The hard cap on how many days of churn bars we ever build: 1 YEAR. Older history is
+/// kept intact in the engine (so cumulative/"All" totals stay exact) but is never drawn
+/// as bars — the dense daily histogram only needs the recent window. The whole 1-year
+/// strip is built so the histogram is genuinely scrollable back to the cap.
+public let churnBarMaxDaysBack = 365
+
+/// How many of the most-recent churn days fill the histogram's DEFAULT viewport (~6
+/// months). The full series always spans `churnBarMaxDaysBack` (1 year), so the strip
+/// opens scrolled to today showing this many days and scrolls back to the remaining
+/// older days within the cap. This is INDEPENDENT of the Totals 7d/30d/90d/All period —
+/// the churn chart is codebase-activity-over-time, not a delta window.
+public let churnDefaultVisibleDays = 180
+
+/// Build a DENSE churn-bar series from an aggregate history, filling EVERY calendar day
+/// from `daysBack` days ago through `now`'s start-of-day so there are no transparent gaps.
+/// `daysBack` is clamped to the 1-year cap (`churnBarMaxDaysBack`). Days with commits carry
+/// their `dayAdded`/`dayRemoved`; days with none are zero-churn bars (the view may tint
+/// these gray when "show empty days" is on, else leave them empty).
+///
+/// This is the histogram's OWN window — independent of the Totals 7d/30d/90d/All period.
+/// The view always asks for the full 1-year span (so the strip is genuinely scrollable),
+/// then opens scrolled to today with ~`churnDefaultVisibleDays` filling the viewport.
+///
+/// NO downsampling — the calendar density (one bar per day) is the whole point of the
+/// reference histogram. The cap is presentation-only: the engine's history is never
+/// truncated, so the "All"-period cumulative totals elsewhere stay correct; only the
+/// drawn bar window is bounded here.
+public func churnBarSeries(_ history: [CodeStatsPoint], daysBack: Int, now: Date) -> [ChurnBarPoint] {
+    let cal = GitStatsService.gmtCalendar
+    let capped = min(max(daysBack, 0), churnBarMaxDaysBack)
+    let windowStart = cal.date(byAdding: .day, value: -capped, to: now) ?? .distantPast
+
+    // Lookup: start-of-day → (added, removed) for every history point in the window.
+    var byDay: [Date: (added: Int, removed: Int)] = [:]
+    for point in history where point.date >= windowStart && point.date <= now {
+        let day = cal.startOfDay(for: point.date)
+        let prior = byDay[day] ?? (0, 0)
+        byDay[day] = (prior.added + point.dayAdded, prior.removed + point.dayRemoved)
     }
-    guard points.count > barMaxPoints else { return points }
-    let stride = Double(points.count - 1) / Double(barMaxPoints - 1)
-    var picked: [BarPoint] = []
-    var lastIndex = -1
-    for i in 0..<barMaxPoints {
-        let index = Int((Double(i) * stride).rounded())
-        if index != lastIndex { picked.append(points[index]); lastIndex = index }
+
+    // Fill every calendar day [windowStart, now], oldest first.
+    var bars: [ChurnBarPoint] = []
+    var current = cal.startOfDay(for: windowStart)
+    let end = cal.startOfDay(for: now)
+    guard current <= end else { return [] }
+    while current <= end {
+        let (added, removed) = byDay[current] ?? (0, 0)
+        bars.append(ChurnBarPoint(date: current, dayAdded: added, dayRemoved: removed))
+        guard let next = cal.date(byAdding: .day, value: 1, to: current) else { break }
+        current = next
     }
-    if let last = points.last, picked.last?.date != last.date { picked.append(last) }
-    return picked
+    return bars
 }
 
-/// The largest bar count we'll render before downsampling.
-private let barMaxPoints = 200
+/// Period-based convenience over `churnBarSeries(_:daysBack:now:)`: the drawn window is the
+/// LATER of the period's start and the 1-year cap. Retained for callers/tests that key the
+/// window off a `StatsPeriod`; the live histogram uses the `daysBack:` form directly so its
+/// window is decoupled from the Totals delta period.
+public func churnBarSeries(_ history: [CodeStatsPoint], period: StatsPeriod, now: Date) -> [ChurnBarPoint] {
+    let cal = GitStatsService.gmtCalendar
+    let periodStart = period.start(now: now)
+    let capStart = cal.date(byAdding: .day, value: -churnBarMaxDaysBack, to: now) ?? .distantPast
+    let windowStart = max(periodStart, capStart)
+    let daysBack = Int((cal.startOfDay(for: now).timeIntervalSince(cal.startOfDay(for: windowStart)) / 86_400).rounded())
+    return churnBarSeries(history, daysBack: daysBack, now: now)
+}
 
-// MARK: - Two-bar selection delta
+/// The peak total churn across a churn-bar series (1 floored), the denominator the
+/// view normalizes every bar's height against so the tallest day fills the plot.
+public func churnPeak(_ bars: [ChurnBarPoint]) -> Int {
+    max(bars.map(\.totalChurn).max() ?? 0, 1)
+}
 
-/// The delta between two selected bars. `added`/`removed` SUM each day's value over the
-/// half-open window (earlier, later] — the honest per-day churn within the selection.
-/// `net` is the AUTHORITATIVE cumulative difference (`later.cumulativeLines −
-/// earlier.cumulativeLines`), carried separately rather than derived from
-/// `added − removed`: after downsampling, intermediate days are dropped from `bars`,
-/// so the per-day sum can diverge from the true endpoint diff. Keeping `net` explicit
-/// means the readout's "net" is always exact, while `added`/`removed` honestly report
-/// the (possibly incomplete) per-day churn the bars retained.
-public struct BarSelectionDelta: Equatable, Sendable {
-    public let added: Int
-    public let removed: Int
-    public let net: Int
-    public init(added: Int, removed: Int, net: Int) {
+/// The pixel heights of one stacked churn bar against a resolved plot `height` and a
+/// shared `peak` denominator (from `churnPeak`). The bar is STACKED: `added` (blue) is
+/// the LOWER segment, `removed` (pink) the UPPER, both scaled by the same factor so
+/// their union is proportional to `totalChurn / peak`. A day with churn but a tiny
+/// fraction still shows a ≥1px sliver per non-zero segment (like a progress bar) so a
+/// real-but-small day is never invisible; a true ZERO-churn day returns (0, 0).
+public struct ChurnBarHeights: Equatable, Sendable {
+    public let added: CGFloat     // lower (blue) segment height in points
+    public let removed: CGFloat   // upper (pink) segment height in points
+    public var total: CGFloat { added + removed }
+    public init(added: CGFloat, removed: CGFloat) {
         self.added = added
         self.removed = removed
-        self.net = net
     }
 }
 
-/// Compute the delta between two selected bars. `bars` should be the full series the two
-/// points came from (used to sum the per-day churn inside the window).
-public func barSelectionDelta(from a: BarPoint, to b: BarPoint, in bars: [BarPoint]) -> BarSelectionDelta {
-    let earlier = a.date <= b.date ? a : b
-    let later = a.date <= b.date ? b : a
-    var added = 0, removed = 0
-    for bar in bars where bar.date > earlier.date && bar.date <= later.date {
-        added += bar.dayAdded; removed += bar.dayRemoved
+/// Resolve one churn bar's stacked segment heights. `peak` is the series-wide max total
+/// churn (`churnPeak`); `height` is the plot box height. Segments scale linearly by
+/// `value / peak * height`, each non-zero segment floored at 1px so it stays visible.
+public func churnBarHeights(_ bar: ChurnBarPoint, peak: Int, height: CGFloat) -> ChurnBarHeights {
+    let denom = CGFloat(max(peak, 1))
+    func seg(_ value: Int) -> CGFloat {
+        guard value > 0 else { return 0 }
+        return max(CGFloat(value) / denom * height, 1)
     }
-    // net uses the cumulative endpoints so it's exact even after downsampling, where the
-    // per-day (added − removed) sum may diverge from the true endpoint diff.
-    let net = later.cumulativeLines - earlier.cumulativeLines
-    return BarSelectionDelta(added: added, removed: removed, net: net)
+    return ChurnBarHeights(added: seg(bar.dayAdded), removed: seg(bar.dayRemoved))
 }
 
-/// Readout for a two-bar selection: "+X added · −Y removed · net Z" (U+2212 in the
-/// removed token; net carries an explicit sign). `net` is the authoritative cumulative
-/// diff, NOT `added − removed`, so it stays exact even on downsampled series.
-public func barSelectionReadout(_ d: BarSelectionDelta) -> String {
-    let net = d.net
-    let netText = net >= 0 ? "+\(groupedThousands(net))" : "\u{2212}\(groupedThousands(abs(net)))"
-    return "+\(groupedThousands(d.added)) added · \u{2212}\(groupedThousands(d.removed)) removed · net \(netText)"
+/// The per-day tooltip for a tapped churn bar: a short date plus the honest
+/// "+added / −removed" churn (U+2212 minus on the removed side). A zero-churn day reads
+/// "no commits". Pure + deterministic (POSIX, GMT) so it's unit-testable.
+public func churnDayReadout(_ bar: ChurnBarPoint) -> String {
+    let date = churnDayDateText(bar.date)
+    guard bar.totalChurn > 0 else { return "\(date) · no commits" }
+    return "\(date) · +\(groupedThousands(bar.dayAdded)) \u{2212}\(groupedThousands(bar.dayRemoved))"
 }
+
+/// "Jun 14" style short date for a churn bar's GMT start-of-day. Deterministic
+/// (POSIX locale, GMT) so snapshots and tests are stable.
+public func churnDayDateText(_ date: Date) -> String {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.timeZone = TimeZone(identifier: "GMT")
+    f.dateFormat = "MMM d"
+    return f.string(from: date)
+}
+
+// The old cumulative growth bars (BarPoint/barSeries) and their two-bar selection delta
+// (BarSelectionDelta/barSelectionDelta/barSelectionReadout) were removed with the churn
+// redesign — the histogram is now per-day, non-cumulative (ChurnBarPoint/churnBarSeries),
+// with a single-day tap tooltip (churnDayReadout) replacing the two-bar window selection.
 
 // MARK: - Per-repo display blocks
 

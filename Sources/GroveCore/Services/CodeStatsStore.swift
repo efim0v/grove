@@ -14,10 +14,21 @@ public struct CodeStatsPoint: Codable, Sendable, Equatable {
     public let dayAdded: Int
     /// That day's removals, summed across repos (point-in-day, not carry-forward).
     public let dayRemoved: Int
-    /// `dayAdded`/`dayRemoved` default to 0 so every existing constructor (e.g.
-    /// `barSeries`/store round-trips) and Codable decode of older JSON stays green.
+    /// That day's additions/removals partitioned by language group: `code*` are non-data
+    /// languages (plus unknown-extension paths), `data*` are Data/Prose
+    /// (Markdown/JSON/YAML/TOML). `codeAdded + dataAdded == dayAdded` (likewise removed).
+    /// Feeds the honest Code/Data delta triangles; the churn bars use the whole totals.
+    public let codeAdded: Int
+    public let codeRemoved: Int
+    public let dataAdded: Int
+    public let dataRemoved: Int
+    /// `dayAdded`/`dayRemoved` and the classified fields default to 0 so every existing
+    /// constructor (presentation/store round-trips) and Codable decode of older JSON
+    /// stays green.
     public init(date: Date, totalLines: Int, code: Int, comment: Int, blank: Int,
-                totalFiles: Int, dayAdded: Int = 0, dayRemoved: Int = 0) {
+                totalFiles: Int, dayAdded: Int = 0, dayRemoved: Int = 0,
+                codeAdded: Int = 0, codeRemoved: Int = 0,
+                dataAdded: Int = 0, dataRemoved: Int = 0) {
         self.date = date
         self.totalLines = totalLines
         self.code = code
@@ -26,10 +37,14 @@ public struct CodeStatsPoint: Codable, Sendable, Equatable {
         self.totalFiles = totalFiles
         self.dayAdded = dayAdded
         self.dayRemoved = dayRemoved
+        self.codeAdded = codeAdded
+        self.codeRemoved = codeRemoved
+        self.dataAdded = dataAdded
+        self.dataRemoved = dataRemoved
     }
 
-    // Custom decode so older persisted history JSON (no dayAdded/dayRemoved keys) loads,
-    // defaulting the missing per-day fields to 0.
+    // Custom decode so older persisted history JSON (no dayAdded/dayRemoved/classified
+    // keys) loads, defaulting the missing per-day fields to 0.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.date = try c.decode(Date.self, forKey: .date)
@@ -40,6 +55,10 @@ public struct CodeStatsPoint: Codable, Sendable, Equatable {
         self.totalFiles = try c.decode(Int.self, forKey: .totalFiles)
         self.dayAdded = try c.decodeIfPresent(Int.self, forKey: .dayAdded) ?? 0
         self.dayRemoved = try c.decodeIfPresent(Int.self, forKey: .dayRemoved) ?? 0
+        self.codeAdded = try c.decodeIfPresent(Int.self, forKey: .codeAdded) ?? 0
+        self.codeRemoved = try c.decodeIfPresent(Int.self, forKey: .codeRemoved) ?? 0
+        self.dataAdded = try c.decodeIfPresent(Int.self, forKey: .dataAdded) ?? 0
+        self.dataRemoved = try c.decodeIfPresent(Int.self, forKey: .dataRemoved) ?? 0
     }
 }
 
@@ -133,6 +152,12 @@ public final class CodeStatsStore {
             || last.comment != newPoint.comment
             || last.blank != newPoint.blank
             || last.totalFiles != newPoint.totalFiles
+            || last.dayAdded != newPoint.dayAdded
+            || last.dayRemoved != newPoint.dayRemoved
+            || last.codeAdded != newPoint.codeAdded
+            || last.codeRemoved != newPoint.codeRemoved
+            || last.dataAdded != newPoint.dataAdded
+            || last.dataRemoved != newPoint.dataRemoved
         let elapsed = newPoint.date.timeIntervalSince(last.date)
         if changed || elapsed >= minInterval {
             points.append(newPoint)

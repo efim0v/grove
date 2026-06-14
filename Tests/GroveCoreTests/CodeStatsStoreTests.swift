@@ -55,6 +55,27 @@ final class CodeStatsStoreTests: XCTestCase {
         XCTAssertEqual(loaded.points.first?.totalLines, 10)
         XCTAssertEqual(loaded.points.first?.dayAdded, 0)
         XCTAssertEqual(loaded.points.first?.dayRemoved, 0)
+        // The classified fields, also absent in legacy JSON, default to 0.
+        XCTAssertEqual(loaded.points.first?.codeAdded, 0)
+        XCTAssertEqual(loaded.points.first?.codeRemoved, 0)
+        XCTAssertEqual(loaded.points.first?.dataAdded, 0)
+        XCTAssertEqual(loaded.points.first?.dataRemoved, 0)
+    }
+
+    func testClassifiedFieldsSurviveRoundTrip() throws {
+        let dir = try Fixture.tempDir("codestats-classified")
+        let store = CodeStatsStore(dir: dir)
+        let id = UUID()
+        let p = CodeStatsPoint(date: base, totalLines: 10, code: 8, comment: 1, blank: 1,
+                               totalFiles: 3, dayAdded: 50, dayRemoved: 8,
+                               codeAdded: 40, codeRemoved: 6, dataAdded: 10, dataRemoved: 2)
+        try store.append(projectID: id, point: p)
+        let loaded = store.load(projectID: id)
+        XCTAssertEqual(loaded.points.first?.codeAdded, 40)
+        XCTAssertEqual(loaded.points.first?.codeRemoved, 6)
+        XCTAssertEqual(loaded.points.first?.dataAdded, 10)
+        XCTAssertEqual(loaded.points.first?.dataRemoved, 2)
+        XCTAssertEqual(loaded.points.first, p)
     }
 
     func testMissingFileLoadsEmptyHistory() throws {

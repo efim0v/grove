@@ -154,6 +154,17 @@ public struct GitService: Sendable {
         return "main"
     }
 
+    /// Returns the symbolic ref name of the currently checked-out branch
+    /// (`git symbolic-ref --short HEAD`). Empty string on any git failure — a detached
+    /// HEAD, a missing repo, or a timeout — so callers can cleanly fall back.
+    public func currentBranch(repoPath: String) async -> String {
+        guard let result = try? await runner.run(
+            "git", ["-C", repoPath, "symbolic-ref", "--short", "HEAD"],
+            cwd: nil, env: nil, timeout: 10
+        ), result.exitCode == 0 else { return "" }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Lists all local branches, sorted alphabetically.
     /// Uses `git for-each-ref refs/heads --format=%(refname:short)`.
     /// Returns an empty array on any git failure (degrades gracefully, never throws).

@@ -10,23 +10,42 @@ public struct RepoHistoryPoint: Sendable, Equatable, Codable {
     public let netLines: Int       // cumulative (additions - deletions) through this day
     public let dayAdded: Int       // additions committed ON this day (point-in-day, not cumulative)
     public let dayRemoved: Int     // deletions committed ON this day (point-in-day, not cumulative)
-    /// `dayAdded`/`dayRemoved` default to 0 so existing call sites and Codable decodes
-    /// of pre-existing JSON (which lack these keys) keep working.
-    public init(date: Date, netLines: Int, dayAdded: Int = 0, dayRemoved: Int = 0) {
+    /// That day's additions/removals classified by language group: `code*` are non-data
+    /// languages (and any path with no known language — see `parseLog`); `data*` are the
+    /// Data/Prose languages (Markdown/JSON/YAML/TOML). `codeAdded + dataAdded == dayAdded`
+    /// and `codeRemoved + dataRemoved == dayRemoved` (the totals are kept whole for the
+    /// churn bars, the split feeds the honest Code/Data delta triangles).
+    public let codeAdded: Int
+    public let codeRemoved: Int
+    public let dataAdded: Int
+    public let dataRemoved: Int
+    /// `dayAdded`/`dayRemoved` and the classified fields default to 0 so existing call
+    /// sites and Codable decodes of pre-existing JSON (which lack these keys) keep working.
+    public init(date: Date, netLines: Int, dayAdded: Int = 0, dayRemoved: Int = 0,
+                codeAdded: Int = 0, codeRemoved: Int = 0,
+                dataAdded: Int = 0, dataRemoved: Int = 0) {
         self.date = date
         self.netLines = netLines
         self.dayAdded = dayAdded
         self.dayRemoved = dayRemoved
+        self.codeAdded = codeAdded
+        self.codeRemoved = codeRemoved
+        self.dataAdded = dataAdded
+        self.dataRemoved = dataRemoved
     }
 
-    // Custom decode so older persisted JSON (no dayAdded/dayRemoved keys) still loads,
-    // defaulting the missing per-day fields to 0.
+    // Custom decode so older persisted JSON (no dayAdded/dayRemoved/classified keys)
+    // still loads, defaulting the missing per-day fields to 0.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.date = try c.decode(Date.self, forKey: .date)
         self.netLines = try c.decode(Int.self, forKey: .netLines)
         self.dayAdded = try c.decodeIfPresent(Int.self, forKey: .dayAdded) ?? 0
         self.dayRemoved = try c.decodeIfPresent(Int.self, forKey: .dayRemoved) ?? 0
+        self.codeAdded = try c.decodeIfPresent(Int.self, forKey: .codeAdded) ?? 0
+        self.codeRemoved = try c.decodeIfPresent(Int.self, forKey: .codeRemoved) ?? 0
+        self.dataAdded = try c.decodeIfPresent(Int.self, forKey: .dataAdded) ?? 0
+        self.dataRemoved = try c.decodeIfPresent(Int.self, forKey: .dataRemoved) ?? 0
     }
 }
 
@@ -43,6 +62,24 @@ public struct RepoDelta: Sendable, Equatable, Codable {
         self.filesChanged = filesChanged
     }
     public static let zero = RepoDelta(added: 0, removed: 0, filesChanged: 0)
+}
+
+/// Added/removed over a window, partitioned by language group: `code*` are non-data
+/// languages (plus unknown-extension paths), `data*` are Data/Prose
+/// (Markdown/JSON/YAML/TOML). `codeAdded + dataAdded` equals the matching `RepoDelta`
+/// total. Powers the honest two-triangle (▲added / ▼removed) Code and Data headlines.
+public struct LanguageSplitDelta: Sendable, Equatable, Codable {
+    public let codeAdded: Int
+    public let codeRemoved: Int
+    public let dataAdded: Int
+    public let dataRemoved: Int
+    public init(codeAdded: Int, codeRemoved: Int, dataAdded: Int, dataRemoved: Int) {
+        self.codeAdded = codeAdded
+        self.codeRemoved = codeRemoved
+        self.dataAdded = dataAdded
+        self.dataRemoved = dataRemoved
+    }
+    public static let zero = LanguageSplitDelta(codeAdded: 0, codeRemoved: 0, dataAdded: 0, dataRemoved: 0)
 }
 
 /// One counted file in a scan, carrying its PROJECT-root-relative path and its
@@ -239,8 +276,26 @@ public struct GitStatsService: Sendable {
                 worktreePaths.insert(Self.standardize(entry.path))
             }
         }
-        guard !worktreePaths.isEmpty else { return repos }
-        return repos.filter { !worktreePaths.contains(Self.standardize($0.path)) }
+        let afterWorktrees = worktreePaths.isEmpty
+            ? repos
+            : repos.filter { !worktreePaths.contains(Self.standardize($0.path)) }
+        return Self.dropUmbrellaAncestors(afterWorktrees)
+    }
+
+    /// Drops any discovered repo whose path is a strict ANCESTOR (parent directory) of
+    /// another discovered repo's path. An "umbrella" repo (e.g. a `acme.shop`
+    /// monorepo that has its OWN `.git` but merely CONTAINS the three real product repos)
+    /// would otherwise be scanned as a fourth repo, double-counting the nested trees and
+    /// mixing unrelated histories. Paths are symlink-standardized first so the prefix
+    /// test compares apples to apples. A repo nested at the same path as another is never
+    /// considered its own ancestor (strict prefix with a trailing "/").
+    static func dropUmbrellaAncestors(_ repos: [RepoInfo]) -> [RepoInfo] {
+        let standardized = repos.map { ($0, standardize($0.path)) }
+        return standardized.filter { repo, path in
+            !standardized.contains { other, otherPath in
+                otherPath != path && otherPath.hasPrefix(path + "/")
+            }
+        }.map(\.0)
     }
 
     /// git emits symlink-resolved paths (/private/var/… on macOS); standardize both
@@ -424,11 +479,22 @@ public struct GitStatsService: Sendable {
 
     // MARK: History + delta
 
-    /// Resolves the repo's default branch, falling back to HEAD when the detected
-    /// branch isn't a real ref (e.g. a repo whose only branch isn't main/master/dev).
+    /// Resolves the repo's EFFECTIVE default branch. The history/delta must describe the
+    /// branch the user is actually working on, so the checked-out branch (HEAD's symbolic
+    /// ref) is preferred over the origin/HEAD "master" guess: a repo on a feature branch
+    /// (e.g. `refactor/bloc-to-vm-migration`) was previously summarized against master,
+    /// describing a tree the working copy no longer matched. Order:
+    ///   1. the current checked-out branch (`git symbolic-ref --short HEAD`), if it's a real ref;
+    ///   2. the origin/HEAD-detected base branch (main/master/dev fallback inside);
+    ///   3. `HEAD` as the last resort (detached HEAD, etc).
+    /// The per-repo branch override (in `scan`) still wins over this.
     func resolveBranch(repo: RepoInfo) async -> String {
-        let branch = await git.baseBranch(repo: repo, override: nil)
-        if await git.branchExists(repoPath: repo.path, branch) { return branch }
+        let current = await git.currentBranch(repoPath: repo.path)
+        if !current.isEmpty, await git.branchExists(repoPath: repo.path, current) {
+            return current
+        }
+        let base = await git.baseBranch(repo: repo, override: nil)
+        if await git.branchExists(repoPath: repo.path, base) { return base }
         return "HEAD"
     }
 
@@ -466,11 +532,17 @@ public struct GitStatsService: Sendable {
     }
 
     /// One parsed commit: its committer timestamp plus the additions/deletions and
-    /// the set of non-binary paths it touched.
+    /// the set of non-binary paths it touched. `added`/`removed` are the all-language
+    /// totals (kept whole for the churn bars); `code*`/`data*` partition the same
+    /// totals by language group (`codeAdded + dataAdded == added`, likewise removed).
     struct ParsedCommit {
         let date: Date
         var added: Int
         var removed: Int
+        var codeAdded: Int = 0
+        var codeRemoved: Int = 0
+        var dataAdded: Int = 0
+        var dataRemoved: Int = 0
         var paths: Set<String>
     }
 
@@ -478,6 +550,15 @@ public struct GitStatsService: Sendable {
     /// with a line beginning `\u{01}` (`%H` then `\u{02}` then the UNIX `%ct`).
     /// Subsequent `<add>\t<del>\t<path>` numstat lines accumulate into the current
     /// commit; binary files ("-"/"-") are skipped. Output is newest-first.
+    ///
+    /// Each numstat path is classified by `CodeStatsEngine.language(forPath:)`:
+    /// a Data/Prose language (Markdown/JSON/YAML/TOML) accumulates into `data*`, while
+    /// every other case — a known CODE language OR a path with NO known language (a
+    /// `.txt`, a `Makefile`, an extensionless file) — accumulates into `code*`. Treating
+    /// unknown-language paths as code (rather than a third bucket) keeps the invariant
+    /// `code + data == total` so the churn bars (totals) and the Code/Data triangles
+    /// (split) never disagree; it is the simpler design and matches how an unrecognized
+    /// file is "code-neutral activity" rather than "data".
     static func parseLog(_ output: String) -> [ParsedCommit] {
         var commits: [ParsedCommit] = []
         for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -497,16 +578,31 @@ public struct GitStatsService: Sendable {
                 let fields = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
                 guard fields.count >= 3, !fields[2].isEmpty else { continue }
                 guard let add = Int(fields[0]), let del = Int(fields[1]) else { continue }  // "-" → binary, skip
-                commits[commits.count - 1].added += add
-                commits[commits.count - 1].removed += del
-                commits[commits.count - 1].paths.insert(String(fields[2]))
+                let path = String(fields[2])
+                // Classify: Data/Prose language → data bucket; everything else (known
+                // code language OR unknown extension) → code bucket. Keeps code+data == total.
+                let isData = CodeStatsEngine.language(forPath: path)
+                    .map { CodeStatsEngine.isDataProse($0.name) } ?? false
+                let i = commits.count - 1
+                commits[i].added += add
+                commits[i].removed += del
+                if isData {
+                    commits[i].dataAdded += add
+                    commits[i].dataRemoved += del
+                } else {
+                    commits[i].codeAdded += add
+                    commits[i].codeRemoved += del
+                }
+                commits[i].paths.insert(path)
             }
         }
         return commits
     }
 
     /// GMT calendar so day bucketing is deterministic regardless of the host tz.
-    static let gmtCalendar: Calendar = {
+    /// Public so the GroveAppKit presentation layer (`churnBarSeries`) can fill calendar
+    /// days against the SAME tz the history was bucketed in.
+    public static let gmtCalendar: Calendar = {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "GMT")!
         return cal
@@ -535,6 +631,10 @@ public struct GitStatsService: Sendable {
         var byDay: [Date: Int] = [:]
         var addedByDay: [Date: Int] = [:]
         var removedByDay: [Date: Int] = [:]
+        var codeAddedByDay: [Date: Int] = [:]
+        var codeRemovedByDay: [Date: Int] = [:]
+        var dataAddedByDay: [Date: Int] = [:]
+        var dataRemovedByDay: [Date: Int] = [:]
         for commit in chronological {
             running += commit.added - commit.removed
             let day = cal.startOfDay(for: commit.date)
@@ -542,10 +642,16 @@ public struct GitStatsService: Sendable {
             byDay[day] = running
             addedByDay[day, default: 0] += commit.added
             removedByDay[day, default: 0] += commit.removed
+            codeAddedByDay[day, default: 0] += commit.codeAdded
+            codeRemovedByDay[day, default: 0] += commit.codeRemoved
+            dataAddedByDay[day, default: 0] += commit.dataAdded
+            dataRemovedByDay[day, default: 0] += commit.dataRemoved
         }
         return order.map {
             RepoHistoryPoint(date: $0, netLines: byDay[$0]!,
-                             dayAdded: addedByDay[$0] ?? 0, dayRemoved: removedByDay[$0] ?? 0)
+                             dayAdded: addedByDay[$0] ?? 0, dayRemoved: removedByDay[$0] ?? 0,
+                             codeAdded: codeAddedByDay[$0] ?? 0, codeRemoved: codeRemovedByDay[$0] ?? 0,
+                             dataAdded: dataAddedByDay[$0] ?? 0, dataRemoved: dataRemovedByDay[$0] ?? 0)
         }
     }
 
@@ -561,6 +667,22 @@ public struct GitStatsService: Sendable {
             paths.formUnion(commit.paths)
         }
         return RepoDelta(added: added, removed: removed, filesChanged: paths.count)
+    }
+
+    /// Sums the classified code/data additions/deletions over commits within
+    /// `[now - period, now]`. The same window as `delta`, partitioned by language group,
+    /// so `code* + data*` equals `delta`'s `added`/`removed`. Tested directly.
+    static func languageSplitDelta(commits: [ParsedCommit], period: TimeInterval, now: Date) -> LanguageSplitDelta {
+        let cutoff = now.addingTimeInterval(-period)
+        var codeAdded = 0, codeRemoved = 0, dataAdded = 0, dataRemoved = 0
+        for commit in commits where commit.date >= cutoff && commit.date <= now {
+            codeAdded += commit.codeAdded
+            codeRemoved += commit.codeRemoved
+            dataAdded += commit.dataAdded
+            dataRemoved += commit.dataRemoved
+        }
+        return LanguageSplitDelta(codeAdded: codeAdded, codeRemoved: codeRemoved,
+                                  dataAdded: dataAdded, dataRemoved: dataRemoved)
     }
 
     /// Aggregates per-repo results into a `ProjectGitStats`: element-wise sum of the
@@ -629,6 +751,7 @@ public struct GitStatsService: Sendable {
         return allDays.map { day in
             var total = 0
             var dayAdded = 0, dayRemoved = 0
+            var codeAdded = 0, codeRemoved = 0, dataAdded = 0, dataRemoved = 0
             for repo in repos {
                 // Cumulative net: last point on or before `day` (history is oldest-first).
                 var value = 0
@@ -642,11 +765,17 @@ public struct GitStatsService: Sendable {
                 if let p = repo.history.first(where: { $0.date == day }) {
                     dayAdded += p.dayAdded
                     dayRemoved += p.dayRemoved
+                    codeAdded += p.codeAdded
+                    codeRemoved += p.codeRemoved
+                    dataAdded += p.dataAdded
+                    dataRemoved += p.dataRemoved
                 }
             }
             return CodeStatsPoint(date: day, totalLines: total, code: total,
                                   comment: 0, blank: 0, totalFiles: 0,
-                                  dayAdded: dayAdded, dayRemoved: dayRemoved)
+                                  dayAdded: dayAdded, dayRemoved: dayRemoved,
+                                  codeAdded: codeAdded, codeRemoved: codeRemoved,
+                                  dataAdded: dataAdded, dataRemoved: dataRemoved)
         }
     }
 

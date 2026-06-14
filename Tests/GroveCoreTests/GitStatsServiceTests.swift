@@ -572,14 +572,17 @@ final class GitStatsServiceTests: XCTestCase {
         // main: +10 lines on day1.
         try write(String(repeating: "a\n", count: 10), to: "f.swift", in: repo)
         try commit("c1", in: repo, date: day1)
-        // other branches off main and adds another +10 (so its history ends at 20).
+        // other branches off main and adds another +10 (so its history ends at 20), then
+        // we check BACK OUT to main so the checked-out (HEAD) branch — which resolveBranch
+        // now prefers — is main. The override still selects `other` explicitly.
         try sh("git -C \(shellQuote(repo.path)) checkout -qb other")
         try write(String(repeating: "a\n", count: 20), to: "f.swift", in: repo)
         try commit("c2", in: repo, date: day2)
+        try sh("git -C \(shellQuote(repo.path)) checkout -q main")
 
         let now = gmtStartOfDay(2025, 1, 4)
 
-        // Default scan resolves to main: history ends at the 10-line day1 commit.
+        // Default scan resolves to the checked-out main: history ends at the day1 commit.
         var cacheMain: [String: RepoFileCache] = [:]
         let statsMain = await service.scan(projectPath: dir.path, scanDepth: 3,
                                            excludedRepos: [], now: now, cache: &cacheMain)
@@ -597,6 +600,183 @@ final class GitStatsServiceTests: XCTestCase {
         XCTAssertEqual(statsOther.repos.first?.defaultBranch, "other")
         XCTAssertEqual(statsOther.repos.first?.history.last?.netLines, 20,
                        "override (other) history tops out at 20")
+    }
+
+    // MARK: - 15. parseLog classifies numstat by language group (code vs data/prose)
+
+    func testParseLogClassifiesLanguages() {
+        // A commit touching a .swift (code), a .txt (unknown extension → code-neutral, so
+        // CODE), and a .md (data/prose). A binary line is skipped entirely.
+        let log = """
+        \u{01}sha1\u{02}1735732800
+        10\t2\ta.swift
+        7\t0\tnotes.txt
+        4\t1\tREADME.md
+        -\t-\timg.png
+        """
+        let commits = GitStatsService.parseLog(log)
+        XCTAssertEqual(commits.count, 1)
+        let c = commits[0]
+        // Totals (all langs, binary skipped): added 10+7+4=21, removed 2+0+1=3.
+        XCTAssertEqual(c.added, 21)
+        XCTAssertEqual(c.removed, 3)
+        // Code = swift + txt (unknown ext counts as code): added 10+7=17, removed 2+0=2.
+        XCTAssertEqual(c.codeAdded, 17)
+        XCTAssertEqual(c.codeRemoved, 2)
+        // Data = markdown only: added 4, removed 1.
+        XCTAssertEqual(c.dataAdded, 4)
+        XCTAssertEqual(c.dataRemoved, 1)
+        // Invariant: code + data == total.
+        XCTAssertEqual(c.codeAdded + c.dataAdded, c.added)
+        XCTAssertEqual(c.codeRemoved + c.dataRemoved, c.removed)
+    }
+
+    func testBucketHistoryPreservesClassification() {
+        // Two days. Day1: swift +10/-0, md +5/-0. Day2: json +0/-8 (data removal), go +3/-1.
+        let day1: TimeInterval = 1735732800  // 2025-01-01T12:00:00Z
+        let day2: TimeInterval = 1735819200  // 2025-01-02T12:00:00Z
+        let log = """
+        \u{01}d2\u{02}\(Int(day2))
+        0\t8\tconfig.json
+        3\t1\tmain.go
+        \u{01}d1\u{02}\(Int(day1))
+        10\t0\ta.swift
+        5\t0\tdoc.md
+        """
+        let history = GitStatsService.bucketHistory(commits: GitStatsService.parseLog(log))
+        XCTAssertEqual(history.count, 2)
+        // Day1 (oldest first): code = swift 10 added; data = md 5 added.
+        XCTAssertEqual(history[0].date, gmtStartOfDay(2025, 1, 1))
+        XCTAssertEqual(history[0].codeAdded, 10)
+        XCTAssertEqual(history[0].codeRemoved, 0)
+        XCTAssertEqual(history[0].dataAdded, 5)
+        XCTAssertEqual(history[0].dataRemoved, 0)
+        // Day2: code = go 3 added / 1 removed; data = json 0 added / 8 removed.
+        XCTAssertEqual(history[1].date, gmtStartOfDay(2025, 1, 2))
+        XCTAssertEqual(history[1].codeAdded, 3)
+        XCTAssertEqual(history[1].codeRemoved, 1)
+        XCTAssertEqual(history[1].dataAdded, 0)
+        XCTAssertEqual(history[1].dataRemoved, 8)
+        // Per-day classified split sums to the per-day totals on each day.
+        for p in history {
+            XCTAssertEqual(p.codeAdded + p.dataAdded, p.dayAdded)
+            XCTAssertEqual(p.codeRemoved + p.dataRemoved, p.dayRemoved)
+        }
+    }
+
+    // MARK: - 16. languageSplitDelta over a window
+
+    func testLanguageSplitDeltaWindow() {
+        let inWindow: TimeInterval = 1735819200   // 2025-01-02T12:00:00Z
+        let outOfWindow: TimeInterval = 1700000000 // ~2023, well before the cutoff
+        let log = """
+        \u{01}new\u{02}\(Int(inWindow))
+        12\t3\tsrc.swift
+        4\t1\tdata.yaml
+        \u{01}old\u{02}\(Int(outOfWindow))
+        99\t0\tancient.swift
+        """
+        let commits = GitStatsService.parseLog(log)
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "GMT")!
+        let now = cal.date(from: DateComponents(year: 2025, month: 1, day: 5, hour: 12))!
+        let split = GitStatsService.languageSplitDelta(commits: commits, period: 30 * 24 * 3600, now: now)
+        // Only the in-window commit counts: code = swift 12/-3, data = yaml 4/-1.
+        XCTAssertEqual(split.codeAdded, 12)
+        XCTAssertEqual(split.codeRemoved, 3)
+        XCTAssertEqual(split.dataAdded, 4)
+        XCTAssertEqual(split.dataRemoved, 1)
+    }
+
+    // MARK: - 17. Net-negative window (added < removed) is reported correctly
+
+    func testNetNegativeWindowReported() async throws {
+        let dir = try Fixture.tempDir("net-neg")
+        let repo = try emptyRepo(in: dir, name: "r")
+        // Seed 150 lines well inside the window.
+        try write(String(repeating: "x = 1\n", count: 150), to: "f.py", in: repo)
+        try commit("seed", in: repo, date: "2025-06-02T12:00:00Z")
+        // Then trim down to 50 and grow back to 100: that day adds 50, removes 100 → net −50.
+        try write(String(repeating: "x = 1\n", count: 50), to: "f.py", in: repo)  // -100
+        try commit("trim", in: repo, date: "2025-06-03T12:00:00Z")
+        try write(String(repeating: "x = 1\n", count: 100), to: "f.py", in: repo) // +50
+        try commit("grow", in: repo, date: "2025-06-03T18:00:00Z")
+
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "GMT")!
+        let now = cal.date(from: DateComponents(year: 2025, month: 6, day: 4, hour: 12))!
+        let branch = await service.resolveBranch(repo: info(repo))
+        let (_, delta) = await service.history(repo: info(repo), branch: branch,
+                                               period: 30 * 24 * 3600, now: now)
+        // Window adds 150 (seed) + 50 (grow) = 200; removes 100 (trim). Net positive overall.
+        // The day3-only window is the interesting net-negative slice:
+        XCTAssertEqual(delta.added, 200)
+        XCTAssertEqual(delta.removed, 100)
+        // The trim/grow DAY alone is net-negative: +50 / -100.
+        let (history, _) = await service.history(repo: info(repo), branch: branch,
+                                                 period: 30 * 24 * 3600, now: now)
+        let day3 = try XCTUnwrap(history.first { $0.date == gmtStartOfDay(2025, 6, 3) })
+        XCTAssertEqual(day3.dayAdded, 50)
+        XCTAssertEqual(day3.dayRemoved, 100)
+        XCTAssertLessThan(day3.dayAdded - day3.dayRemoved, 0, "the trim/grow day is net-negative")
+    }
+
+    // MARK: - 18. Umbrella ancestor exclusion (parent repo + 2 nested children)
+
+    func testUmbrellaRepoAncestorExcluded() async throws {
+        let dir = try Fixture.tempDir("umbrella")
+        // An umbrella repo (its OWN .git) that CONTAINS two real product repos.
+        let umbrella = try emptyRepo(in: dir, name: "monorepo")
+        try write("# umbrella\n", to: "README.md", in: umbrella)
+        try commit("umbrella", in: umbrella, date: day1)
+        // Two nested children, each a real git repo.
+        let child1 = try emptyRepo(in: umbrella, name: "client")
+        try write("let a = 1\n", to: "a.swift", in: child1)
+        try commit("c1", in: child1, date: day1)
+        let child2 = try emptyRepo(in: umbrella, name: "server")
+        try write("let b = 2\n", to: "b.swift", in: child2)
+        try commit("c2", in: child2, date: day1)
+
+        let repos = await service.reposToScan(projectPath: dir.path, scanDepth: 4, excluded: [])
+        let names = Set(repos.map(\.dirName))
+        XCTAssertFalse(names.contains("monorepo"), "the umbrella parent is dropped")
+        XCTAssertEqual(names, ["client", "server"], "only the two nested children remain")
+    }
+
+    // MARK: - 19. resolveBranch prefers the checked-out (HEAD) branch over master
+
+    func testResolveBranchReturnsCurrentCheckedOutBranch() async throws {
+        let dir = try Fixture.tempDir("head-branch")
+        // master EXISTS (origin/HEAD-style default), but HEAD is on a feature branch.
+        let repo = try emptyRepo(in: dir, name: "r", branch: "master")
+        try write("let a = 1\n", to: "a.swift", in: repo)
+        try commit("c1", in: repo, date: day1)
+        try sh("git -C \(shellQuote(repo.path)) checkout -qb refactor/bloc-to-vm-migration")
+        try write("let b = 2\n", to: "b.swift", in: repo)
+        try commit("c2", in: repo, date: day2)
+
+        let branch = await service.resolveBranch(repo: info(repo))
+        XCTAssertEqual(branch, "refactor/bloc-to-vm-migration",
+                       "resolveBranch returns the checked-out HEAD branch, not master")
+    }
+
+    // MARK: - 20. dropUmbrellaAncestors pure helper
+
+    func testDropUmbrellaAncestorsPure() {
+        let repos = [
+            RepoInfo(path: "/p/monorepo", dirName: "monorepo"),
+            RepoInfo(path: "/p/monorepo/client", dirName: "client"),
+            RepoInfo(path: "/p/monorepo/server", dirName: "server"),
+            RepoInfo(path: "/p/standalone", dirName: "standalone"),
+        ]
+        let kept = GitStatsService.dropUmbrellaAncestors(repos).map(\.dirName)
+        // The umbrella parent is dropped; the two children + the standalone remain.
+        XCTAssertEqual(Set(kept), ["client", "server", "standalone"])
+        // A sibling whose name is a prefix of another (NOT a path ancestor) is kept.
+        let siblings = [
+            RepoInfo(path: "/p/app", dirName: "app"),
+            RepoInfo(path: "/p/app-extra", dirName: "app-extra"),
+        ]
+        XCTAssertEqual(GitStatsService.dropUmbrellaAncestors(siblings).count, 2,
+                       "a name prefix that is not a path-segment ancestor is not dropped")
     }
 
     /// An override that does NOT name a real local branch is ignored: the scan silently

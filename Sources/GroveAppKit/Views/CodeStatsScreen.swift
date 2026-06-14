@@ -1,19 +1,19 @@
 import SwiftUI
-import Charts
 import GroveCore
 
 /// Code-stats tab (Stage 5): a per-project cloc-style breakdown rendered from the
 /// pure presentation models in CodeStatsPresentation. Gray cards stacked in a
 /// scroll: a totals header (big numbers), a language breakdown (horizontal bars +
-/// a small per-language table), a growth chart (lines over time). Folder/file
-/// exclusion now lives on a separate page (StatsSettingsScreen), reached via the
-/// gear in the Totals header.
+/// a small per-language table), a per-day churn histogram (lines over time).
+/// Folder/file exclusion now lives on a separate page (StatsSettingsScreen),
+/// reached via the gear in the Totals header.
 ///
 /// The scan is lazy: `.task(id:)` triggers `state.refreshCodeStats` whenever the
 /// selected project changes, so opening the tab is what kicks off the (off-main)
-/// walk — the global 15s refresh never pays for stats. Like GraphScreen/
-/// DashboardScreen, the Swift Charts growth chart renders BLANK under
-/// ImageRenderer, so `isSnapshotRender` swaps in a manual Path/bars fallback.
+/// walk — the global 15s refresh never pays for stats. The churn histogram is a
+/// hand-drawn SwiftUI bar strip (no Swift Charts), but a `ScrollView`'s content is
+/// still not laid out under ImageRenderer, so `isSnapshotRender` swaps in a manual
+/// edge-to-edge bars fallback (same landmine the rest of the app handles).
 struct CodeStatsScreen: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
@@ -22,10 +22,18 @@ struct CodeStatsScreen: View {
     /// Pure client-side recompute from the per-day history — never a re-scan.
     @State private var period: StatsPeriod = .d30
 
-    /// Up to two selected bar dates in the growth chart: tapping a bar appends; a
-    /// THIRD tap resets. Two selected → a "+X added · −Y removed · net Z" readout.
-    /// Live-only (snapshot mode renders bars without selection).
-    @State private var selectedBars: [Date] = []
+    /// The currently-tapped churn day in the "Lines over time" histogram, if any.
+    /// Tapping a bar selects that calendar day → a "+added / −removed" tooltip above
+    /// the chart; tapping it again (or an empty day) clears. Live-only (the snapshot
+    /// path renders every bar without a selection).
+    @State private var selectedChurnDay: Date?
+
+    /// "Show empty days" toggle in the "Lines over time" header. OFF (default): the
+    /// dense histogram fills every calendar day but zero-churn (no-commit) days are
+    /// just empty space. ON: those days render as faint GRAY ticks so the gaps in
+    /// activity are visible-but-muted (per the reference: "no transparent gaps; a
+    /// toggle grays the empty days").
+    @State private var showEmptyDays: Bool = false
 
     var body: some View {
         Group {
@@ -39,10 +47,10 @@ struct CodeStatsScreen: View {
         }
         .task(id: selectedProjectID) {
             guard let id = selectedProjectID else { return }
-            // A growth-bar selection is scoped to one project's series; clear it so a
+            // A churn-day selection is scoped to one project's series; clear it so a
             // stale date from the previous project can't resolve against a same-calendar
             // day in the new one (bar dates are GMT start-of-day).
-            selectedBars = []
+            selectedChurnDay = nil
             await state.refreshCodeStats(projectID: id)
         }
     }
@@ -79,11 +87,13 @@ struct CodeStatsScreen: View {
 
     private func totalsCard(stats: CodeStats) -> some View {
         // Both headline numbers (Code / Data·Prose), the file counts, and the period
-        // delta are pure recomputes from already-scanned data — switching the period
-        // never triggers a git re-scan.
+        // deltas are pure recomputes from already-scanned data — switching the period
+        // never triggers a git re-scan. The deltas are now CLASSIFIED per language
+        // group: each headline shows BOTH its honest gross additions (▲, blue) and
+        // deletions (▼, pink) from the per-day code/data-split churn series, instead of
+        // a single net triangle that hid the removed count.
         let breakdown = dataProseBreakdown(stats)
-        let delta = periodDelta(history, period: period, now: .now)
-        let codeTriangle = deltaTriangle(net: delta.net)
+        let deltas = periodDeltasByCategory(history, period: period, now: .now)
         // File-count delta isn't derivable from line history client-side, so the file
         // caption stays a plain count (the per-day series carries only lines).
         return VStack(alignment: .leading, spacing: 10) {
@@ -110,20 +120,17 @@ struct CodeStatsScreen: View {
                 // the line-kind strip below, hence the "lines · N files" caption (it is
                 // total lines of the code-language group, not the code-only line kind).
                 //
-                // NOTE: the period triangle here rides numstat churn, which is NOT
-                // language-split (GitStatsService.bucketHistory sums added/removed over
-                // ALL changed files). So a window heavy in JSON/Markdown commits inflates
-                // this triangle even though those lines are excluded from the headline
-                // VALUE. Accepted trade-off — a true per-language delta would need numstat
-                // path classification in GitStatsService.parseLog. Data/Prose mirrors this:
-                // it shows a flat ±0 marker since the single churn delta rides the code
-                // headline.
+                // The period delta under each headline is now CLASSIFIED to match its
+                // VALUE: the Code column shows the code-language churn (▲ added / ▼ removed)
+                // and Data/Prose shows its OWN data/prose churn — no more static ±0, and no
+                // more shared churn that inflated Code with JSON/Markdown commits. Both
+                // sides are shown so the additions don't masquerade as net growth.
                 headlineNumber(value: breakdown.codeLinesText,
                                caption: "code · \(breakdown.codeFilesText) files",
-                               triangle: codeTriangle)
+                               delta: deltas.code)
                 headlineNumber(value: breakdown.dataProseLinesText,
                                caption: "data · \(breakdown.dataProseFilesText) files",
-                               triangle: DeltaTriangle(direction: .flat, label: "±0"))
+                               delta: deltas.dataProse)
             }
             // The LINE-KIND breakdown: every line classified Code / Comment / Blank across
             // ALL languages. A different partition than the headline's language groups (so
@@ -182,22 +189,28 @@ struct CodeStatsScreen: View {
             .strokeBorder(.white.opacity(0.10)))
     }
 
-    /// One headline column: a big number, a small ▲/▼ delta over the selected period,
-    /// and a caption. The triangle is tinted by direction (up→primary, down→negative,
-    /// flat→neutral).
+    /// One headline column: a big number, the period's HONEST two-sided churn (▲ added in
+    /// blue AND ▼ removed in pink, side by side), and a caption. Showing both counts means
+    /// the additions never masquerade as net growth — a refactor window reads as a large ▲
+    /// next to an equally large ▼. When a side is zero it renders a muted "±0".
     private func headlineNumber(value: String, caption: String,
-                                triangle: DeltaTriangle) -> some View {
+                                delta: CategoryDelta) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(value)
                 .font(.system(size: 26, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
-            Text(triangle.label)
-                .font(.caption2.weight(.medium))
-                .monospacedDigit()
-                .foregroundStyle(triangleColor(triangle.direction))
-                .lineLimit(1)
+            HStack(spacing: 8) {
+                Text(delta.addedText)
+                    .foregroundStyle(delta.added > 0 ? Palette.primary : Palette.neutral)
+                Text(delta.removedText)
+                    .foregroundStyle(delta.removed > 0 ? Palette.negative : Palette.neutral)
+            }
+            .font(.caption2.weight(.medium))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
             Text(caption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -433,25 +446,47 @@ struct CodeStatsScreen: View {
             .background(.white.opacity(0.08), in: Capsule())
     }
 
-    // MARK: - Growth chart (per-day bars)
+    // MARK: - Churn histogram ("Lines over time")
 
     private let growthChartHeight: CGFloat = 120
+    /// Each calendar-day bar's slot width (bar + 1px gap). 4pt at ~180 visible days
+    /// fills a ~720pt plot — the dense reference look — while the ScrollView lets older
+    /// days (back to the 1-year cap) scroll into view.
+    private let churnSlotWidth: CGFloat = 4
 
+    /// The "Lines over time" card, now a DENSE per-day CHURN histogram: one thin bar per
+    /// calendar day in the window (no transparent gaps), each STACKED — a blue lower
+    /// segment for lines ADDED that day and a pink upper segment for lines REMOVED — with
+    /// the bar's height proportional to that day's TOTAL churn (added + removed). This is
+    /// NON-cumulative codebase activity, not a running total: it shows where the work
+    /// actually happened.
+    ///
+    /// The histogram's window is DECOUPLED from the Totals 7d/30d/90d/All period: the
+    /// series always spans the full 1-year cap (`churnBarMaxDaysBack`) so the strip is
+    /// genuinely scrollable, and it opens scrolled to today with ~`churnDefaultVisibleDays`
+    /// (6 months) filling the viewport. The Totals/Repos `period` only drives the delta
+    /// triangles, not this chart.
     private func growthCard() -> some View {
-        let bars = barSeries(history)
+        let bars = churnBarSeries(history, daysBack: churnBarMaxDaysBack, now: .now)
+        let activeDays = bars.filter { $0.totalChurn > 0 }.count
         return VStack(alignment: .leading, spacing: 8) {
-            CardLabel(title: "Lines over time", systemImage: "chart.bar.fill")
-            growthReadout(bars)
-            if bars.count < 2 {
-                Text("Not enough history yet — the bars appear after a few scans.")
+            HStack(alignment: .firstTextBaseline) {
+                CardLabel(title: "Lines over time", systemImage: "chart.bar.fill")
+                Spacer(minLength: 8)
+                emptyDaysToggle
+            }
+            churnReadout(bars, activeDays: activeDays)
+            if activeDays == 0 {
+                Text("No commit activity in this window yet.")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: growthChartHeight, alignment: .leading)
             } else if isSnapshotRender {
-                // Swift Charts render blank under ImageRenderer — manual bars instead.
-                // Selection is live-only, so the snapshot just draws every bar.
-                barFallback(bars)
+                // The manual stacked bars draw fine offscreen (Swift-Charts-free); the
+                // snapshot just trims to the most-recent visible window so the dense
+                // histogram reads without a horizontal scroller.
+                churnFallback(bars)
             } else {
-                barChart(bars)
+                churnScroller(bars)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -459,109 +494,173 @@ struct CodeStatsScreen: View {
         .glassCard()
     }
 
-    /// The selection readout above the chart. Two bars selected → the window delta
-    /// ("+X added · −Y removed · net Z", tinted by net sign); otherwise a hint.
+    /// "Show empty days" checkbox in the card header. OFF: no-commit days are blank space.
+    /// ON: they render as faint gray ticks so the gaps in activity are visible-but-muted.
+    /// Pure-SwiftUI (a Button, not an AppKit Toggle) so it renders identically live and
+    /// offscreen — like `periodControl`, AppKit checkboxes draw as error placeholders
+    /// under ImageRenderer.
+    private var emptyDaysToggle: some View {
+        Button {
+            showEmptyDays.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: showEmptyDays ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(showEmptyDays ? Palette.primary : Color.secondary)
+                Text("Empty days")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption2)
+        }
+        .buttonStyle(.plain)
+        .help("Show no-commit days as faint gray ticks")
+    }
+
+    /// The readout above the histogram: either the tapped day's "+added / −removed"
+    /// tooltip (tinted by which side dominates) or a neutral summary of the window's
+    /// active days. A churn day means a calendar day with at least one commit.
     @ViewBuilder
-    private func growthReadout(_ bars: [BarPoint]) -> some View {
-        if let pair = selectedPair(in: bars) {
-            let d = barSelectionDelta(from: pair.0, to: pair.1, in: bars)
-            Text(barSelectionReadout(d))
+    private func churnReadout(_ bars: [ChurnBarPoint], activeDays: Int) -> some View {
+        if let day = selectedChurnDay, let bar = bars.first(where: { $0.date == day }) {
+            Text(churnDayReadout(bar))
                 .font(.caption.weight(.medium))
                 .monospacedDigit()
-                .foregroundStyle(triangleColor(deltaTriangle(net: d.net).direction))
+                .foregroundStyle(bar.dayAdded >= bar.dayRemoved ? Palette.primary : Palette.negative)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-        } else if !isSnapshotRender && bars.count >= 2 {
-            Text(selectedBars.isEmpty
-                 ? "Select two bars to compare."
-                 : "Select a second bar to compare.")
+        } else {
+            Text("\(groupedThousands(activeDays)) active \(activeDays == 1 ? "day" : "days") · "
+                 + (isSnapshotRender ? "" : "tap a bar for that day’s churn"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
     }
 
-    /// Resolve the two currently-selected dates back to their `BarPoint`s, if exactly
-    /// two are selected and both are still in the series.
-    private func selectedPair(in bars: [BarPoint]) -> (BarPoint, BarPoint)? {
-        guard selectedBars.count == 2,
-              let a = bars.first(where: { $0.date == selectedBars[0] }),
-              let b = bars.first(where: { $0.date == selectedBars[1] }) else { return nil }
-        return (a, b)
+    /// One churn bar's lower (added, blue) tint. The tapped day renders full-strength;
+    /// every other bar slightly muted so the selection stands out (and at full strength
+    /// when nothing is selected). Factored into one helper so reference-image tuning
+    /// touches a single place.
+    private func addedFill(_ bar: ChurnBarPoint) -> Color {
+        guard selectedChurnDay != nil else { return Palette.primary }
+        return selectedChurnDay == bar.date ? Palette.primary : Palette.primary.opacity(0.45)
     }
 
-    /// One bar's fill. Factored into ONE helper (per spec) so later reference-image
-    /// tuning touches a single place. Selected days render full-strength; everything
-    /// else (or every bar when nothing is selected) at 0.85.
-    private func barFill(_ bar: BarPoint) -> Color {
-        selectedBars.contains(bar.date)
-            ? Palette.primary
-            : Palette.primary.opacity(selectedBars.isEmpty ? 0.85 : 0.4)
+    /// One churn bar's upper (removed, pink) tint, mirroring `addedFill`.
+    private func removedFill(_ bar: ChurnBarPoint) -> Color {
+        guard selectedChurnDay != nil else { return Palette.negative }
+        return selectedChurnDay == bar.date ? Palette.negative : Palette.negative.opacity(0.45)
     }
 
-    /// The live Swift Charts per-day bar chart. A tap maps the x-position to the nearest
-    /// day and appends it to `selectedBars` (capped at two; a THIRD tap resets).
-    private func barChart(_ bars: [BarPoint]) -> some View {
-        Chart(bars) { bar in
-            BarMark(x: .value("Date", bar.date, unit: .day),
-                    y: .value("Lines", bar.cumulativeLines))
-                .foregroundStyle(barFill(bar))
-        }
-        .chartYAxis { AxisMarks { AxisValueLabel().font(.caption2) } }
-        .chartXAxis { AxisMarks { AxisValueLabel().font(.caption2) } }
-        .frame(height: growthChartHeight)
-        .chartOverlay { proxy in
-            GeometryReader { geo in
-                Rectangle().fill(.clear).contentShape(Rectangle())
-                    .onTapGesture { location in
-                        guard let plotFrame = proxy.plotFrame else { return }
-                        let x = location.x - geo[plotFrame].origin.x
-                        guard let date: Date = proxy.value(atX: x) else { return }
-                        selectNearestBar(to: date, in: bars)
+    /// The live histogram: a horizontally-scrollable strip of fixed-width per-day bars.
+    /// A `ScrollView(.horizontal)` (rather than a width-fitted Swift Chart) keeps the bar
+    /// density crisp and constant — the series spans the full 1-year cap, so ~180 days
+    /// (`churnDefaultVisibleDays` × `churnSlotWidth` ≈ 720pt) fill the default viewport and
+    /// the remaining ~185 older days scroll in. Starts scrolled to the most-recent day. A
+    /// tap on any bar selects that day for the tooltip readout; tapping it clears it.
+    private func churnScroller(_ bars: [ChurnBarPoint]) -> some View {
+        let peak = churnPeak(bars)
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: true) {
+                HStack(alignment: .bottom, spacing: 0) {
+                    ForEach(bars) { bar in
+                        churnBarColumn(bar, peak: peak)
+                            .frame(width: churnSlotWidth)
+                            .id(bar.date)
+                            .contentShape(Rectangle())
+                            .onTapGesture { toggleChurnSelection(bar) }
                     }
+                }
+                .frame(height: growthChartHeight, alignment: .bottom)
             }
+            .frame(height: growthChartHeight)
+            .onAppear { if let last = bars.last { proxy.scrollTo(last.date, anchor: .trailing) } }
         }
     }
 
-    /// Append the bar nearest `date` to the selection (cap 2; third tap resets).
-    private func selectNearestBar(to date: Date, in bars: [BarPoint]) {
-        guard let nearest = bars.min(by: {
-            abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
-        }) else { return }
-        if selectedBars.count >= 2 {
-            selectedBars = [nearest.date]
-        } else if !selectedBars.contains(nearest.date) {
-            selectedBars.append(nearest.date)
-        }
-    }
-
-    /// Manual bars for snapshot mode (Swift Charts render blank offscreen). One rect per
-    /// day, heights normalized to the plot box. Mirrors the old growthFallback pattern.
-    private func barFallback(_ bars: [BarPoint]) -> some View {
+    /// One day's column in the live strip: the stacked bar (blue added over pink removed),
+    /// or — for a zero-churn day — a faint gray baseline tick when "Empty days" is on, else
+    /// nothing. Uses a GeometryReader so segment heights normalize against the plot box.
+    private func churnBarColumn(_ bar: ChurnBarPoint, peak: Int) -> some View {
         GeometryReader { geo in
-            barFallbackContent(bars, size: geo.size)
+            let h = churnBarHeights(bar, peak: peak, height: geo.size.height)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                if bar.totalChurn == 0 {
+                    if showEmptyDays {
+                        // A faint 1px baseline tick marks a no-commit day.
+                        Rectangle()
+                            .fill(Palette.neutral.opacity(0.3))
+                            .frame(width: max(churnSlotWidth - 1, 1), height: 1)
+                    }
+                } else {
+                    // Pink (removed) sits ABOVE blue (added) — a stacked churn bar.
+                    Rectangle()
+                        .fill(removedFill(bar))
+                        .frame(width: max(churnSlotWidth - 1, 1), height: h.removed)
+                    Rectangle()
+                        .fill(addedFill(bar))
+                        .frame(width: max(churnSlotWidth - 1, 1), height: h.added)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .bottom)
+        }
+    }
+
+    /// Tap handling: select the tapped day (showing its tooltip), or clear if it was
+    /// already selected. Zero-churn days clear any selection (nothing to show).
+    private func toggleChurnSelection(_ bar: ChurnBarPoint) {
+        if selectedChurnDay == bar.date || bar.totalChurn == 0 {
+            selectedChurnDay = nil
+        } else {
+            selectedChurnDay = bar.date
+        }
+    }
+
+    /// Snapshot fallback: a manual stacked-bar render (Swift Charts draw blank under
+    /// ImageRenderer, and a ScrollView's content isn't laid out offscreen either, so the
+    /// snapshot trims to the most-recent days that fit the card and draws them edge-to-
+    /// edge). Selection is live-only, so every bar draws at full strength.
+    private func churnFallback(_ bars: [ChurnBarPoint]) -> some View {
+        GeometryReader { geo in
+            churnFallbackContent(bars, size: geo.size)
         }
         .frame(height: growthChartHeight)
     }
 
-    /// The actual rects for `barFallback`, computed against a resolved `size`. Pulled out
-    /// of the GeometryReader closure so the geometry math doesn't fight the ViewBuilder.
-    private func barFallbackContent(_ bars: [BarPoint], size: CGSize) -> some View {
-        let values = bars.map(\.cumulativeLines)
-        let maxV = CGFloat(max(values.max() ?? 1, 1))
+    /// The actual stacked rects for `churnFallback`, against a resolved `size`. Trims to
+    /// the most-recent `floor(width / slot)` days so the offscreen strip fills the card
+    /// without a scroller, then draws each as a blue(added)-over-pink(removed) stack
+    /// proportional to its total churn. Pulled out of the GeometryReader closure so the
+    /// geometry math doesn't fight the ViewBuilder.
+    private func churnFallbackContent(_ bars: [ChurnBarPoint], size: CGSize) -> some View {
         let w = size.width, h = size.height
-        let slot = bars.count > 0 ? w / CGFloat(bars.count) : w
-        // Leave a hairline gap between bars at a clean default density.
-        let barWidth = max(slot * 0.8, 1)
+        let slot = max(churnSlotWidth, 1)
+        let visibleCount = max(min(bars.count, Int(w / slot)), 1)
+        let visible = Array(bars.suffix(visibleCount))
+        let peak = churnPeak(bars)
+        let barWidth = max(slot - 1, 1)
         return ZStack(alignment: .bottomLeading) {
-            ForEach(Array(bars.enumerated()), id: \.element.id) { i, bar in
-                let frac = CGFloat(bar.cumulativeLines) / maxV
-                let barHeight = max(frac * h, 1)
-                RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(barFill(bar))
-                    .frame(width: barWidth, height: barHeight)
-                    .offset(x: CGFloat(i) * slot + (slot - barWidth) / 2,
-                            y: 0)
+            ForEach(Array(visible.enumerated()), id: \.element.id) { i, bar in
+                let heights = churnBarHeights(bar, peak: peak, height: h)
+                let x = CGFloat(i) * slot
+                if bar.totalChurn == 0 {
+                    if showEmptyDays {
+                        Rectangle()
+                            .fill(Palette.neutral.opacity(0.3))
+                            .frame(width: barWidth, height: 1)
+                            .offset(x: x, y: 0)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
+                    }
+                } else {
+                    // Bottom blue (added) + pink (removed) stacked above it.
+                    VStack(spacing: 0) {
+                        Rectangle().fill(Palette.negative).frame(width: barWidth, height: heights.removed)
+                        Rectangle().fill(Palette.primary).frame(width: barWidth, height: heights.added)
+                    }
+                    .offset(x: x, y: 0)
                     .frame(maxHeight: .infinity, alignment: .bottom)
+                }
             }
         }
     }

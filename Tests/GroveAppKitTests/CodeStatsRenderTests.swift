@@ -3,10 +3,12 @@ import SwiftUI
 @testable import GroveAppKit
 import GroveCore
 
-/// Renders the Stats tab (Stage 5) in both the offscreen snapshot path (manual,
-/// non-Charts growth fallback) and the live path (the real Swift Charts LineMark/
-/// AreaMark), and asserts the snapshot scene produces a NON-BLANK image — content,
-/// not just an empty backdrop. Mirrors DashboardRenderTests / ViewStatesRenderTests.
+/// Renders the Stats tab (Stage 5) in both the offscreen snapshot path (the manual,
+/// non-Charts churn-bar fallback) and the live path (the hand-drawn, horizontally-
+/// scrollable churn histogram — a `ScrollView` strip of per-day stacked bars with a
+/// `ScrollViewReader` and per-bar tap gesture; no Swift Charts), and asserts the snapshot
+/// scene produces a NON-BLANK image — content, not just an empty backdrop. Mirrors
+/// DashboardRenderTests / ViewStatesRenderTests.
 @MainActor
 final class CodeStatsRenderTests: XCTestCase {
     private let projectSize = CGSize(width: 760, height: 540)
@@ -49,10 +51,11 @@ final class CodeStatsRenderTests: XCTestCase {
         XCTAssertTrue(isNonBlank(image!), "stats scene rendered blank (no content)")
     }
 
-    /// The LIVE path (isSnapshotRender=false) evaluates the real Swift Charts
-    /// per-day BarMark + the chart-overlay tap region, the period segmented
-    /// control, and the checkbox toggles — a crash or broken chart expression is
-    /// caught even though offscreen pixels are blank.
+    /// The LIVE path (isSnapshotRender=false) evaluates the horizontally-scrollable
+    /// churn histogram (the per-day stacked ScrollView strip, its ScrollViewReader,
+    /// and the per-bar tap gesture), the period segmented control, and the
+    /// "Empty days" checkbox toggle — a crash or broken expression is caught even
+    /// though offscreen ScrollView pixels are blank.
     func testStatsScreenLiveChartBranch() {
         let state = SnapshotMode.fixtureState()
         state.selectedTab = .stats
@@ -63,7 +66,7 @@ final class CodeStatsRenderTests: XCTestCase {
             .environment(\.isSnapshotRender, false)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 1
-        _ = renderer.cgImage   // forces body eval, incl. the live BarMark code
+        _ = renderer.cgImage   // forces body eval, incl. the live churn-scroller strip
     }
 
     /// The per-repo blocks render: the fixture seeds two repos, so the snapshot
