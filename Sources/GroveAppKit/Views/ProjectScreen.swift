@@ -1,14 +1,21 @@
 import SwiftUI
 import GroveCore
 
-/// Project scope (route .project(id)): back chevron + project name + search
-/// (⌘F) + refresh (⌘R) + gear (-> per-project settings) in the header, the
-/// capsule tab strip (Workspaces | Graph | Claude — Accounts is its own route),
-/// and the selected tab's screen at full width.
+/// Project scope (route .project(id)): a THREE-ROW header — row 1 is JUST the
+/// back chevron (Esc) + project name and the per-project settings gear; row 2 is
+/// the capsule tab strip (Workspaces | Graph | Stats | Claude) with the 5h
+/// aggregate chip and the ⌘R rescan button trailing; row 3 is a COLLAPSIBLE
+/// search (⌘F) that shows as a bare magnifier when the query is empty and the
+/// field isn't focused, and expands into the full field on click/typing — then
+/// the selected tab's screen at full width.
 struct ProjectScreen: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
     @FocusState private var searchFocused: Bool
+    /// Live-only expansion latch for the collapsible search row: set on ⌘F /
+    /// magnifier-tap / typing so the field stays open while focused, cleared on
+    /// blur-with-empty-query. Never consulted in snapshots (focus is live-only).
+    @State private var searchExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,19 +25,48 @@ struct ProjectScreen: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Header (3 rows)
 
     private var header: some View {
+        VStack(spacing: 6) {
+            row1
+            row2
+            searchRow
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    /// Row 1: JUST the back affordance + project name (left) and the project
+    /// settings gear (right) — every other action lives in row 2 or per-tab.
+    private var row1: some View {
         HStack(spacing: 10) {
             BackButton { state.goBack() }
             Text(state.selectedProject?.name ?? "Project")
                 .font(.headline)
                 .lineLimit(1)
-            searchField
+            Spacer()
+            Button {
+                if let id = state.selectedProjectID {
+                    state.open(.projectSettings(id))
+                }
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.plain)
+            .help("Project settings")
+        }
+    }
+
+    /// Row 2: the tab strip on its own row (fits when the panel is narrow), with
+    /// the 5h aggregate chip — a project-scope status badge — and the ⌘R rescan
+    /// button trailing (a project-scope action, kept out of row 1 per spec).
+    private var row2: some View {
+        HStack(spacing: 10) {
+            tabStrip
             Spacer()
             AggregateChip(window: "5h",
                           aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()))
-            tabStrip
             Button {
                 Task { await state.refresh() }
             } label: {
@@ -44,23 +80,71 @@ struct ProjectScreen: View {
             .buttonStyle(.plain)
             .keyboardShortcut("r")
             .help("Rescan this project (⌘R)")
-            Button {
-                if let id = state.selectedProjectID {
-                    state.open(.projectSettings(id))
-                }
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.plain)
-            .help("Project settings")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+    }
+
+    // MARK: - Collapsible search (row 3)
+
+    /// Collapsed = bare magnifier (query empty AND not focused/expanded). In
+    /// snapshots focus is live-only, so the collapse decision rests solely on the
+    /// query being empty — the fixture (empty query) renders the magnifier, while
+    /// the search-test states (non-empty query) render the expanded static field.
+    private var searchCollapsed: Bool {
+        if isSnapshotRender { return state.searchQuery.isEmpty }
+        return state.searchQuery.isEmpty && !searchFocused && !searchExpanded
+    }
+
+    /// Row 3: collapsible search. ⌘F and the magnifier both expand + focus; the
+    /// hidden ⌘F button lives here so the shortcut works in BOTH states.
+    private var searchRow: some View {
+        HStack(spacing: 0) {
+            if searchCollapsed {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { searchExpanded = true }
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Search (⌘F)")
+                Spacer(minLength: 0)
+            } else {
+                searchField
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(
+            Button("") {
+                withAnimation(.easeInOut(duration: 0.18)) { searchExpanded = true }
+            }
+            .keyboardShortcut("f")
+            .opacity(0)
+            .accessibilityHidden(true)
+        )
+        // Drive focus AFTER the expand commits: flipping `searchExpanded` is what
+        // mounts the TextField (it lives only in the expanded branch), so a
+        // synchronous `searchFocused = true` in the magnifier/⌘F closures would
+        // target a not-yet-mounted field and be dropped — leaving the row stuck
+        // open-but-empty (blur never fires to re-collapse). onChange runs after the
+        // body re-evaluates, so the field exists and the cursor reliably lands.
+        .onChange(of: searchExpanded) { _, expanded in
+            if expanded { searchFocused = true }
+        }
+        // Re-collapse when the field loses focus with nothing typed.
+        .onChange(of: searchFocused) { _, focused in
+            if !focused && state.searchQuery.isEmpty {
+                withAnimation(.easeInOut(duration: 0.18)) { searchExpanded = false }
+            }
+        }
     }
 
     /// Filters workspaces/branches (spec §6). The TextField is swapped for a
     /// static lookalike in snapshots (NSTextField renders as an error
-    /// placeholder offscreen); the hidden button is the ⌘F focus target.
+    /// placeholder offscreen). Fills the row width (the collapsed state owns the
+    /// bare magnifier); ⌘F is wired by `searchRow`, not here.
     private var searchField: some View {
         HStack(spacing: 4) {
             Image(systemName: "magnifyingglass")
@@ -80,14 +164,8 @@ struct ProjectScreen: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .frame(width: 170)
+        .frame(maxWidth: .infinity)
         .modifier(SearchFieldChrome())
-        .background(
-            Button("") { searchFocused = true }
-                .keyboardShortcut("f")
-                .opacity(0)
-                .accessibilityHidden(true)
-        )
     }
 
     // Pure-SwiftUI tab strip (Workspaces | Graph | Claude). NOT

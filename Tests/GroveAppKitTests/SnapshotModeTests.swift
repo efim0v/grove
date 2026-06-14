@@ -102,11 +102,11 @@ final class SnapshotModeTests: XCTestCase {
     func testSceneSizesFollowTheAdaptivePanelFrames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.projects.size, CGSize(width: 460, height: 520))
         XCTAssertEqual(SnapshotMode.SnapshotScene.charts.size, CGSize(width: 751, height: 800))
-        XCTAssertEqual(SnapshotMode.SnapshotScene.rootWorkspaces.size, CGSize(width: 760, height: 540))
-        XCTAssertEqual(SnapshotMode.SnapshotScene.workspacesExpanded.size, CGSize(width: 760, height: 540))
-        XCTAssertEqual(SnapshotMode.SnapshotScene.graph.size, CGSize(width: 760, height: 540))
-        XCTAssertEqual(SnapshotMode.SnapshotScene.stats.size, CGSize(width: 760, height: 540))
-        XCTAssertEqual(SnapshotMode.SnapshotScene.sessions.size, CGSize(width: 760, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.rootWorkspaces.size, CGSize(width: 600, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.workspacesExpanded.size, CGSize(width: 600, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.graph.size, CGSize(width: 600, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.stats.size, CGSize(width: 600, height: 540))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.sessions.size, CGSize(width: 600, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.createSheet.size, CGSize(width: 540, height: 560))
         XCTAssertEqual(SnapshotMode.SnapshotScene.accounts.size, CGSize(width: 560, height: 480))
         // accounts-usage shares the accounts adaptive panel frame.

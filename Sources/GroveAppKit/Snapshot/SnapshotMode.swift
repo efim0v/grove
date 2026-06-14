@@ -62,7 +62,7 @@ public enum SnapshotMode {
             // charts-driven height.
             case .charts: return CGSize(width: 751, height: 800)
             case .rootWorkspaces, .workspacesExpanded, .graph, .stats, .sessions:
-                return CGSize(width: 760, height: 540)
+                return CGSize(width: 600, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)
             case .accounts, .accountsUsage: return CGSize(width: 560, height: 480)
             case .settings, .statsSettings: return CGSize(width: 560, height: 560)

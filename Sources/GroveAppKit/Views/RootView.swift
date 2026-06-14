@@ -68,7 +68,7 @@ public struct RootView: View {
     static func panelSize(for route: Route) -> (width: CGFloat, height: CGFloat?) {
         switch route {
         case .projects: return (460, 520)
-        case .project: return (760, 540)
+        case .project: return (600, 540)
         case .createWorkspace: return (540, nil)
         case .projectSettings: return (560, 560)
         case .statsSettings: return (560, 560)

@@ -18,7 +18,7 @@ final class ViewStatesRenderTests: XCTestCase {
         _ = renderer.cgImage
     }
 
-    private let projectSize = CGSize(width: 760, height: 540)
+    private let projectSize = CGSize(width: 600, height: 540)
 
     func testSessionsSearchNoMatchAndEmptyScanning() {
         let s = SnapshotMode.fixtureState()

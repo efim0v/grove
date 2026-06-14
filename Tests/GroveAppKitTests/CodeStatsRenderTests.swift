@@ -11,7 +11,7 @@ import GroveCore
 /// Mirrors DashboardRenderTests / ViewStatesRenderTests.
 @MainActor
 final class CodeStatsRenderTests: XCTestCase {
-    private let projectSize = CGSize(width: 760, height: 540)
+    private let projectSize = CGSize(width: 600, height: 540)
 
     /// True when not every pixel in the image is the same color — a render that
     /// drew real content over the backdrop. (A blank/flat render is uniform.)
