@@ -106,12 +106,10 @@ struct ChartsSideContent: View {
     @ObservedObject var state: AppState
     static let width: CGFloat = 290
     var body: some View {
+        // The window backdrop (substrate + scrim) is supplied by windowChrome at the
+        // panel level — identical to the projects window. Nothing extra here.
         DashboardScreen(state: state)
             .frame(width: ChartsSideContent.width)
-            // The SAME faint scrim the projects window uses — without it the charts
-            // cards floated on bare glass and read differently from the projects
-            // ones. Keep this value identical to RootView's window scrim.
-            .background(.black.opacity(0.10))
     }
 }
 

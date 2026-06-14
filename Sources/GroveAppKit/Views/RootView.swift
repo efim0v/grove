@@ -22,12 +22,9 @@ public struct RootView: View {
             errorBanner
             routedScreen
         }
-        // The panel supplies the transparent Liquid Glass backdrop; keep only a
-        // very faint scrim here so header/footer text stays legible over a bright
-        // desktop without darkening the glass (the content surfaces are the gray
-        // GlassCards). MUST match ChartsSideContent's scrim so both windows read
-        // identically. The container shape drives concentric nesting underneath.
-        .background(.black.opacity(0.10))
+        // The window backdrop (substrate + scrim) is supplied ONCE by windowChrome
+        // at the panel level, shared identically with the Charts window. Here we
+        // only declare the container shape for concentric nesting underneath.
         .containerShape(.rect(cornerRadius: DesignRadius.panel, style: .continuous))
         // Keyed on isPanelOpen: the panel hides via orderOut (which does NOT
         // cancel a plain .task), so the loop must stop itself when the panel
