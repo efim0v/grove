@@ -37,18 +37,9 @@ public enum GroveMenuBarApp {
 
 /// Borderless panel that can still become key, so the panel's search field and
 /// other controls receive keyboard input (a plain borderless window cannot).
+/// This single panel hosts BOTH sections (projects + charts) via MergedRootView.
 final class GrovePanel: NSPanel {
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
-}
-
-/// The Charts side window. It must NEVER become key: it holds only display +
-/// click controls (the ‹ › scope arrows, which respond to mouse clicks without
-/// key status), so keeping it non-key leaves the MAIN panel key — its search
-/// field stays focused and ⌘R/⌘Q keep working even while the user clicks around
-/// the charts. (A borderless NSPanel is non-key by default; this is explicit.)
-final class ChartsDisplayPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
 
@@ -61,16 +52,10 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
     private var panel: GrovePanel?
     private var host: NSHostingController<AnyView>?
     /// KVO token: the panel must resize when SwiftUI's preferredContentSize changes
-    /// (a tab/route switch) — an NSWindow does not do this on its own reliably.
+    /// (a tab/route switch, or collapsing/showing the charts section) — an NSWindow
+    /// does not do this on its own reliably.
     private var sizeObservation: NSKeyValueObservation?
 
-    /// The always-on Charts side window, docked to the LEFT of the main panel.
-    /// Opens/closes with the main panel and re-glues to its left edge on every
-    /// resize/move, so the two windows stand side by side regardless of which
-    /// section the main panel is showing.
-    private var chartsPanel: ChartsDisplayPanel?
-    private var chartsHost: NSHostingController<AnyView>?
-    private var chartsSizeObservation: NSKeyValueObservation?
     /// Global mouse monitor installed while the panel is open so a click anywhere
     /// OUTSIDE our app (desktop, another app, the menu bar) dismisses it. A global
     /// monitor never fires for clicks inside our own windows — including a child
@@ -109,7 +94,11 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // NOT .nonactivatingPanel: that flag blocks the panel from becoming key, so
         // the search field would never get the keyboard. Plain .borderless +
         // GrovePanel.canBecomeKey + NSApp.activate gives it focus.
-        let p = GrovePanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 520),
+        // Initial rect sized for the default (showCharts == true) combined layout —
+        // projects 460 + 1px divider + charts 290 = 751 — so the first frame doesn't
+        // flash at the projects-only width before KVO corrects it. Height is the
+        // charts-driven 600; the first preferredContentSize callback corrects both.
+        let p = GrovePanel(contentRect: NSRect(x: 0, y: 0, width: 751, height: 600),
                            styleMask: [.borderless],
                            backing: .buffered, defer: false)
         p.level = .floating                  // above normal windows, but NOT forced over fullscreen apps
@@ -132,18 +121,20 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // isOpaque=false + clear bg makes the window-server shadow follow the rounded
         // shape; invalidateShadow() on resize keeps it in sync.
         // Clear, constant Liquid Glass via AppKit NSGlassEffectView — never frosted,
-        // never dims on focus (see GlassWindowSubstrate). The hairline border is
-        // drawn on the SwiftUI root; the gray GlassCards provide content surfaces.
+        // never dims on focus (see GlassWindowSubstrate). ONE substrate now wraps the
+        // WHOLE merged root (projects | divider | charts), so both sections read
+        // identically — the transparency fix that two separate windows could never
+        // give. The hairline border is drawn on MergedRootView; the gray GlassCards
+        // provide content surfaces.
         let radius = DesignRadius.panel
-        let chrome = AnyView(RootView(state: state)
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(.white.opacity(0.10))))
+        let chrome = AnyView(MergedRootView(state: state))
         let h = NSHostingController(rootView: chrome)
         h.sizingOptions = [.preferredContentSize]
         GlassWindowSubstrate.install(h, radius: radius, in: p)
         host = h
-        // Resize the panel to the SwiftUI content on every tab/route change, then
-        // re-pin the top-right corner so it grows inward instead of jumping.
+        // Resize the panel to the SwiftUI content on every tab/route change (or a
+        // charts collapse/show), then re-pin the top-right corner so it grows inward
+        // instead of jumping.
         sizeObservation = h.observe(\.preferredContentSize) { [weak self] controller, _ in
             let size = controller.preferredContentSize
             DispatchQueue.main.async { self?.applyContentSize(size) }
@@ -152,100 +143,29 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         return p
     }
 
-    /// Resizes the MAIN (projects) panel to its SwiftUI content. The main panel is
-    /// the one that changes size often, so it sits on the LEFT and grows leftward —
-    /// its right edge stays glued just left of the fixed, icon-anchored Charts
-    /// window, which never moves on a route change.
+    /// Resizes the single merged panel to its SwiftUI content and re-pins its
+    /// TOP-RIGHT corner to the status-item icon, so the window grows LEFTWARD and
+    /// DOWNWARD as the route changes (or the charts section collapses/expands) —
+    /// the right edge stays glued under the icon instead of the window jumping.
+    /// This is the old anchorChartsToIcon math (top-right pinned, on-screen clamp)
+    /// applied to the one window that now holds both sections.
     private func applyContentSize(_ size: NSSize) {
         guard let p = panel, size.width > 1, size.height > 1 else { return }
-        if p.frame.size != size { p.setContentSize(size) }
-        dockMainLeftOfCharts()
-        p.invalidateShadow()
-    }
-
-    /// Builds (once) the borderless Charts side window — same chrome as the main
-    /// panel, hosting the standalone dashboard.
-    private func makeChartsPanel() -> ChartsDisplayPanel {
-        if let chartsPanel { return chartsPanel }
-        let p = ChartsDisplayPanel(contentRect: NSRect(x: 0, y: 0, width: ChartsSideContent.width, height: 600),
-                                   styleMask: [.borderless],
-                                   backing: .buffered, defer: false)
-        p.level = .floating                  // match the main panel: no forced fullscreen overlay
-        p.isFloatingPanel = true
-        p.hidesOnDeactivate = false
-        p.isMovable = false
-        p.backgroundColor = .clear
-        p.isOpaque = false
-        p.hasShadow = true
-        // Identical to the main panel so both windows' glass behaves the same: on the
-        // active Space when shown, never floating over fullscreen apps / re-sampling.
-        p.collectionBehavior = [.moveToActiveSpace]
-        p.delegate = self
-        let radius = DesignRadius.panel
-        let chrome = AnyView(ChartsSideContent(state: state)
-            .frame(maxHeight: 820)
-            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(.white.opacity(0.10))))
-        let h = NSHostingController(rootView: chrome)
-        h.sizingOptions = [.preferredContentSize]
-        GlassWindowSubstrate.install(h, radius: radius, in: p)
-        chartsHost = h
-        chartsSizeObservation = h.observe(\.preferredContentSize) { [weak self] controller, _ in
-            let size = controller.preferredContentSize
-            DispatchQueue.main.async { self?.applyChartsContentSize(size) }
-        }
-        chartsPanel = p
-        return p
-    }
-
-    private func applyChartsContentSize(_ size: NSSize) {
-        guard let p = chartsPanel, size.width > 1, size.height > 1 else { return }
+        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         // Cap the height to the visible screen so the window can always be fully
-        // on-screen (the dashboard has no scroll view; a too-tall window would
-        // otherwise push its top above the menu bar on short displays).
-        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
-        let capped = NSSize(width: size.width,
-                            height: min(size.height, (visible?.height ?? size.height) - 8))
+        // on-screen (the dashboard has no scroll view; a too-tall charts column
+        // would otherwise push the top above the menu bar on short displays).
+        let h = min(size.height, visible.height - 8)
+        let capped = NSSize(width: size.width, height: h)
         if p.frame.size != capped { p.setContentSize(capped) }
-        anchorChartsToIcon()
-        dockMainLeftOfCharts()   // the Charts window moved → re-glue the main panel
+        // Top-RIGHT corner pinned to the icon; grow LEFT + DOWN, then clamp on-screen.
+        var x = anchorRightX - capped.width
+        x = max(visible.minX + 4, min(x, visible.maxX - capped.width - 4))
+        var y = anchorTopY - capped.height
+        y = max(visible.minY + 4, min(y, visible.maxY - capped.height - 4))
+        p.setFrameOrigin(NSPoint(x: x, y: y))
         p.invalidateShadow()
-    }
-
-    /// Anchors the CHARTS window's top-RIGHT corner to the status-item icon. Charts
-    /// is the FIXED reference (it rarely changes size), so it owns the icon anchor.
-    /// Clamped fully on-screen.
-    private func anchorChartsToIcon() {
-        guard let charts = chartsPanel else { return }
-        let size = charts.frame.size
-        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        var x = anchorRightX - size.width
-        x = max(visible.minX + 4, min(x, visible.maxX - size.width - 4))
-        var y = anchorTopY - size.height
-        y = max(visible.minY + 4, min(y, visible.maxY - size.height - 4))
-        let origin = NSPoint(x: x, y: y)
-        if charts.frame.origin != origin { charts.setFrameOrigin(origin) }
-    }
-
-    /// Docks the MAIN (projects) window to the LEFT of the anchored Charts window —
-    /// right edge a gap left of Charts' left edge, tops aligned — so it grows
-    /// leftward as routes change. Falls back to the right of Charts if there's no
-    /// room on the left; both axes clamped on-screen.
-    private func dockMainLeftOfCharts() {
-        guard let main = panel, let charts = chartsPanel else { return }
-        let gap: CGFloat = 8
-        let size = main.frame.size
-        let chartsFrame = charts.frame
-        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        var x = chartsFrame.minX - gap - size.width
-        if x < visible.minX + 4 { x = chartsFrame.maxX + gap }
-        x = max(visible.minX + 4, min(x, visible.maxX - size.width - 4))
-        var y = chartsFrame.maxY - size.height
-        y = max(visible.minY + 4, min(y, visible.maxY - size.height - 4))
-        let origin = NSPoint(x: x, y: y)
-        if main.frame.origin != origin { main.setFrameOrigin(origin) }
     }
 
     @objc private func togglePanel() {
@@ -255,52 +175,41 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
     private func showPanel() {
         guard let button = statusItem?.button, let buttonWindow = button.window else { return }
         let p = makePanel()
-        let cp = makeChartsPanel()
         let iconRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
         anchorRightX = iconRect.maxX
         anchorTopY = iconRect.minY - 6            // small gap below the menu bar
         anchorScreen = buttonWindow.screen
         state.isPanelOpen = true                  // starts RootView's refresh loop
-        // Charts is the icon-anchored fixed window (RIGHT); the projects panel docks
-        // to its LEFT. Size + place both BEFORE ordering in so neither flashes.
-        if let ch = chartsHost, ch.preferredContentSize.height > 1 {
-            applyChartsContentSize(ch.preferredContentSize)
-        } else {
-            anchorChartsToIcon()
-        }
+        // Size + place the merged panel BEFORE ordering in so it doesn't flash.
+        // NSHostingController can still report 0x0 before its first layout pass, so
+        // when no preferred size is known yet, anchor using the panel's CURRENT
+        // frame (the initial 751x600, or the last shown size) — the top-right corner
+        // must be pinned to the icon BEFORE makeKeyAndOrderFront, or the very first
+        // open flashes at the window's default origin until the KVO repositions it.
         if let h = host, h.preferredContentSize.width > 1 {
             applyContentSize(h.preferredContentSize)
         } else {
-            dockMainLeftOfCharts()
+            applyContentSize(p.frame.size)
         }
         NSApp.activate(ignoringOtherApps: true)   // key window + keyboard for an .accessory app
-        cp.orderFront(nil)                         // display-only; main keeps key
-        p.makeKeyAndOrderFront(nil)
+        p.makeKeyAndOrderFront(nil)               // key-capable: the search field gets focus
         installOutsideClickMonitor()
     }
 
     private func hidePanel() {
         state.isPanelOpen = false                 // stops RootView's refresh loop
-        chartsPanel?.orderOut(nil)
         panel?.orderOut(nil)
         removeOutsideClickMonitor()
     }
 
-    /// A main-panel resize re-docks it to the left of the fixed Charts window; a
-    /// Charts resize re-anchors Charts to the icon, then re-docks the main panel.
+    /// A resize of the merged panel (a route change or a charts collapse/show)
+    /// re-pins its top-right corner to the icon and refreshes the shadow.
     func windowDidResize(_ notification: Notification) {
         let resized = notification.object as? NSWindow
         // A resize delivered while the window is hidden (a SwiftUI layout pass during
         // orderOut) must not reposition with stale anchors — showPanel re-anchors.
-        guard resized?.isVisible == true else { return }
-        if resized === chartsPanel {
-            anchorChartsToIcon()
-            chartsPanel?.invalidateShadow()
-            dockMainLeftOfCharts()
-        } else if resized === panel {
-            dockMainLeftOfCharts()
-            panel?.invalidateShadow()
-        }
+        guard resized === panel, resized?.isVisible == true else { return }
+        applyContentSize(panel?.frame.size ?? .zero)
     }
 
     // MARK: - Outside-click dismissal

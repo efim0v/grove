@@ -57,7 +57,8 @@ final class SnapshotModeTests: XCTestCase {
         let projectID = try XCTUnwrap(state(.projects).selectedProjectID)
 
         XCTAssertEqual(state(.projects).route, .projects)
-        XCTAssertEqual(state(.charts).route, .projects)   // charts side window (no tab)
+        XCTAssertEqual(state(.charts).route, .projects)   // merged window (projects | charts)
+        XCTAssertTrue(state(.charts).showCharts)          // charts section shown in the merge
         XCTAssertEqual(state(.rootWorkspaces).route, .project(projectID))
         XCTAssertEqual(state(.workspacesExpanded).route, .project(projectID))
         XCTAssertEqual(state(.graph).route, .project(projectID))
@@ -100,7 +101,7 @@ final class SnapshotModeTests: XCTestCase {
     /// Canvas sizes mirror RootView's adaptive per-route panel frames.
     func testSceneSizesFollowTheAdaptivePanelFrames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.projects.size, CGSize(width: 460, height: 520))
-        XCTAssertEqual(SnapshotMode.SnapshotScene.charts.size, CGSize(width: 290, height: 800))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.charts.size, CGSize(width: 751, height: 800))
         XCTAssertEqual(SnapshotMode.SnapshotScene.rootWorkspaces.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.workspacesExpanded.size, CGSize(width: 760, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.graph.size, CGSize(width: 760, height: 540))

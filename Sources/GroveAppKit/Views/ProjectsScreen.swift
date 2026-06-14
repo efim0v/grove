@@ -26,7 +26,7 @@ struct ProjectsTab: View {
                 projectCard(project)
             }
         }
-        .padding(8)   // consistent with the Charts window's edge padding
+        .padding(8)   // consistent with the charts section's edge padding
     }
 
     private func projectCard(_ project: ProjectConfig) -> some View {

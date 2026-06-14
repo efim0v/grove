@@ -38,9 +38,14 @@ public final class AppState: ObservableObject {
     /// Per-project recent Claude sessions (item 4): the Projects tab's previews.
     /// Filled by refreshSessionIndex (cheap, off-main — no git scan).
     @Published public var recentSessionsByProject: [UUID: [ProjectSessionRow]] = [:]
-    /// Which scope the Charts side window shows (0 = Overall when >1 account, else the first
-    /// account). The ‹ › arrows step this; persisted so it survives panel reopen.
+    /// Which scope the embedded charts section shows (0 = Overall when >1 account, else the
+    /// first account). The ‹ › arrows step this; persisted so it survives panel reopen.
     @Published public var chartsScopeIndex: Int = 0
+    /// Whether the charts (account-stats) section is shown alongside the projects
+    /// section in the single merged window. The collapse toggle in RootShell flips
+    /// it; when false the window becomes projects-only width. In-memory for now
+    /// (persisting would mutate GroveConfig — a follow-up).
+    @Published public var showCharts: Bool = true
     /// When non-nil, the launch sheet is presented to configure a Resume/New launch
     /// (open-target, account, model, effort) before it runs.
     @Published public var launchRequest: LaunchRequest?

@@ -97,17 +97,20 @@ struct DashboardScreen: View {
     }
 }
 
-/// The Charts dashboard as a standalone, always-on side window docked to the LEFT
-/// of the main panel (the Projects|Charts tab was removed — charts are now always
-/// visible, regardless of which section the main window shows). Fixed narrow
-/// width; the hosting panel applies the chrome (material/clip/border) in
-/// production and the snapshot backdrop supplies it offscreen, so it's NOT here.
+/// The Charts dashboard as the embedded charts section of the merged window —
+/// laid out in `MergedRootView`'s HStack to the RIGHT of the projects section,
+/// split by an internal divider (the Projects|Charts tab was removed — charts are
+/// shown alongside projects whenever `state.showCharts` is true). Fixed narrow
+/// width; the merged window's glass substrate supplies the chrome (material/clip/
+/// border) in production and the snapshot backdrop supplies it offscreen, so it's
+/// NOT here.
 struct ChartsSideContent: View {
     @ObservedObject var state: AppState
     static let width: CGFloat = 290
     var body: some View {
-        // The window backdrop (substrate + scrim) is supplied by windowChrome at the
-        // panel level — identical to the projects window. Nothing extra here.
+        // The window backdrop (the shared glass substrate) is supplied at the panel
+        // level for the whole merged window — so this charts section reads identically
+        // to the projects section beside it. Nothing extra here.
         DashboardScreen(state: state)
             .frame(width: ChartsSideContent.width)
     }

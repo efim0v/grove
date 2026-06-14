@@ -26,9 +26,9 @@ public struct RootView: View {
         // buttons, links, toggles) so they pick up Palette.primary instead of
         // the OS accent — the single source of truth for the app's blue.
         .tint(Palette.primary)
-        // The window backdrop (substrate + scrim) is supplied ONCE by windowChrome
-        // at the panel level, shared identically with the Charts window. Here we
-        // only declare the container shape for concentric nesting underneath.
+        // The window backdrop (the shared glass substrate) is supplied ONCE at the
+        // merged panel level, identically across the projects and charts sections.
+        // Here we only declare the container shape for concentric nesting underneath.
         .containerShape(.rect(cornerRadius: DesignRadius.panel, style: .continuous))
         // Keyed on isPanelOpen: the panel hides via orderOut (which does NOT
         // cancel a plain .task), so the loop must stop itself when the panel
@@ -50,8 +50,9 @@ public struct RootView: View {
     // MARK: - Route switch with push/pop transitions and per-route size
 
     /// Preferred panel frame for the CURRENT route. The root scope (.projects) is
-    /// the project list at a fixed roomy size; the usage dashboard is no longer a
-    /// tab here (it's the permanent side window).
+    /// the project list at a roomy size (its height is a *minimum* — it stretches to
+    /// fill the taller merged window; see RouteFrame); the usage dashboard is no
+    /// longer a tab here (it's the embedded charts section of the merged window).
     var currentPanelSize: (width: CGFloat, height: CGFloat?) {
         if case .projects = state.route {
             return (460, 520)
@@ -104,11 +105,36 @@ public struct RootView: View {
                     GlobalSettingsScreen(state: state)
                 }
             }
-            .frame(width: size.width, height: size.height)
-            .frame(maxHeight: maxPanelHeight)   // caps the height-adaptive screens
+            .modifier(RouteFrame(route: state.route, size: size, cap: maxPanelHeight))
             .transition(.opacity)
         }
         .clipped()
+    }
+
+    /// Per-route frame. Every route except `.projects` keeps the exact prior
+    /// behavior (a fixed/adaptive height capped at `cap`). The `.projects` route
+    /// instead takes its height as a *minimum* with an unbounded max, so the
+    /// projects column can stretch DOWN to match the taller charts column when
+    /// embedded in `MergedRootView` (footer pinned to the bottom edge) while still
+    /// resolving to its natural 520 standalone or when the charts are collapsed.
+    /// The on-screen height is clamped by the controller's `applyContentSize`.
+    private struct RouteFrame: ViewModifier {
+        let route: Route
+        let size: (width: CGFloat, height: CGFloat?)
+        let cap: CGFloat
+
+        func body(content: Content) -> some View {
+            if case .projects = route {
+                content
+                    .frame(width: size.width)
+                    .frame(minHeight: size.height ?? 0, maxHeight: .infinity,
+                           alignment: .top)
+            } else {
+                content
+                    .frame(width: size.width, height: size.height)
+                    .frame(maxHeight: cap)   // caps the height-adaptive screens
+            }
+        }
     }
 
     // MARK: - Error banner (spec §7): dismissable; cmux failures get a

@@ -61,6 +61,31 @@ final class ViewStatesRenderTests: XCTestCase {
         _ = renderer.cgImage
     }
 
+    /// Exercises the merged window root: the expanded HStack (projects | divider |
+    /// charts side by side) and the collapsed projects-only path (showCharts=false).
+    /// Forcing cgImage on each catches a crashing/blank combined body.
+    func testMergedRootRendersExpandedAndCollapsed() {
+        let shown = SnapshotMode.fixtureState()
+        shown.showCharts = true
+        let expanded = MergedRootView(state: shown)
+            .frame(width: 751, height: 800)
+            .environment(\.colorScheme, .dark)
+            .environment(\.isSnapshotRender, true)
+        let r1 = ImageRenderer(content: expanded)
+        r1.scale = 1
+        _ = r1.cgImage
+
+        let collapsedState = SnapshotMode.fixtureState()
+        collapsedState.showCharts = false
+        let collapsed = MergedRootView(state: collapsedState)
+            .frame(width: 460, height: 520)
+            .environment(\.colorScheme, .dark)
+            .environment(\.isSnapshotRender, true)
+        let r2 = ImageRenderer(content: collapsed)
+        r2.scale = 1
+        _ = r2.cgImage
+    }
+
     func testNonCmuxErrorBannerBranch() {
         let s = SnapshotMode.fixtureState()
         s.actionError = "config.json is unreadable"   // no "cmux" -> no Launch cmux button

@@ -3,10 +3,11 @@ import AppKit
 import GroveCore
 
 /// The root scope (route .projects): the project list with quick session access.
-/// The usage dashboard is no longer a tab here — it lives in a permanent side
-/// window (ChartsSideContent) docked left of the main panel, always visible. So
-/// this shell is just the brand/limits header, the Projects content, and the
-/// shared footer.
+/// The usage dashboard is no longer a tab here — it's the embedded charts section
+/// (ChartsSideContent) of the merged window, shown to the RIGHT of this shell in
+/// MergedRootView's HStack whenever `state.showCharts` is true. So this shell is
+/// just the add-project row, the Projects content, and the footer (whose collapse
+/// toggle flips `state.showCharts`).
 struct RootShell: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
@@ -20,10 +21,10 @@ struct RootShell: View {
         }
     }
 
-    // MARK: - Add row (the header is gone — the limits live in the Charts window).
+    // MARK: - Add row (the header is gone — the limits live in the charts section).
 
     /// A simple accent text-button row at the top, in the projects' own style —
-    /// no brand, no limits chip (those now live in the side-by-side Charts window).
+    /// no brand, no limits chip (those now live in the embedded charts section).
     private var addRow: some View {
         HStack(spacing: 0) {
             Button { addProjectViaPanel() } label: {
@@ -40,7 +41,7 @@ struct RootShell: View {
         .padding(.bottom, 6)
     }
 
-    // MARK: - Content (the project list; charts live in the side window)
+    // MARK: - Content (the project list; charts live in the embedded charts section)
 
     @ViewBuilder private var content: some View {
         ProjectsTab(state: state)
@@ -72,6 +73,20 @@ struct RootShell: View {
             .buttonStyle(.plain)
             .keyboardShortcut("r")
             .help("Refresh (⌘R)")
+            // Collapse / expand the side-by-side charts (account-stats) section.
+            // Toggling showCharts changes MergedRootView's body → the hosting
+            // controller's preferredContentSize → the window grows/shrinks from
+            // the right edge (pinned to the menu-bar icon).
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    state.showCharts.toggle()
+                }
+            } label: {
+                Image(systemName: state.showCharts
+                      ? "sidebar.right" : "chart.bar")
+            }
+            .buttonStyle(.plain)
+            .help(state.showCharts ? "Hide charts" : "Show charts")
             if let issue = state.configIssue {
                 Text(issue).font(.caption).foregroundStyle(Palette.mid).lineLimit(1)
             }

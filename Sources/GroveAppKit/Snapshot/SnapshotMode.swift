@@ -58,7 +58,9 @@ public enum SnapshotMode {
         var size: CGSize {
             switch self {
             case .projects: return CGSize(width: 460, height: 520)
-            case .charts: return CGSize(width: 290, height: 800)
+            // The merged window: projects 460 + 1px divider + charts 290 = 751,
+            // charts-driven height.
+            case .charts: return CGSize(width: 751, height: 800)
             case .rootWorkspaces, .workspacesExpanded, .graph, .stats, .sessions:
                 return CGSize(width: 760, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)
@@ -727,8 +729,10 @@ public enum SnapshotMode {
         case .projects:
             state.route = .projects
         case .charts:
-            // The standalone Charts side window; fixture already carries usage data.
+            // The merged window (projects | divider | charts); fixture already
+            // carries usage data, and showCharts defaults true.
             state.route = .projects
+            state.showCharts = true
         case .rootWorkspaces, .workspacesExpanded:
             state.route = .project(projectID)
         case .createSheet:
@@ -786,10 +790,11 @@ public enum SnapshotMode {
 
     @MainActor
     static func view(for scene: SnapshotScene) -> AnyView {
-        // The Charts side window renders its standalone content, NOT the main shell
-        // (charts is no longer a tab in RootView).
+        // The charts scene now renders the MERGED window root (projects | divider |
+        // charts side by side) — exercising the combined HStack layout, not the
+        // charts content in isolation.
         if scene == .charts {
-            return AnyView(ChartsSideContent(state: configuredState(for: scene)))
+            return AnyView(MergedRootView(state: configuredState(for: scene)))
         }
         let root = RootView(state: configuredState(for: scene))
         if scene == .workspacesExpanded {
