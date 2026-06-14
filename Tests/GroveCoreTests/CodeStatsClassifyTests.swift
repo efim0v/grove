@@ -156,6 +156,30 @@ final class CodeStatsClassifyTests: XCTestCase {
         """, code: 1, comment: 1, blank: 0)
     }
 
+    func testRubyIndentedBeginEndCountsAsCode() throws {
+        // =begin/=end open a comment block ONLY at column 0. Indented, they are NOT
+        // valid Ruby comment syntax, so every line here counts as code (was wrongly
+        // counted as a 3-line comment when leading whitespace was skipped first).
+        let src = "  =begin\n  still code\n  =end\n  puts \"hi\"\n"
+        try assertCounts("rb", src, code: 4, comment: 0, blank: 0)
+    }
+
+    // MARK: - Dart (Flutter): was entirely missing from the table
+
+    func testDartIsRecognizedAndClassified() throws {
+        XCTAssertEqual(try lang("dart").name, "Dart")
+        // // line, /// doc (still a // prefix), trailing comment is code, /* */ block.
+        try assertCounts("dart", """
+        // a line comment
+        /// a doc comment
+        void main() {
+          print('hi'); // trailing
+        }
+        /* block
+           still */
+        """, code: 3, comment: 4, blank: 0)
+    }
+
     // MARK: - Shell: line comments only, no block
 
     func testShellShebangAndComments() throws {

@@ -104,6 +104,14 @@ public final class AppState: ObservableObject {
     /// the relevant project's cache and returns the updated one — same pattern as
     /// refreshUsage's off-main work).
     private var statsCacheByProject: [UUID: [String: CachedFile]] = [:]
+    /// Per-project scan serialization. Two scans of the SAME project must never run
+    /// concurrently: both would start from the same cache snapshot and the slower one
+    /// would overwrite the faster's cache on completion, silently dropping mtime
+    /// entries (so the next scan needlessly re-reads those files). A project in
+    /// `statsScanInFlight` has a scan running; a refresh requested meanwhile records
+    /// `statsRescanPending` and is honored once the in-flight scan settles.
+    private var statsScanInFlight: Set<UUID> = []
+    private var statsRescanPending: Set<UUID> = []
 
     /// Test seam: when set, every cmux interaction uses this service instead of
     /// a real `CmuxService()` (which would resolve and invoke the real cmux
@@ -990,12 +998,27 @@ extension AppState {
     /// back on the main actor, where the new total is coalesced into the store.
     /// No-op for an unknown id. `isStatsScanning` brackets the whole operation.
     public func refreshCodeStats(projectID: UUID, now: Date = Date()) async {
+        // Serialize per project: if a scan for this project is already running, record
+        // that another is wanted and return — the in-flight scan re-runs once when it
+        // finishes (see the tail below). This prevents two scans racing on the shared
+        // mtime cache, while still honoring a refresh requested mid-scan (e.g. after a
+        // folder-exclusion toggle clears the cache).
+        guard !statsScanInFlight.contains(projectID) else {
+            statsRescanPending.insert(projectID)
+            return
+        }
+        await runCodeStatsScan(projectID: projectID, now: now)
+    }
+
+    private func runCodeStatsScan(projectID: UUID, now: Date) async {
         guard let project = config.projects.first(where: { $0.id == projectID }) else { return }
         let path = project.path
         let ignored = Set(project.statsIgnoredFolders)
         let cache = statsCacheByProject[projectID] ?? [:]
         let scanner = statsScanner
 
+        statsScanInFlight.insert(projectID)
+        statsRescanPending.remove(projectID)
         isStatsScanning = true
         let result = await Task.detached(priority: .utility) {
             () -> (stats: CodeStats, cache: [String: CachedFile]) in
@@ -1004,10 +1027,12 @@ extension AppState {
                                      now: now, cache: &local)
             return (stats, local)
         }.value
+        statsScanInFlight.remove(projectID)
+        isStatsScanning = !statsScanInFlight.isEmpty
         // A concurrent removeProject (or another refresh) may have run while detached;
         // only commit if the project still exists.
         guard config.projects.contains(where: { $0.id == projectID }) else {
-            isStatsScanning = false
+            statsRescanPending.remove(projectID)
             return
         }
         codeStats[projectID] = result.stats
@@ -1020,7 +1045,12 @@ extension AppState {
         let store = statsStore
         try? store.append(projectID: projectID, point: point)
         codeStatsHistory[projectID] = store.load(projectID: projectID).points
-        isStatsScanning = false
+
+        // Honor a refresh that arrived while this scan was running (its cache may now
+        // be stale — e.g. a folder toggle wiped it), serialized strictly after us.
+        if statsRescanPending.remove(projectID) != nil {
+            await runCodeStatsScan(projectID: projectID, now: Date())
+        }
     }
 
     /// Excludes (or re-includes) a project-root-relative folder from code-stats

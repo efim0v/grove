@@ -81,14 +81,23 @@ public struct FileClassification: Sendable, Equatable {
 public struct CommentSyntax: Sendable, Equatable {
     public let lineComment: [String]
     public let blockComment: [(open: String, close: String)]
-    public init(lineComment: [String], blockComment: [(open: String, close: String)]) {
+    /// When true, a block open/close delimiter only counts at COLUMN 0 (no leading
+    /// whitespace) — Ruby's `=begin`/`=end` rule. C-style `/* */` blocks float
+    /// anywhere on the line, so this is false for every language but Ruby. Without
+    /// it an indented `=begin` (not valid Ruby comment syntax) is miscounted as a
+    /// comment instead of code.
+    public let blockRequiresLineStart: Bool
+    public init(lineComment: [String], blockComment: [(open: String, close: String)],
+                blockRequiresLineStart: Bool = false) {
         self.lineComment = lineComment
         self.blockComment = blockComment
+        self.blockRequiresLineStart = blockRequiresLineStart
     }
 
     // Tuples aren't auto-Equatable, so compare blocks element-wise.
     public static func == (lhs: CommentSyntax, rhs: CommentSyntax) -> Bool {
         lhs.lineComment == rhs.lineComment
+            && lhs.blockRequiresLineStart == rhs.blockRequiresLineStart
             && lhs.blockComment.count == rhs.blockComment.count
             && zip(lhs.blockComment, rhs.blockComment).allSatisfy { $0.open == $1.open && $0.close == $1.close }
     }
@@ -122,10 +131,12 @@ public enum CodeStatsEngine {
     /// terse: line tokens + block (open,close) pairs. Markdown/json carry no
     /// comment tokens (json is treated as all-code; markdown too).
     private static func lang(_ name: String, _ exts: [String],
-                             line: [String] = [], block: [(String, String)] = []) -> LanguageDefinition {
+                             line: [String] = [], block: [(String, String)] = [],
+                             blockAtLineStart: Bool = false) -> LanguageDefinition {
         LanguageDefinition(name: name, extensions: exts,
                            comment: CommentSyntax(lineComment: line,
-                                                  blockComment: block.map { (open: $0.0, close: $0.1) }))
+                                                  blockComment: block.map { (open: $0.0, close: $0.1) },
+                                                  blockRequiresLineStart: blockAtLineStart))
     }
 
     /// Shipped languages (spec): extension → line/block comment syntax.
@@ -142,10 +153,23 @@ public enum CodeStatsEngine {
         lang("C/C++",      ["c", "h", "cc", "cpp", "cxx", "hpp", "hh"], line: ["//"], block: [("/*", "*/")]),
         lang("Java",       ["java"],                                    line: ["//"], block: [("/*", "*/")]),
         lang("Kotlin",     ["kt", "kts"],                               line: ["//"], block: [("/*", "*/")]),
-        lang("Ruby",       ["rb"],                                      line: ["#"],  block: [("=begin", "=end")]),
+        // Dart (Flutter): // and /// line comments, /* */ blocks. Was MISSING, so
+        // every .dart file — often the bulk of a mobile app — went uncounted.
+        lang("Dart",       ["dart"],                                    line: ["//"], block: [("/*", "*/")]),
+        // Ruby's =begin/=end MUST sit at column 0 (blockAtLineStart) — an indented
+        // one is a syntax error, not a comment, so it counts as code.
+        lang("Ruby",       ["rb"],                                      line: ["#"],  block: [("=begin", "=end")], blockAtLineStart: true),
+        lang("PHP",        ["php"],                                     line: ["//", "#"], block: [("/*", "*/")]),
+        lang("Scala",      ["scala", "sbt"],                            line: ["//"], block: [("/*", "*/")]),
+        lang("Groovy",     ["gradle", "groovy"],                       line: ["//"], block: [("/*", "*/")]),
+        lang("Lua",        ["lua"],                                     line: ["--"], block: [("--[[", "]]")]),
+        lang("SQL",        ["sql"],                                     line: ["--"], block: [("/*", "*/")]),
         lang("Shell",      ["sh", "bash", "zsh"],                       line: ["#"]),
         lang("Objective-C", ["m", "mm"],                               line: ["//"], block: [("/*", "*/")]),
         lang("C#",         ["cs"],                                      line: ["//"], block: [("/*", "*/")]),
+        lang("HTML/XML",   ["html", "htm", "xhtml", "xml", "vue"],      block: [("<!--", "-->")]),
+        lang("CSS",        ["css"],                                     block: [("/*", "*/")]),
+        lang("Sass/Less",  ["scss", "sass", "less"],                    line: ["//"], block: [("/*", "*/")]),
         lang("YAML",       ["yml", "yaml"],                             line: ["#"]),
         lang("TOML",       ["toml"],                                    line: ["#"]),
         lang("JSON",       ["json"]),                  // no comments -> all non-blank lines are code
@@ -210,6 +234,7 @@ public enum CodeStatsEngine {
 
         let lineComments = language.comment.lineComment
         let blocks = language.comment.blockComment
+        let requireLineStart = language.comment.blockRequiresLineStart
 
         // splitWholeContent keeps trailing empty line semantics consistent: a file
         // ending in "\n" yields no spurious extra blank line.
@@ -219,11 +244,17 @@ public enum CodeStatsEngine {
             if inBlock {
                 // Inside a block: look for this block's close token on the line.
                 let close = openClose!.close
-                if let afterClose = remainderAfterFirst(close, in: rawLine) {
+                // Column-0-anchored closes (Ruby =end) only count at line start; the
+                // whole closing line is then a comment. Others close wherever found.
+                let afterClose: Substring? = requireLineStart
+                    ? (rawLine.hasPrefix(close) ? "" : nil)
+                    : remainderAfterFirst(close, in: rawLine)
+                if let afterClose {
                     inBlock = false
                     openClose = nil
                     // Code after the close token on the same line -> the line is CODE.
-                    if hasCodeRemaining(afterClose, lineComments: lineComments, blocks: blocks) {
+                    if hasCodeRemaining(afterClose, lineComments: lineComments, blocks: blocks,
+                                        requireLineStart: requireLineStart) {
                         code += 1
                     } else {
                         comment += 1
@@ -242,7 +273,8 @@ public enum CodeStatsEngine {
             // comment opener? `hasCodeRemaining` answers that and updates block state.
             var localInBlock = false
             if lineIsCode(rawLine, lineComments: lineComments, blocks: blocks,
-                          endsInsideBlock: &localInBlock, openedBlock: &openClose) {
+                          endsInsideBlock: &localInBlock, openedBlock: &openClose,
+                          requireLineStart: requireLineStart) {
                 code += 1
             } else {
                 comment += 1
@@ -280,7 +312,8 @@ public enum CodeStatsEngine {
                                    lineComments: [String],
                                    blocks: [(open: String, close: String)],
                                    endsInsideBlock: inout Bool,
-                                   openedBlock: inout (open: String, close: String)?) -> Bool {
+                                   openedBlock: inout (open: String, close: String)?,
+                                   requireLineStart: Bool = false) -> Bool {
         var idx = line.startIndex
         let end = line.endIndex
         var sawCode = false
@@ -295,8 +328,11 @@ public enum CodeStatsEngine {
                 return false   // comment line
             }
 
-            // Block opener at this position.
-            if let blk = matchBlock(blocks, in: line, at: idx) {
+            // Block opener at this position. A column-0-anchored opener (Ruby =begin)
+            // only counts when nothing was skipped before it — an indented =begin is
+            // code, not a comment.
+            if (!requireLineStart || idx == line.startIndex),
+               let blk = matchBlock(blocks, in: line, at: idx) {
                 let afterOpen = line.index(idx, offsetBy: blk.open.count)
                 // Does the matching close appear later on THIS line?
                 if let rangeAfterClose = remainderAfterFirstIndexed(blk.close, in: line, from: afterOpen) {
@@ -328,12 +364,14 @@ public enum CodeStatsEngine {
     /// Used both for "code after */ on the same line" and the in-block close case.
     private static func hasCodeRemaining(_ slice: Substring,
                                          lineComments: [String],
-                                         blocks: [(open: String, close: String)]) -> Bool {
+                                         blocks: [(open: String, close: String)],
+                                         requireLineStart: Bool = false) -> Bool {
         var dummyBlock = false
         var dummyOpen: (open: String, close: String)? = nil
         if slice.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         return lineIsCode(slice, lineComments: lineComments, blocks: blocks,
-                          endsInsideBlock: &dummyBlock, openedBlock: &dummyOpen)
+                          endsInsideBlock: &dummyBlock, openedBlock: &dummyOpen,
+                          requireLineStart: requireLineStart)
     }
 
     // MARK: Token matching

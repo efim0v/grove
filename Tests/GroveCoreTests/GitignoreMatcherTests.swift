@@ -129,6 +129,19 @@ final class GitignoreMatcherTests: XCTestCase {
         XCTAssertFalse(rules.match(relativePath: "foo", isDirectory: false))
     }
 
+    func testDoubleBackslashBeforeTrailingSpaceStripsSpace() {
+        // "foo\\ " — the `\\` is a LITERAL backslash, so the trailing space is NOT
+        // escaped and git strips it: the pattern matches "foo\" (one backslash),
+        // never "foo " or "foo". Counting a single backslash wrongly kept the space.
+        let rules = GitignoreRules(contents: "foo\\\\ ")
+        XCTAssertTrue(rules.match(relativePath: "foo\\", isDirectory: false),
+                      "matches foo + one literal backslash")
+        XCTAssertFalse(rules.match(relativePath: "foo ", isDirectory: false),
+                       "the trailing space was unescaped and stripped")
+        XCTAssertFalse(rules.match(relativePath: "foo", isDirectory: false),
+                       "the literal backslash is part of the name")
+    }
+
     func testCommentMarkerOnlyAtLineStart() {
         // A '#' that is not the first char is a literal character.
         let rules = GitignoreRules(contents: "a#b")

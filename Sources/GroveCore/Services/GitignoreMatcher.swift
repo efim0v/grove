@@ -175,13 +175,20 @@ public struct GitignorePattern: Equatable {
         }
         // `end` is now the start of the trailing whitespace run (or endIndex if none).
         if end == s.endIndex { return s }
-        // If the char immediately before the whitespace run is a backslash, the FIRST
-        // whitespace char is escaped: keep it (and drop the backslash) — drop the rest.
-        let beforeRun = s.index(before: end)
-        if s[beforeRun] == "\\" {
-            // Rebuild: content up to (and excluding) the backslash, + one space.
-            let kept = s[s.startIndex..<beforeRun] + " "
-            return Substring(kept)
+        // The first whitespace char is escaped only when an ODD number of backslashes
+        // immediately precede the run: `\\` is a literal backslash (git strips the
+        // space → `foo\\ ` matches `foo\`), while a lone `\` escapes the space
+        // (`foo\ ` keeps it). Counting just one backslash mis-handled `foo\\ `.
+        var backslashes = 0
+        var probe = end
+        while probe > s.startIndex {
+            let before = s.index(before: probe)
+            if s[before] == "\\" { backslashes += 1; probe = before } else { break }
+        }
+        if backslashes % 2 == 1 {
+            // Keep one escaped whitespace char AND its escaping backslash; the
+            // tokenizer unescapes `\ ` into a literal space. Drop the rest of the run.
+            return s[s.startIndex..<s.index(after: end)]
         }
         return s[s.startIndex..<end]
     }
