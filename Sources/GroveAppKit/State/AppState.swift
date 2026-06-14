@@ -271,12 +271,17 @@ extension AppState {
         let started = Date()
         async let usage: Void = refreshUsage(now: started)
         async let sessions: Void = refreshSessionIndex()
-        if let project = selectedProject {
+        // Scan the selected project every tick (its detail view needs fresh data);
+        // scan the OTHERS once, when they have no snapshot yet, so EVERY project card
+        // shows its "N repos · M ws" count — not only the one that's been opened.
+        if !config.projects.isEmpty {
             isScanning = true
-            let snapshot = await workspaceService.scan(project: project)
-            snapshots[project.id] = snapshot
+            for project in config.projects
+            where project.id == selectedProjectID || snapshots[project.id] == nil {
+                snapshots[project.id] = await workspaceService.scan(project: project)
+            }
             isScanning = false
-            GroveLog.perf.info("scan \(project.name, privacy: .public): \(Int(Date().timeIntervalSince(started) * 1000))ms")
+            GroveLog.perf.info("scan \(self.config.projects.count, privacy: .public) projects: \(Int(Date().timeIntervalSince(started) * 1000))ms")
         }
         await usage
         await sessions
@@ -296,7 +301,10 @@ extension AppState {
             return (id: p.id, roots: [expandTilde(p.path), wsRoot].filter { !$0.isEmpty })
         }
         let result = await Task.detached(priority: .utility) { () -> [UUID: [ProjectSessionRow]] in
+            // Per-account status records FIRST (real busy/idle/waiting), then the
+            // process-table fallback (recovers resumed sessions when no record exists).
             let live = accounts.flatMap { claude.liveProcesses(account: $0) }
+                + claude.liveProcessesFromTable()
             var out: [UUID: [ProjectSessionRow]] = [:]
             for job in jobs {
                 let sessions = claude.recentSessions(underRoots: job.roots, accounts: accounts, limit: 2)

@@ -276,7 +276,7 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
     let weekly = LimitCard(window: .weekly, title: "Weekly Limit", systemImage: "calendar",
                            usedPercentage: wk?.usedPercentage ?? 0, resetsAt: wk?.resetsAt,
                            hasData: wk != nil, now: now)
-    let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "calendar.badge.clock",
+    let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "s.circle.fill",
                                  usedPercentage: sonnet?.usedPercentage ?? 0, resetsAt: sonnet?.resetsAt,
                                  hasData: sonnet != nil, now: now)
     return DashboardColumn(
@@ -317,7 +317,7 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
     let weekly = LimitCard(window: .weekly, title: "Weekly Limit", systemImage: "calendar",
                            usedPercentage: weeklyUsed, resetsAt: weeklyReset,
                            hasData: aggregateWeekly.total > 0, now: now)
-    let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "calendar.badge.clock",
+    let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "s.circle.fill",
                                  usedPercentage: sonnetUsed, resetsAt: sonnetReset,
                                  hasData: aggregateSonnet.total > 0, now: now)
 

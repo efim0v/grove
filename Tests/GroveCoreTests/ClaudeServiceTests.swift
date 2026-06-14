@@ -338,6 +338,26 @@ final class ClaudeServiceTests: XCTestCase {
         XCTAssertEqual(service.liveProcesses(account: account), [])
     }
 
+    // MARK: - process-table session detection (sessions/<pid>.json fallback)
+
+    func testResumeSessionIdParsesUuidFromCommandLine() {
+        XCTAssertEqual(
+            ClaudeService.resumeSessionId(in: "claude --resume 41f451c9-1658-4981-9465-a4dbb252ff11"),
+            "41f451c9-1658-4981-9465-a4dbb252ff11")
+        // flags after the id don't bleed in
+        XCTAssertEqual(
+            ClaudeService.resumeSessionId(in: "/Users/x/.local/bin/claude --resume 2c07347f-f9bc-4d2c-afcf-1c295d20dd32 --dangerously-skip-permissions"),
+            "2c07347f-f9bc-4d2c-afcf-1c295d20dd32")
+    }
+
+    func testResumeSessionIdRejectsNonResumeAndWrappers() {
+        XCTAssertNil(ClaudeService.resumeSessionId(in: "claude"))                       // bare new session
+        XCTAssertNil(ClaudeService.resumeSessionId(in: "claude --print hello"))          // no --resume
+        // the cmux wrapper script path mentions claude + an id but has no --resume flag
+        XCTAssertNil(ClaudeService.resumeSessionId(in: "/bin/zsh /tmp/cmux-agent-resume/claude-2d6192be-e3d-9D80.zsh"))
+        XCTAssertNil(ClaudeService.resumeSessionId(in: "claude --resume not-a-uuid"))    // not a 36-char id
+    }
+
     // MARK: - launchCommand
 
     /// Forces bare-"claude" resolution so string expectations are machine-independent.

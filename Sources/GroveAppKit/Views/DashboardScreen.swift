@@ -129,6 +129,24 @@ struct DashboardColumnView: View {
     }
 }
 
+/// The single accent color for card icons (and other accent affordances). One
+/// consistent hue across every card, per the design direction.
+let cardAccent = Color.green
+
+/// Card section header: an ACCENT-colored icon + the title at the SAME caption
+/// size as the rest of the card text (the metric values no longer out-size it).
+struct CardLabel: View {
+    let title: String
+    let systemImage: String
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage).foregroundStyle(cardAccent)
+            Text(title).foregroundStyle(.primary)
+        }
+        .font(.caption.weight(.semibold))
+    }
+}
+
 // MARK: - Limit bar card (5-Hour Session / Weekly Limit)
 
 struct LimitCardView: View {
@@ -137,14 +155,11 @@ struct LimitCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                // Smaller title (caption-sized, like "Resets in" but full opacity).
-                Label(card.title, systemImage: card.systemImage)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .labelStyle(.titleAndIcon)
+                CardLabel(title: card.title, systemImage: card.systemImage)
                 Spacer()
+                // Same caption size as the rest; color (not size) conveys capacity.
                 Text("\(Int(card.usedPercentage.rounded()))%")
-                    .font(.callout.weight(.bold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(levelColor(card.level))
                     .monospacedDigit()
             }
@@ -211,8 +226,7 @@ struct DailyUsageCardView: View {
         let hovered = bars.first { $0.label == hoverLabel }
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Label("Daily Usage", systemImage: "chart.bar.fill")
-                    .font(.callout.weight(.semibold))
+                CardLabel(title: "Daily Usage", systemImage: "chart.bar.fill")
                 Spacer()
                 // Unit when idle; the hovered bar's detail when pointing at one.
                 // Compact ("Wed · 2.4M · $8.29", no "tok") + scale-don't-truncate
@@ -298,8 +312,7 @@ struct TokenUsageCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Token Usage", systemImage: "number")
-                .font(.callout.weight(.semibold))
+            CardLabel(title: "Token Usage", systemImage: "number")
                 .help("Each message is counted once (by message id), for the calendar month. "
                     + "Resuming a session replays its history into a new transcript with the SAME "
                     + "message ids — those copies are not re-billed, so Grove does not re-count them. "

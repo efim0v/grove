@@ -65,11 +65,14 @@ final class AppStateScanTests: XCTestCase {
         XCTAssertTrue(ws.liveProcesses.isEmpty)
     }
 
-    func testRefreshWithoutSelectionIsANoOp() async {
+    func testRefreshScansAllConfiguredProjectsEvenWithoutSelection() async {
         let state = makeState()
         state.selectedProjectID = nil
         await state.refresh()
-        XCTAssertTrue(state.snapshots.isEmpty)
+        // Every configured project now gets a snapshot (so its card shows the
+        // "N repos · M ws" count), not only the selected one.
+        XCTAssertFalse(state.config.projects.isEmpty)
+        XCTAssertEqual(state.snapshots.count, state.config.projects.count)
         XCTAssertFalse(state.isScanning)
     }
 

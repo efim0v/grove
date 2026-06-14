@@ -327,6 +327,59 @@ public final class ClaudeService: @unchecked Sendable {
         return result.sorted { $0.pid < $1.pid }
     }
 
+    /// Live Claude sessions discovered from the PROCESS TABLE. Current Claude Code
+    /// builds don't always write `sessions/<pid>.json` records (that dir is often
+    /// empty), so a resumed session would otherwise read as "closed" even though
+    /// `claude --resume <id>` is clearly running. We scan `ps` for those processes
+    /// and recover the session id from the command line.
+    ///
+    /// `ps` can't tell busy from idle, so status defaults to "idle" → the UI shows
+    /// "waiting" (finished its turn, ready for your next prompt) rather than
+    /// "closed". cwd is empty (callers join by sessionId); accountName is empty.
+    /// Deduped by sessionId. Merged AFTER `liveProcesses` so a real status record,
+    /// when present, wins.
+    public func liveProcessesFromTable() -> [LiveProcess] {
+        let listing = Self.runProcessListing()
+        var result: [LiveProcess] = []
+        var seen = Set<String>()
+        for line in listing.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let space = trimmed.firstIndex(of: " "),
+                  let pid = Int32(trimmed[..<space]) else { continue }
+            let command = String(trimmed[space...])
+            guard command.contains("claude"),
+                  let sessionId = Self.resumeSessionId(in: command),
+                  !seen.contains(sessionId) else { continue }
+            seen.insert(sessionId)
+            result.append(LiveProcess(pid: pid, sessionId: sessionId, cwd: "",
+                                      status: "idle", accountName: "", startedAt: nil))
+        }
+        return result.sorted { $0.pid < $1.pid }
+    }
+
+    /// Extracts the session id from a `claude --resume <uuid>` command line. nil for
+    /// processes without `--resume` (a bare new session can't be mapped to an id)
+    /// and for the cmux wrapper scripts (their path lacks the `--resume` flag).
+    static func resumeSessionId(in command: String) -> String? {
+        guard let range = command.range(of: "--resume ") else { return nil }
+        let token = command[range.upperBound...].prefix { !$0.isWhitespace }
+        let id = String(token)
+        return id.count == 36 && id.allSatisfy { $0.isHexDigit || $0 == "-" } ? id : nil
+    }
+
+    private static func runProcessListing() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid=,command="]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        do { try process.run() } catch { return "" }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
     /// Public seam so callers (AppState's concurrency guard) can inject a liveness
     /// predicate without reaching the internal `processValidator`. Returns a
     /// configured instance.

@@ -13,35 +13,31 @@ struct RootShell: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            addRow
             content
             Divider()
             footer
         }
     }
 
-    // MARK: - Header: brand + tab strip + add (Projects only)
+    // MARK: - Add row (the header is gone — the limits live in the Charts window).
 
-    private var header: some View {
-        let now = Date()
-        return HStack(spacing: 8) {
-            Image(systemName: "tree")
-                .font(.headline)
-                .foregroundStyle(.primary)
-            Text("Grove").font(.headline)
-            // Overall remaining 5h capacity + soonest reset (item 4).
-            AggregateChip(window: "5h",
-                          aggregate: state.aggregateRemaining(window: .fiveHour, now: now),
-                          resetsAt: state.aggregateReset(window: .fiveHour, now: now),
-                          now: now)
-            Spacer(minLength: 6)
-            Button { addProjectViaPanel() } label: { Image(systemName: "plus") }
-                .buttonStyle(.plain)
-                .help("Add a project directory")
+    /// A simple accent text-button row at the top, in the projects' own style —
+    /// no brand, no limits chip (those now live in the side-by-side Charts window).
+    private var addRow: some View {
+        HStack(spacing: 0) {
+            Button { addProjectViaPanel() } label: {
+                Label("Add project", systemImage: "plus")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(cardAccent)
+            }
+            .buttonStyle(.plain)
+            .help("Add a project directory")
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
     }
 
     // MARK: - Content (the project list; charts live in the side window)
