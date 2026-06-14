@@ -42,7 +42,9 @@ struct ProjectsTab: View {
                     .padding(.leading, 2)
             } else {
                 ForEach(sessions) { row in
-                    SessionBlock(row: row) { Task { await state.openSession(row) } }
+                    SessionBlock(row: row, accent: ProjectAccent.color(for: project)) {
+                        Task { await state.openSession(row) }
+                    }
                 }
             }
         }
@@ -55,6 +57,7 @@ struct ProjectsTab: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(project.name)
                     .font(.callout.weight(.semibold))
+                    .foregroundStyle(ProjectAccent.color(for: project))
                     .lineLimit(1)
                 Text(project.path)
                     .font(.caption2.monospaced())
@@ -92,34 +95,34 @@ struct ProjectsTab: View {
 /// dot + word, title, location · account, age, and a Go/Resume affordance.
 struct SessionBlock: View {
     let row: ProjectSessionRow
+    /// The owning project's accent — colors the workspace name so sessions are
+    /// easy to attribute at a glance.
+    var accent: Color = cardAccent
     let onTap: () -> Void
     @Environment(\.isSnapshotRender) private var isSnapshotRender
+
+    private var isLive: Bool { row.status != .closed }
 
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 9) {
                 Circle().fill(statusColor).frame(width: 7, height: 7)
                 VStack(alignment: .leading, spacing: 1) {
-                    // Title line + the Go/Resume affordance, aligned as a clean row.
+                    // Lead with the WORKSPACE (accent) — not the project name (that's
+                    // the card header) and not the often-junk session title.
                     HStack(spacing: 8) {
-                        Text(row.title)
-                            .font(.callout.weight(.medium))
+                        Text(row.location)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(accent)
                             .lineLimit(1)
                         Spacer(minLength: 6)
-                        Label(row.canGo ? "Go" : "Resume",
-                              systemImage: row.canGo ? "arrow.right.circle.fill" : "play.circle")
-                            .labelStyle(.titleAndIcon)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(cardAccent)
-                            .fixedSize()
+                        action
                     }
-                    // Secondary line: status · location · age (account dropped — it's
-                    // shown in the dashboard; here it was just clutter).
+                    // Secondary: status word (colored) + age.
                     HStack(spacing: 5) {
                         Text(statusWord).foregroundStyle(statusColor)
-                        Text("· \(row.location)").foregroundStyle(.secondary).lineLimit(1)
-                        Spacer(minLength: 4)
-                        Text(relativeAge(row.lastActivity, now: Date())).foregroundStyle(.tertiary)
+                        Text("· \(relativeAge(row.lastActivity, now: Date()))").foregroundStyle(.tertiary)
+                        Spacer(minLength: 0)
                     }
                     .font(.caption2)
                 }
@@ -130,7 +133,19 @@ struct SessionBlock: View {
             .background(blockBackground)
         }
         .buttonStyle(.plain)
-        .help(row.cwd)
+        .help(isLive ? "Go to this running session\n\(row.cwd)"
+                     : "Resume — starts a new Claude process with --resume\n\(row.cwd)")
+    }
+
+    /// Live → "Go" (jump to the running session). Closed → "Resume" (clearly a NEW
+    /// process). The label keys off the live status, not on whether cmux hosts it.
+    private var action: some View {
+        Label(isLive ? "Go" : "Resume",
+              systemImage: isLive ? "arrow.right.circle.fill" : "play.circle")
+            .labelStyle(.titleAndIcon)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(isLive ? accent : .secondary)
+            .fixedSize()
     }
 
     /// A faint inset fill — NO border — so the session rows read as a quiet list

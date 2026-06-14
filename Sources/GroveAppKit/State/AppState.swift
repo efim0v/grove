@@ -475,11 +475,23 @@ extension AppState {
         let account = config.accounts.first { $0.name == row.accountName }
             ?? config.accounts.first
             ?? AccountConfig(name: "default", configDir: "~/.claude")
-        if let workspaceId = row.cmuxWorkspaceId {
-            do { try await cmux().selectWorkspace(workspaceId) }
+        // CLOSED → Resume: deliberately spawn a NEW `claude --resume` process.
+        guard row.status != .closed else {
+            await launchClaude(cwd: row.cwd, title: row.title, account: account, resume: row.sessionId)
+            return
+        }
+        // LIVE → redirect to the running process; NEVER spawn a duplicate. cmux is
+        // the gate Grove can focus precisely (by workspace id, or re-resolved from
+        // the hook map by session id). A live session running in a terminal Grove
+        // can't focus is surfaced honestly instead of silently relaunching.
+        let target = row.cmuxWorkspaceId
+            ?? cmux().claudeSessionWorkspaceMap(hookFile: cmuxHookFile)[row.sessionId]
+        if let target {
+            do { try await cmux().selectWorkspace(target) }
             catch { actionError = String(describing: error) }
         } else {
-            await launchClaude(cwd: row.cwd, title: row.title, account: account, resume: row.sessionId)
+            actionError = "“\(row.location)” is running, but in a terminal Grove can't focus "
+                + "(not a cmux workspace). Switch to it in your terminal."
         }
     }
 

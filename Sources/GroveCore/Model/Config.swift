@@ -19,6 +19,10 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
     public var seedFiles: [SeedFile]
     public var defaultModel: String?
     public var defaultEffort: String?
+    /// Accent color for this project (hex like "#34C759"), shown on the project
+    /// name and its workspaces so projects are easy to tell apart. nil = derive a
+    /// stable default from the project id. Back-compat: absent from old JSON → nil.
+    public var accentColor: String?
 
     public init(
         id: UUID = UUID(),
@@ -33,7 +37,8 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         defaultAccount: String? = nil,
         seedFiles: [SeedFile] = [],
         defaultModel: String? = nil,
-        defaultEffort: String? = nil
+        defaultEffort: String? = nil,
+        accentColor: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -48,12 +53,13 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         self.seedFiles = seedFiles
         self.defaultModel = defaultModel
         self.defaultEffort = defaultEffort
+        self.accentColor = accentColor
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, path, workspacesRoot, branchTemplate, baseBranchOverrides
         case postCreateHooks, excludedRepos, scanDepth, defaultAccount, seedFiles
-        case defaultModel, defaultEffort
+        case defaultModel, defaultEffort, accentColor
     }
 
     public init(from decoder: Decoder) throws {
@@ -71,6 +77,7 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         seedFiles = try c.decodeIfPresent([SeedFile].self, forKey: .seedFiles) ?? []
         defaultModel = try c.decodeIfPresent(String.self, forKey: .defaultModel)
         defaultEffort = try c.decodeIfPresent(String.self, forKey: .defaultEffort)
+        accentColor = try c.decodeIfPresent(String.self, forKey: .accentColor)
     }
 }
 
