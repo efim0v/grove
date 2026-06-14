@@ -361,6 +361,14 @@ final class ClaudeServiceTests: XCTestCase {
         XCTAssertNil(ClaudeService.parsePidCpuCommand("garbage"))
     }
 
+    func testIsBareClaudeCommandDetectsFreshCliOnly() {
+        XCTAssertTrue(ClaudeService.isBareClaudeCommand("claude --model claude-opus-4-8"))
+        XCTAssertTrue(ClaudeService.isBareClaudeCommand("/Users/x/.local/bin/claude"))
+        XCTAssertFalse(ClaudeService.isBareClaudeCommand("claude --resume 41f451c9-1658-4981-9465-a4dbb252ff11"))
+        XCTAssertFalse(ClaudeService.isBareClaudeCommand("/bin/zsh /tmp/cmux-agent-resume/claude-2d6.zsh"))  // basename zsh
+        XCTAssertFalse(ClaudeService.isBareClaudeCommand("node /x/cli.js"))
+    }
+
     func testResumeSessionIdRejectsNonResumeAndWrappers() {
         XCTAssertNil(ClaudeService.resumeSessionId(in: "claude"))                       // bare new session
         XCTAssertNil(ClaudeService.resumeSessionId(in: "claude --print hello"))          // no --resume

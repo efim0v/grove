@@ -480,23 +480,23 @@ extension AppState {
             await launchClaude(cwd: row.cwd, title: row.title, account: account, resume: row.sessionId)
             return
         }
-        // LIVE → redirect to the running process; NEVER spawn a duplicate. cmux is
-        // the precise gate (by workspace id, or re-resolved from the hook map).
+        // LIVE → redirect to the running process; NEVER spawn a duplicate. Try each
+        // gate in turn and only fall through on FAILURE — a stale/closed workspace
+        // from one path must not dead-end before the others are tried.
+        let service = cmux()
+        // 1) cmux by workspace id (row, or re-resolved from the hook registry).
         if let target = row.cmuxWorkspaceId
-            ?? cmux().claudeSessionWorkspaceMap(hookFile: cmuxHookFile)[row.sessionId] {
-            do { try await cmux().selectWorkspace(target) }
-            catch { actionError = String(describing: error) }
+            ?? service.claudeSessionWorkspaceMap(hookFile: cmuxHookFile)[row.sessionId],
+           (try? await service.selectWorkspace(target)) != nil {
             return
         }
-        // The hook registry only tracks the ACTIVE session per workspace, so most
-        // sessions aren't in it. Match the session's directory against the live cmux
-        // workspaces — the robust path that makes "Go" work for any cmux session.
-        if let ws = await cmux().workspaceForCwd(row.cwd) {
-            do { try await cmux().selectWorkspace(ws.id) }
-            catch { actionError = String(describing: error) }
+        // 2) cmux by the session's directory (the registry only tracks the ACTIVE
+        //    session per workspace, so most sessions aren't in it).
+        if let ws = await service.workspaceForCwd(row.cwd),
+           (try? await service.selectWorkspace(ws.id)) != nil {
             return
         }
-        // Not in cmux → try Apple's Terminal.app by matching the process's tty.
+        // 3) Apple's Terminal.app, by matching the process's controlling tty.
         let claude = self.claude
         let sessionId = row.sessionId
         let focused = await Task.detached(priority: .userInitiated) { () -> Bool in

@@ -344,19 +344,47 @@ public final class ClaudeService: @unchecked Sendable {
         var seen = Set<String>()
         for line in listing.split(separator: "\n") {
             guard let (pid, cpu, command) = Self.parsePidCpuCommand(String(line)),
-                  command.contains("claude"),
-                  let sessionId = Self.resumeSessionId(in: command),
-                  !seen.contains(sessionId) else { continue }
-            seen.insert(sessionId)
+                  command.contains("claude") else { continue }
             // We can't see "generating" from outside (it's network-bound, low CPU,
             // indistinguishable from idle). But clear CPU use means the session is
             // actively executing (tools / a turn) → "busy" → running; otherwise it's
             // alive-but-quiet → "idle" → waiting (ready for input).
             let status = cpu >= Self.busyCPUThreshold ? "busy" : "idle"
-            result.append(LiveProcess(pid: pid, sessionId: sessionId, cwd: "",
-                                      status: status, accountName: "", startedAt: nil))
+            if let sessionId = Self.resumeSessionId(in: command) {
+                guard !seen.contains(sessionId) else { continue }
+                seen.insert(sessionId)
+                result.append(LiveProcess(pid: pid, sessionId: sessionId, cwd: "",
+                                          status: status, accountName: "", startedAt: nil))
+            } else if Self.isBareClaudeCommand(command), let cwd = Self.processCwd(pid) {
+                // A FRESH session (no --resume id in argv, e.g. "New Claude"). It
+                // can't be matched by session id, so carry its working directory —
+                // callers join it to a recent session by cwd so it isn't read as
+                // "closed" (which would let a tap spawn a corrupting duplicate).
+                result.append(LiveProcess(pid: pid, sessionId: "", cwd: cwd,
+                                          status: status, accountName: "", startedAt: nil))
+            }
         }
         return result.sorted { $0.pid < $1.pid }
+    }
+
+    /// True for the claude CLI launched WITHOUT --resume (a fresh session): the
+    /// executable basename is exactly "claude" and there's no resume flag. Excludes
+    /// the cmux wrapper scripts (basename zsh/bash) and our own ps/grep lines.
+    static func isBareClaudeCommand(_ command: String) -> Bool {
+        guard !command.contains("--resume") else { return false }
+        let first = command.split(separator: " ").first.map(String.init) ?? ""
+        return (first as NSString).lastPathComponent == "claude"
+    }
+
+    /// A process's current working directory via `lsof` (claude does NOT keep its
+    /// transcript file open, so the cwd is the only external link to a fresh
+    /// session). Called only for the rare bare-claude pid. nil on failure.
+    static func processCwd(_ pid: Int32) -> String? {
+        let out = runProcess("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])
+        for line in out.split(separator: "\n") where line.hasPrefix("n") {
+            return String(line.dropFirst())
+        }
+        return nil
     }
 
     /// CPU% at/above which a live session is treated as actively running. The
@@ -400,13 +428,17 @@ public final class ClaudeService: @unchecked Sendable {
         return id.count == 36 && id.allSatisfy { $0.isHexDigit || $0 == "-" } ? id : nil
     }
 
-    private static func runProcessListing() -> String { runPS(["-axo", "pid=,%cpu=,command="]) }
-    private static func runTtyListing() -> String { runPS(["-axo", "tty=,command="]) }
+    private static func runProcessListing() -> String { runProcess("/bin/ps", ["-axo", "pid=,%cpu=,command="]) }
+    private static func runTtyListing() -> String { runProcess("/bin/ps", ["-axo", "tty=,command="]) }
 
-    private static func runPS(_ arguments: [String]) -> String {
+    static func runProcess(_ executable: String, _ arguments: [String]) -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        // Force the C locale so `ps` prints %cpu with a DOT decimal separator
+        // regardless of the user's locale (ru_RU/de_DE/etc. print "9,5", which
+        // Double() can't parse → every session would read as idle/waiting).
+        process.environment = ProcessInfo.processInfo.environment.merging(["LC_ALL": "C"]) { _, new in new }
         let stdout = Pipe()
         process.standardOutput = stdout
         process.standardError = Pipe()

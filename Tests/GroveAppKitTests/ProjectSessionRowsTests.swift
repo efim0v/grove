@@ -37,6 +37,25 @@ final class ProjectSessionRowsTests: XCTestCase {
         XCTAssertEqual(byId["shell"], .waiting)
     }
 
+    func testFreshSessionMatchedByCwdWhenSessionIdMissing() {
+        // A fresh (no --resume) live process carries cwd, empty sessionId. A recent
+        // session at that directory must read LIVE (running), not closed.
+        let rows = buildProjectSessionRows(
+            sessions: [session("fresh-1", cwd: "/ws/group-chats/")],
+            live: [LiveProcess(pid: 9, sessionId: "", cwd: "/ws/group-chats", status: "busy", accountName: "")],
+            cmuxMap: [:])
+        XCTAssertEqual(rows.first?.status, .running)   // not .closed
+    }
+
+    func testSessionIdMatchWinsOverCwdMatch() {
+        let rows = buildProjectSessionRows(
+            sessions: [session("s1", cwd: "/ws/a")],
+            live: [LiveProcess(pid: 1, sessionId: "s1", cwd: "", status: "idle", accountName: ""),
+                   LiveProcess(pid: 2, sessionId: "", cwd: "/ws/a", status: "busy", accountName: "")],
+            cmuxMap: [:])
+        XCTAssertEqual(rows.first?.status, .waiting)    // the id-matched "idle" wins
+    }
+
     func testGoTargetFromCmuxMap() {
         let rows = buildProjectSessionRows(sessions: [session("s1")],
                                            live: [live("s1", status: "busy")],

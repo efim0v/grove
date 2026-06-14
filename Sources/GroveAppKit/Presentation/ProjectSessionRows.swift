@@ -48,9 +48,22 @@ public struct ProjectSessionRow: Sendable, Equatable, Identifiable {
 public func buildProjectSessionRows(sessions: [ClaudeSession],
                                     live: [LiveProcess],
                                     cmuxMap: [String: String]) -> [ProjectSessionRow] {
-    let liveBySession = Dictionary(live.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first })
+    func dirKey(_ path: String) -> String {
+        var s = path
+        while s.count > 1 && s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
+    let liveBySession = Dictionary(live.filter { !$0.sessionId.isEmpty }.map { ($0.sessionId, $0) },
+                                   uniquingKeysWith: { first, _ in first })
+    // Fresh sessions (launched without --resume) can't be matched by id, so they're
+    // carried by their working directory — index those so a recent session sitting
+    // at that directory reads as LIVE, not "closed" (which would let a tap spawn a
+    // transcript-corrupting duplicate).
+    let liveByCwd = Dictionary(live.filter { $0.sessionId.isEmpty && !$0.cwd.isEmpty }
+                                  .map { (dirKey($0.cwd), $0) },
+                               uniquingKeysWith: { first, _ in first })
     return sessions.map { s in
-        let process = liveBySession[s.id]
+        let process = liveBySession[s.id] ?? liveByCwd[dirKey(s.cwd)]
         let status: ProjectSessionRow.Status
         // Claude Code's live status is "busy" (mid-turn) / "idle" (finished, waiting
         // for input) / "shell". Only "busy" is genuinely RUNNING; "idle"/"shell"
