@@ -39,6 +39,8 @@ public struct RootView: View {
                 await state.refresh()
             }
         }
+        // Resume/New launch configuration (open-target, account, model, effort).
+        .sheet(item: $state.launchRequest) { LaunchConfigSheet(state: state, request: $0) }
     }
 
     // MARK: - Route switch with push/pop transitions and per-route size

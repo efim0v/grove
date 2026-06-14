@@ -39,6 +39,9 @@ public final class AppState: ObservableObject {
     /// Which scope the Charts side window shows (0 = Overall when >1 account, else the first
     /// account). The ‹ › arrows step this; persisted so it survives panel reopen.
     @Published public var chartsScopeIndex: Int = 0
+    /// When non-nil, the launch sheet is presented to configure a Resume/New launch
+    /// (open-target, account, model, effort) before it runs.
+    @Published public var launchRequest: LaunchRequest?
     @Published public var selectedProjectID: UUID?
     @Published public var selectedTab: MainTab = .workspaces
     /// The panel's current full-screen state. Mutate via open()/goBack() so
@@ -474,9 +477,10 @@ extension AppState {
         let account = config.accounts.first { $0.name == row.accountName }
             ?? config.accounts.first
             ?? AccountConfig(name: "default", configDir: "~/.claude")
-        // CLOSED → Resume: deliberately spawn a NEW `claude --resume` process.
+        // CLOSED → open the launch sheet (target / account / model / effort) so the
+        // user confirms HOW to resume before a new process is spawned.
         guard row.status != .closed else {
-            await launchClaude(cwd: row.cwd, title: row.title, account: account, resume: row.sessionId)
+            beginResume(row)
             return
         }
         // LIVE → redirect to the running process; NEVER spawn a duplicate. Try each
@@ -505,6 +509,37 @@ extension AppState {
         if !focused {
             actionError = "“\(row.location)” is running, but in a terminal Grove can't focus "
                 + "(not cmux or Terminal.app). Switch to it in your terminal."
+        }
+    }
+
+    /// Presents the launch sheet pre-filled to RESUME `row`'s session. The project's
+    /// default model/effort seed the pickers (the user can override per launch).
+    public func beginResume(_ row: ProjectSessionRow) {
+        let project = config.projects.first { row.cwd.hasPrefix(expandTilde($0.path)) }
+        launchRequest = LaunchRequest(
+            sessionId: row.sessionId, cwd: row.cwd, title: row.location,
+            account: row.accountName,
+            model: project?.defaultModel, effort: project?.defaultEffort, target: .cmux)
+    }
+
+    /// Runs the configured launch (Resume or New) at the chosen target. Closes the
+    /// sheet first so it can't be double-submitted.
+    public func confirmLaunch(_ request: LaunchRequest) async {
+        launchRequest = nil
+        let account = config.accounts.first { $0.name == request.account }
+            ?? config.accounts.first ?? AccountConfig(name: "default", configDir: "~/.claude")
+        switch request.target {
+        case .cmux:
+            await launchClaude(cwd: request.cwd, title: request.title, account: account,
+                               resume: request.sessionId, model: request.model, effort: request.effort)
+        case .terminal:
+            let command = ClaudeService.launchCommand(account: account, resume: request.sessionId,
+                                                      model: request.model, effort: request.effort)
+            let cwd = request.cwd
+            let ok = await Task.detached(priority: .userInitiated) {
+                TerminalFocus.launchInTerminal(command: command, cwd: cwd)
+            }.value
+            if !ok { actionError = "Couldn't open Terminal.app for the session." }
         }
     }
 
@@ -622,11 +657,19 @@ extension AppState {
                                               launchAccount: AccountConfig) -> String? {
         let service = liveProcessValidatorOverride
             .map { ClaudeService().withProcessValidator($0) } ?? ClaudeService()
+        // File records attribute an account — prefer the precise name.
         for account in config.accounts where account.name != launchAccount.name {
             if service.liveProcesses(account: account).contains(where: { $0.sessionId == sessionId }) {
                 return account.name
             }
         }
+        // The session may be live via the process TABLE (which the often-empty file
+        // records miss, and which can't attribute an account). If it's running
+        // anywhere and NOT under the launch account's own records, still refuse — a
+        // second `--resume` would have two processes writing one transcript.
+        let liveInTable = service.liveProcessesFromTable().contains { $0.sessionId == sessionId }
+        let liveUnderLaunch = service.liveProcesses(account: launchAccount).contains { $0.sessionId == sessionId }
+        if liveInTable && !liveUnderLaunch { return "a running session" }
         return nil
     }
 

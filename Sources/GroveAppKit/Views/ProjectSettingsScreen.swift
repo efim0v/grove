@@ -98,6 +98,8 @@ struct ProjectSettingsScreen: View {
 
             SettingsSection(title: "Claude") {
                 defaultAccountRow(project)
+                defaultModelRow(project)
+                defaultEffortRow(project)
             }
 
             SettingsSection(title: "Repos") {
@@ -196,6 +198,42 @@ struct ProjectSettingsScreen: View {
                 state.updateProject(current)
             }
         )
+    }
+
+    private func defaultModelRow(_ project: ProjectConfig) -> some View {
+        LabeledRow(label: "Default model") {
+            if isSnapshotRender {
+                SnapshotPickerLookalike(text: currentProject(project).defaultModel ?? "(default)")
+            } else {
+                Picker("", selection: Binding(
+                    get: { currentProject(project).defaultModel },
+                    set: { state.setProjectModel(projectID: project.id, model: $0) })) {
+                    Text("(default)").tag(String?.none)
+                    ForEach(ModelPricing.knownModels, id: \.self) { m in
+                        Text(m).tag(String?.some(m))
+                    }
+                }
+                .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
+            }
+        }
+    }
+
+    private func defaultEffortRow(_ project: ProjectConfig) -> some View {
+        LabeledRow(label: "Default effort") {
+            if isSnapshotRender {
+                SnapshotPickerLookalike(text: currentProject(project).defaultEffort ?? "(default)")
+            } else {
+                Picker("", selection: Binding(
+                    get: { currentProject(project).defaultEffort },
+                    set: { state.setProjectEffort(projectID: project.id, effort: $0) })) {
+                    Text("(default)").tag(String?.none)
+                    ForEach(ClaudeService.effortLevels, id: \.self) { e in
+                        Text(e).tag(String?.some(e))
+                    }
+                }
+                .pickerStyle(.menu).labelsHidden().controlSize(.small).fixedSize()
+            }
+        }
     }
 
     /// Always the CURRENT copy from state.config (the captured `project`

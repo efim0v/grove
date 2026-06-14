@@ -77,9 +77,15 @@ public func badges(for ws: FeatureWorkspace, now: Date) -> WorkspaceBadges {
 
     let dirtyTotal = ws.repos.reduce(0) { $0 + ($1.meta?.dirtyCount ?? 0) }
 
+    func norm(_ p: String) -> String { var s = p; while s.count > 1 && s.hasSuffix("/") { s.removeLast() }; return s }
+    // Dedup by process identity (sessionId, or pid for fresh empty-id ones) so the
+    // same process can't be counted twice if it surfaces in more than one container.
     var busyCount = 0
     var waitingCount = 0
+    var seenLive = Set<String>()
     for process in ws.liveProcesses {
+        let key = process.sessionId.isEmpty ? "pid:\(process.pid)" : process.sessionId
+        guard seenLive.insert(key).inserted else { continue }
         switch ClaudeActivity(status: process.status) {
         case .busy: busyCount += 1
         case .waiting: waitingCount += 1
@@ -87,8 +93,14 @@ public func badges(for ws: FeatureWorkspace, now: Date) -> WorkspaceBadges {
         }
     }
 
-    let liveSessionIds = Set(ws.liveProcesses.map { $0.sessionId })
-    let resumableCount = ws.sessions.filter { !liveSessionIds.contains($0.id) }.count
+    let liveSessionIds = Set(ws.liveProcesses.map { $0.sessionId }.filter { !$0.isEmpty })
+    // ONLY fresh processes' cwds (empty sessionId) — those can't be matched by id,
+    // so an id-only check would wrongly call them resumable. We must NOT exclude
+    // every session sharing a worktree with some other live session.
+    let freshLiveCwds = Set(ws.liveProcesses.filter { $0.sessionId.isEmpty && !$0.cwd.isEmpty }.map { norm($0.cwd) })
+    let resumableCount = ws.sessions.filter {
+        !liveSessionIds.contains($0.id) && !freshLiveCwds.contains(norm($0.cwd))
+    }.count
 
     return WorkspaceBadges(ageDays: ageDays, ageBucket: ageBucket, dirtyTotal: dirtyTotal,
                            busyCount: busyCount, waitingCount: waitingCount,

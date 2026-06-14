@@ -302,7 +302,7 @@ public struct WorkspaceService {
                 if !p.sessionId.isEmpty && umbrellaSessionIds.contains(p.sessionId) { return true }
                 let cwd = canonical(p.cwd)
                 return !cwd.isEmpty && (cwd == umbrella || cwd.hasPrefix(umbrella + "/"))
-            }
+            }.map { attributeAccount($0, sessions: sessions) }
             let matched = cmuxList.filter {
                 let dir = canonical($0.currentDirectory)
                 return dir == umbrella || dir.hasPrefix(umbrella + "/")
@@ -328,7 +328,7 @@ public struct WorkspaceService {
             let looseSessionIds = Set(sessions.map { $0.id })
             let live = allLiveProcesses.filter { p in
                 (!p.sessionId.isEmpty && looseSessionIds.contains(p.sessionId)) || canonical(p.cwd) == cwd
-            }
+            }.map { attributeAccount($0, sessions: sessions) }
             // cmux matching for loose worktrees: exact directory equality (spec §2:
             // all Claude/cmux actions are available for loose worktrees too).
             let matched = cmuxList.filter { canonical($0.currentDirectory) == cwd }
@@ -342,6 +342,17 @@ public struct WorkspaceService {
                                workspaces: workspaces,
                                loose: loose,
                                errors: errors)
+    }
+
+    /// A table-derived LiveProcess carries no account (ps can't tell which). Attribute
+    /// it to the account of a matching session in its container (by id, else the
+    /// container's first session) so per-account live counts include it.
+    private func attributeAccount(_ p: LiveProcess, sessions: [ClaudeSession]) -> LiveProcess {
+        guard p.accountName.isEmpty else { return p }
+        let account = sessions.first { $0.id == p.sessionId }?.accountName
+            ?? sessions.first?.accountName ?? ""
+        return LiveProcess(pid: p.pid, sessionId: p.sessionId, cwd: p.cwd,
+                           status: p.status, accountName: account, startedAt: p.startedAt)
     }
 
     // MARK: - Creation

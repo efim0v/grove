@@ -33,6 +33,28 @@ public enum TerminalFocus {
         return runOsascript(script) == "ok"
     }
 
+    /// Opens a new Apple Terminal.app window/tab in `cwd` running `command` (the
+    /// non-cmux launch target). `command` is a ready-to-run shell command string
+    /// (already shell-quoted by ClaudeService.launchCommand). Returns false on
+    /// scripting failure.
+    @discardableResult
+    public static func launchInTerminal(command: String, cwd: String) -> Bool {
+        // cwd single-quoted for the shell; the whole shell line then escaped for the
+        // AppleScript string literal.
+        let shellLine = "cd '" + cwd.replacingOccurrences(of: "'", with: "'\\''") + "' && " + command
+        let escaped = shellLine
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "Terminal"
+          activate
+          do script "\(escaped)"
+        end tell
+        return "ok"
+        """
+        return runOsascript(script) == "ok"
+    }
+
     private static func runOsascript(_ script: String) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")

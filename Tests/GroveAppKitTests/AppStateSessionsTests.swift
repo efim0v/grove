@@ -35,14 +35,23 @@ final class AppStateSessionsTests: XCTestCase {
         XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)
     }
 
-    func testOpenSessionResumeLaunchesClaudeWithResumeFlag() async throws {
+    func testOpenSessionClosedPresentsLaunchSheetThenResumes() async throws {
         let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
         let state = makeState(runner)
         state.config.accounts = [AccountConfig(name: "work", configDir: "/tmp/grove-work")]
         let row = ProjectSessionRow(sessionId: "abc", title: "T", cwd: "/ws/a", location: "a",
                                     accountName: "work", lastActivity: Date(),
                                     status: .closed, cmuxWorkspaceId: nil)
+        // A closed session now opens the launch sheet (no process spawned yet).
         await state.openSession(row)
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)
+        let req = try XCTUnwrap(state.launchRequest)
+        XCTAssertEqual(req.sessionId, "abc")
+        XCTAssertEqual(req.account, "work")
+        XCTAssertEqual(req.target, .cmux)
+        // Confirming the sheet performs the cmux launch with --resume.
+        await state.confirmLaunch(req)
+        XCTAssertNil(state.launchRequest)
         let newCalls = runner.calls(startingWith: "new-workspace")
         XCTAssertEqual(newCalls.count, 1)
         let args = newCalls[0].args

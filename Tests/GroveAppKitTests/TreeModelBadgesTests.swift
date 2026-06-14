@@ -105,6 +105,40 @@ final class TreeModelBadgesTests: XCTestCase {
         XCTAssertEqual(result.resumableCount, 1)
     }
 
+    func testFreshSessionExcludedFromResumableByCwd() {
+        // A fresh live process (empty sessionId) at a session's cwd means that
+        // session is running — NOT resumable. A different session elsewhere stays resumable.
+        let ws = Fix.workspace(
+            name: "w",
+            sessions: [Fix.session(id: "fresh", cwd: "/ws/feature"),
+                       Fix.session(id: "closed", cwd: "/ws/other")],
+            live: [Fix.live(pid: 5, sessionId: "", status: "busy", cwd: "/ws/feature")])
+        let r = badges(for: ws, now: Fix.now)
+        XCTAssertEqual(r.busyCount, 1)
+        XCTAssertEqual(r.resumableCount, 1)   // only "closed" is resumable
+    }
+
+    func testSessionSharingWorktreeWithLiveOneStaysResumable() {
+        // The cwd exclusion must NOT catch a session that merely shares a worktree
+        // with a DIFFERENT (id-matched) live session.
+        let ws = Fix.workspace(
+            name: "w",
+            sessions: [Fix.session(id: "live1", cwd: "/ws/feature"),
+                       Fix.session(id: "other", cwd: "/ws/feature")],
+            live: [Fix.live(pid: 1, sessionId: "live1", status: "busy", cwd: "/ws/feature")])
+        let r = badges(for: ws, now: Fix.now)
+        XCTAssertEqual(r.busyCount, 1)
+        XCTAssertEqual(r.resumableCount, 1)   // "other" stays resumable
+    }
+
+    func testBadgeDedupsRepeatedProcess() {
+        let ws = Fix.workspace(
+            name: "w", sessions: [Fix.session(id: "s1")],
+            live: [Fix.live(pid: 7, sessionId: "s1", status: "busy"),
+                   Fix.live(pid: 7, sessionId: "s1", status: "busy")])   // same process twice
+        XCTAssertEqual(badges(for: ws, now: Fix.now).busyCount, 1)
+    }
+
     func testEmptyWorkspaceHasAllZeroBadges() {
         let ws = Fix.workspace(name: "w", repos: [])
         XCTAssertEqual(badges(for: ws, now: Fix.now),
