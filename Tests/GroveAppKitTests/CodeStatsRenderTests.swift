@@ -85,6 +85,44 @@ final class CodeStatsRenderTests: XCTestCase {
         XCTAssertTrue(isNonBlank(image!), "stats scene with repo blocks rendered blank")
     }
 
+    /// The new stats-settings page (directory+file exclusion tree) renders real
+    /// content offscreen — it builds purely from the seeded per-file list, so the
+    /// flat expanded fallback (snapshot path) draws folder + file rows.
+    func testStatsSettingsSceneRendersNonBlank() {
+        let state = SnapshotMode.configuredState(for: .statsSettings)
+        let id = state.selectedProjectID!
+        // Sanity: the fixture seeded the per-file list the tree builds from, and one
+        // excluded folder so the dimmed/disabled state participates.
+        XCTAssertFalse((state.statsFiles[id] ?? []).isEmpty)
+        XCTAssertFalse(state.selectedProject?.statsIgnoredFolders.isEmpty ?? true)
+
+        let view = RootView(state: state)
+            .frame(width: 560, height: 560)
+            .environment(\.colorScheme, .dark)
+            .environment(\.isSnapshotRender, true)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        let image = renderer.cgImage
+        XCTAssertNotNil(image, "stats-settings scene produced no image")
+        XCTAssertTrue(isNonBlank(image!), "stats-settings scene rendered blank (no content)")
+    }
+
+    /// The LIVE path (isSnapshotRender=false) evaluates the nested DisclosureGroup
+    /// recursion + the folder-exclude checkbox bindings — a crash in the recursive
+    /// node view or binding is caught even though offscreen pixels stay blank.
+    func testStatsSettingsLiveDisclosureBranch() {
+        let state = SnapshotMode.fixtureState()
+        let id = state.selectedProjectID!
+        state.route = .statsSettings(id)
+        let view = StatsSettingsScreen(state: state, projectID: id)
+            .frame(width: 560, height: 560)
+            .environment(\.colorScheme, .dark)
+            .environment(\.isSnapshotRender, false)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        _ = renderer.cgImage   // forces body eval, incl. the recursive DisclosureGroup
+    }
+
     /// Empty (no stats, not scanning) and scanning states render without crashing.
     func testStatsScreenEmptyAndScanningStates() {
         let empty = AppState(configStore: ConfigStore(

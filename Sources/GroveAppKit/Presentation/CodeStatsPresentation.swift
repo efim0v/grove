@@ -139,6 +139,198 @@ public func buildStatsTree(_ root: DirNode, ignoredFolders: Set<String>) -> [Sta
     return rows
 }
 
+// MARK: - Per-file directory tree (folders + files with summed LOC)
+
+/// One row in the stats-settings directory+FILE tree. Folders carry a SUMMED
+/// `lines` (every descendant file) and a `fileCount`; files carry their own line
+/// total, a `language`, and an `isDataProse` tint flag (and no toggle). `id` is the
+/// `relativePath`, which for a folder is the project-root-relative directory and for
+/// a file is the full project-relative file path. `depth` indents the row;
+/// `excludedByAncestor` distinguishes an inherited exclusion (disabled toggle) from a
+/// directly-set one.
+public struct FileTreeRow: Equatable, Sendable, Identifiable {
+    public var id: String { relativePath }
+    public let name: String
+    public let depth: Int
+    public let relativePath: String
+    public let lines: Int             // summed for folders, single file for files
+    public let fileCount: Int         // descendant files for folders, 1 for files
+    public let isFolder: Bool
+    public let isExcluded: Bool
+    public let excludedByAncestor: Bool
+    public let language: String?      // nil for folders
+    public let isDataProse: Bool      // false for folders
+
+    public init(name: String, depth: Int, relativePath: String, lines: Int, fileCount: Int,
+                isFolder: Bool, isExcluded: Bool, excludedByAncestor: Bool,
+                language: String? = nil, isDataProse: Bool = false) {
+        self.name = name
+        self.depth = depth
+        self.relativePath = relativePath
+        self.lines = lines
+        self.fileCount = fileCount
+        self.isFolder = isFolder
+        self.isExcluded = isExcluded
+        self.excludedByAncestor = excludedByAncestor
+        self.language = language
+        self.isDataProse = isDataProse
+    }
+}
+
+/// A nested tree node for the SwiftUI `OutlineGroup`/`DisclosureGroup` rendering.
+/// A folder has non-nil `children` (folders first, then files, each group sorted by
+/// name); a file has `children == nil`. Carries the same display fields as
+/// `FileTreeRow`. Built by `buildFileTreeNodes`; the flat `buildFileTree` is the
+/// depth-first flattening of the same structure (used by unit tests).
+public struct FileTreeNode: Equatable, Sendable, Identifiable {
+    public var id: String { relativePath }
+    public let name: String
+    public let relativePath: String
+    public let lines: Int
+    public let fileCount: Int
+    public let isFolder: Bool
+    public let isExcluded: Bool
+    public let excludedByAncestor: Bool
+    public let language: String?
+    public let isDataProse: Bool
+    public let children: [FileTreeNode]?
+
+    public init(name: String, relativePath: String, lines: Int, fileCount: Int,
+                isFolder: Bool, isExcluded: Bool, excludedByAncestor: Bool,
+                language: String? = nil, isDataProse: Bool = false,
+                children: [FileTreeNode]? = nil) {
+        self.name = name
+        self.relativePath = relativePath
+        self.lines = lines
+        self.fileCount = fileCount
+        self.isFolder = isFolder
+        self.isExcluded = isExcluded
+        self.excludedByAncestor = excludedByAncestor
+        self.language = language
+        self.isDataProse = isDataProse
+        self.children = children
+    }
+}
+
+/// Intermediate mutable folder used while assembling the tree from a flat file list.
+private final class _FolderBuilder {
+    let path: String              // project-relative dir ("" for the synthetic root)
+    var subfolders: [String: _FolderBuilder] = [:]   // child dir name -> builder
+    var files: [StatFileEntry] = []                  // files directly in this dir
+    init(path: String) { self.path = path }
+}
+
+/// Group a flat `[StatFileEntry]` into a folder tree, then flatten DEPTH-FIRST into
+/// display rows: each folder row is followed by its SUBFOLDERS (sorted by name) and
+/// then its files (sorted by name) recursively — folders-first then files at every
+/// level, so the list reads as an indented tree and matches `buildFileTreeNodes` /
+/// the spec. Folder `lines`/`fileCount` are SUMMED over every descendant file. A
+/// folder is `isExcluded` when it (or any ancestor) is in `ignoredFolders`; its
+/// files/subfolders inherit that with `excludedByAncestor`. PURE: no I/O.
+public func buildFileTree(files: [StatFileEntry], ignoredFolders: Set<String>) -> [FileTreeRow] {
+    let root = _assembleFolderTree(files: files)
+    var rows: [FileTreeRow] = []
+    func walk(_ folder: _FolderBuilder, depth: Int, ancestorExcluded: Bool) {
+        let selfExcluded = !folder.path.isEmpty && ignoredFolders.contains(folder.path)
+        let excluded = ancestorExcluded || selfExcluded
+        // Emit the folder row (the synthetic root is never emitted).
+        if !folder.path.isEmpty {
+            let (lines, count) = _folderTotals(folder)
+            rows.append(FileTreeRow(
+                name: _leafName(folder.path), depth: depth, relativePath: folder.path,
+                lines: lines, fileCount: count, isFolder: true,
+                isExcluded: excluded, excludedByAncestor: ancestorExcluded))
+        }
+        let childDepth = folder.path.isEmpty ? 0 : depth + 1
+        // Subfolders first (sorted), then files (sorted) — folders-first, matching
+        // `buildFileTreeNodes` and the spec.
+        for sub in folder.subfolders.values.sorted(by: { _leafName($0.path) < _leafName($1.path) }) {
+            walk(sub, depth: childDepth, ancestorExcluded: excluded)
+        }
+        for file in folder.files.sorted(by: { _leafName($0.path) < _leafName($1.path) }) {
+            rows.append(FileTreeRow(
+                name: _leafName(file.path), depth: childDepth, relativePath: file.path,
+                lines: file.lines, fileCount: 1, isFolder: false,
+                isExcluded: excluded, excludedByAncestor: excluded,
+                language: file.language, isDataProse: file.isDataProse))
+        }
+    }
+    walk(root, depth: 0, ancestorExcluded: false)
+    return rows
+}
+
+/// The nested-node form of `buildFileTree`, for `OutlineGroup`/`DisclosureGroup`
+/// (lazy disclosure). Children are folders-first then files, each sorted by name.
+/// PURE: no I/O.
+public func buildFileTreeNodes(files: [StatFileEntry], ignoredFolders: Set<String>) -> [FileTreeNode] {
+    let root = _assembleFolderTree(files: files)
+    func build(_ folder: _FolderBuilder, ancestorExcluded: Bool) -> FileTreeNode {
+        let selfExcluded = !folder.path.isEmpty && ignoredFolders.contains(folder.path)
+        let excluded = ancestorExcluded || selfExcluded
+        var children: [FileTreeNode] = []
+        // Subfolders first (sorted), then files (sorted).
+        for sub in folder.subfolders.values.sorted(by: { _leafName($0.path) < _leafName($1.path) }) {
+            children.append(build(sub, ancestorExcluded: excluded))
+        }
+        for file in folder.files.sorted(by: { _leafName($0.path) < _leafName($1.path) }) {
+            children.append(FileTreeNode(
+                name: _leafName(file.path), relativePath: file.path, lines: file.lines,
+                fileCount: 1, isFolder: false, isExcluded: excluded,
+                excludedByAncestor: excluded, language: file.language,
+                isDataProse: file.isDataProse, children: nil))
+        }
+        let (lines, count) = _folderTotals(folder)
+        return FileTreeNode(
+            name: _leafName(folder.path), relativePath: folder.path, lines: lines,
+            fileCount: count, isFolder: true, isExcluded: excluded,
+            excludedByAncestor: ancestorExcluded, children: children)
+    }
+    // The synthetic root is not emitted; return its children as the top-level nodes.
+    let rootNode = build(root, ancestorExcluded: false)
+    return rootNode.children ?? []
+}
+
+/// Assemble the synthetic-root folder tree from a flat file list, creating every
+/// intermediate folder along each file's path.
+private func _assembleFolderTree(files: [StatFileEntry]) -> _FolderBuilder {
+    let root = _FolderBuilder(path: "")
+    for file in files {
+        let comps = file.path.split(separator: "/").map(String.init)
+        guard !comps.isEmpty else { continue }
+        var folder = root
+        var prefix = ""
+        // Walk/create each intermediate folder (all components except the last = file).
+        for comp in comps.dropLast() {
+            prefix = prefix.isEmpty ? comp : prefix + "/" + comp
+            if let existing = folder.subfolders[comp] {
+                folder = existing
+            } else {
+                let made = _FolderBuilder(path: prefix)
+                folder.subfolders[comp] = made
+                folder = made
+            }
+        }
+        folder.files.append(file)
+    }
+    return root
+}
+
+/// Summed (lines, fileCount) over a folder and all its descendants.
+private func _folderTotals(_ folder: _FolderBuilder) -> (lines: Int, fileCount: Int) {
+    var lines = folder.files.reduce(0) { $0 + $1.lines }
+    var count = folder.files.count
+    for sub in folder.subfolders.values {
+        let (l, c) = _folderTotals(sub)
+        lines += l; count += c
+    }
+    return (lines, count)
+}
+
+/// Last `/`-separated component of a path ("" → "").
+private func _leafName(_ path: String) -> String {
+    path.split(separator: "/").last.map(String.init) ?? path
+}
+
 // MARK: - Code vs Data/Prose split (two headline numbers)
 
 /// The Totals card's two headline numbers: "Code" lines (non-data languages) and

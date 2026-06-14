@@ -139,6 +139,67 @@ final class AppStateCodeStatsTests: XCTestCase {
         XCTAssertEqual(state.codeStats[project.id]?.code, 7)  // + new.swift (1)
     }
 
+    func testRefreshCodeStatsPublishesStatsFilesMatchingAggregate() async throws {
+        let state = makeState()
+        await state.refreshCodeStats(projectID: project.id,
+                                     now: Date(timeIntervalSince1970: 1_000_000))
+
+        let files = try XCTUnwrap(state.statsFiles[project.id])
+        let stats = try XCTUnwrap(state.codeStats[project.id])
+        // One entry per counted file; project-relative paths.
+        XCTAssertEqual(files.count, stats.totalFiles)
+        XCTAssertEqual(Set(files.map(\.path)),
+                       ["main.swift", "sub/deep.swift", "vendor/lib.swift"])
+        // Per-file lines sum to the aggregate total.
+        let sum = files.reduce(0) { $0 + $1.lines }
+        XCTAssertEqual(sum, stats.code + stats.comment + stats.blank)
+    }
+
+    func testSetStatsFolderExcludedTriggersRescanThatShrinksCountAndFiles() async throws {
+        let state = makeState()
+        await state.refreshCodeStats(projectID: project.id,
+                                     now: Date(timeIntervalSince1970: 1_000_000))
+        XCTAssertEqual(state.codeStats[project.id]?.code, 6)
+        XCTAssertEqual(state.statsFiles[project.id]?.count, 3)
+
+        // Excluding the `sub` folder fires an automatic rescan (no explicit refresh).
+        state.setStatsFolderExcluded(projectID: project.id, relativePath: "sub", excluded: true)
+
+        // Poll for the rescan Task to settle: sub/deep.swift (1 code) drops -> code 5.
+        try await waitUntil { state.codeStats[self.project.id]?.code == 5 }
+        XCTAssertEqual(state.codeStats[project.id]?.code, 5, "sub/deep.swift (1 code) excluded")
+        let files = try XCTUnwrap(state.statsFiles[project.id])
+        // The excluded folder's files STAY in the per-file list (flagged isExcluded)
+        // so the settings tree keeps the folder + its re-include toggle reachable —
+        // the count still shrank because excluded files don't reach the totals.
+        XCTAssertEqual(files.count, 3, "excluded files remain in the list, flagged")
+        let subFile = try XCTUnwrap(files.first { $0.path.hasPrefix("sub/") })
+        XCTAssertTrue(subFile.isExcluded, "the excluded folder's file is flagged")
+        // And the tree the settings page builds still surfaces the `sub` folder as an
+        // excluded-but-re-includable node (enabled toggle: NOT excluded-by-ancestor).
+        let nodes = buildFileTreeNodes(files: files, ignoredFolders: ["sub"])
+        let subNode = try XCTUnwrap(nodes.first { $0.relativePath == "sub" })
+        XCTAssertTrue(subNode.isExcluded)
+        XCTAssertFalse(subNode.excludedByAncestor, "directly excluded -> toggle stays enabled")
+
+        // Re-including restores them to the count.
+        state.setStatsFolderExcluded(projectID: project.id, relativePath: "sub", excluded: false)
+        try await waitUntil { state.codeStats[self.project.id]?.code == 6 }
+        XCTAssertEqual(state.statsFiles[project.id]?.count, 3)
+        XCTAssertFalse(state.statsFiles[project.id]?.contains { $0.isExcluded } ?? true)
+    }
+
+    /// Polls `condition` on the main actor until true or a timeout, yielding to let
+    /// the rescan `Task` (launched by `setStatsFolderExcluded`) run to completion.
+    private func waitUntil(timeout: TimeInterval = 5,
+                           _ condition: @escaping () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { XCTFail("waitUntil timed out"); return }
+            try await Task.sleep(nanoseconds: 20_000_000)  // 20ms
+        }
+    }
+
     func testRefreshCodeStatsUnknownProjectIsNoOp() async {
         let state = makeState()
         await state.refreshCodeStats(projectID: UUID())
@@ -180,12 +241,14 @@ final class AppStateCodeStatsTests: XCTestCase {
         XCTAssertEqual(state.config.projects.first?.statsIgnoredFolders, ["vendor"])
         XCTAssertEqual(reloadedConfig().projects.first?.statsIgnoredFolders, ["vendor"])
 
-        // A re-scan after the toggle still settles cleanly (the count comes from git's
-        // own ignore engine now, so a non-gitignored folder remains counted).
+        // The toggle now ACTUALLY changes the numbers (the prior bug: it didn't). A
+        // path-level exclusion of `vendor` drops vendor/lib.swift (2 code) from the
+        // count via the new excludedFolders pass — independent of git's own ignore
+        // engine. An explicit re-scan settles to the reduced total.
         await state.refreshCodeStats(projectID: project.id,
                                      now: Date(timeIntervalSince1970: 1_000_200))
         XCTAssertFalse(state.isStatsScanning)
-        XCTAssertEqual(state.codeStats[project.id]?.code, 6)
+        XCTAssertEqual(state.codeStats[project.id]?.code, 4, "vendor/lib.swift (2 code) excluded by folder toggle")
     }
 
     func testSetStatsFolderReIncludeRemovesFromConfig() {

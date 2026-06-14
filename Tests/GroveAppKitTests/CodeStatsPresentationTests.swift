@@ -130,6 +130,160 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertTrue(rows.isEmpty)
     }
 
+    // MARK: - buildFileTree (per-file directory+file tree)
+
+    private func entry(_ path: String, lines: Int, language: String = "Swift",
+                       isDataProse: Bool = false) -> StatFileEntry {
+        StatFileEntry(path: path, lines: lines, language: language, isDataProse: isDataProse)
+    }
+
+    func testBuildFileTreeGroupsFilesByFolder() {
+        let files = [
+            entry("src/a.swift", lines: 10),
+            entry("src/b.swift", lines: 20),
+            entry("gen/c.swift", lines: 30),
+        ]
+        let rows = buildFileTree(files: files, ignoredFolders: [])
+        let folders = rows.filter(\.isFolder)
+        XCTAssertEqual(Set(folders.map(\.relativePath)), ["src", "gen"])
+        // Each file appears once, nested under its folder.
+        let fileRows = rows.filter { !$0.isFolder }
+        XCTAssertEqual(Set(fileRows.map(\.relativePath)), ["src/a.swift", "src/b.swift", "gen/c.swift"])
+        // Folder rows precede their files (depth-first), folders sorted by name (gen < src).
+        XCTAssertEqual(rows.first?.relativePath, "gen")
+    }
+
+    func testBuildFileTreeOrdersFoldersBeforeFilesMatchingNodes() {
+        // A level that mixes a sibling file with subfolders: the flat (snapshot) tree
+        // must emit the SUBFOLDERS before the file, identical to buildFileTreeNodes and
+        // the spec ("folders first then files"). Regression guard for the snapshot path.
+        let files = [
+            entry("README.md", lines: 5, language: "Markdown", isDataProse: true),
+            entry("Sources/a.swift", lines: 10),
+            entry("Snapshot/b.swift", lines: 20),
+        ]
+        let rows = buildFileTree(files: files, ignoredFolders: [])
+        // Top-level order: folders (Snapshot, Sources sorted) then the README file.
+        let topLevel = rows.filter { $0.depth == 0 }.map(\.relativePath)
+        XCTAssertEqual(topLevel, ["Snapshot", "Sources", "README.md"])
+        // The flat order must match the depth-first flattening of the nested nodes.
+        let nodes = buildFileTreeNodes(files: files, ignoredFolders: [])
+        XCTAssertEqual(rows.map(\.relativePath), Self.flattenNodePaths(nodes))
+    }
+
+    /// Depth-first flatten of nested nodes to project-relative paths (folders emitted
+    /// before their children), mirroring `buildFileTree`'s row order.
+    private static func flattenNodePaths(_ nodes: [FileTreeNode]) -> [String] {
+        var out: [String] = []
+        func walk(_ ns: [FileTreeNode]) {
+            for n in ns {
+                out.append(n.relativePath)
+                if let kids = n.children { walk(kids) }
+            }
+        }
+        walk(nodes)
+        return out
+    }
+
+    func testBuildFileTreeFolderLOCSummedOverDescendants() {
+        let files = [
+            entry("src/a.swift", lines: 10),
+            entry("src/b.swift", lines: 20),
+            entry("src/deep/c.swift", lines: 5),
+        ]
+        let rows = buildFileTree(files: files, ignoredFolders: [])
+        let src = try! XCTUnwrap(rows.first { $0.relativePath == "src" && $0.isFolder })
+        XCTAssertEqual(src.lines, 35, "src sums a + b + deep/c")
+        XCTAssertEqual(src.fileCount, 3)
+        let deep = try! XCTUnwrap(rows.first { $0.relativePath == "src/deep" && $0.isFolder })
+        XCTAssertEqual(deep.lines, 5)
+        XCTAssertEqual(deep.fileCount, 1)
+    }
+
+    func testBuildFileTreeRootLevelFileHasDepthZeroNoFolder() {
+        let rows = buildFileTree(files: [entry("README.md", lines: 48, language: "Markdown",
+                                               isDataProse: true)], ignoredFolders: [])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertFalse(rows[0].isFolder)
+        XCTAssertEqual(rows[0].depth, 0)
+        XCTAssertEqual(rows[0].relativePath, "README.md")
+        XCTAssertEqual(rows[0].language, "Markdown")
+        XCTAssertTrue(rows[0].isDataProse)
+    }
+
+    func testBuildFileTreeFolderExclusionMarksDescendants() {
+        let files = [
+            entry("src/a.swift", lines: 10),
+            entry("src/sub/b.swift", lines: 20),
+            entry("other/c.swift", lines: 5),
+        ]
+        let rows = buildFileTree(files: files, ignoredFolders: ["src"])
+        let byPath = Dictionary(uniqueKeysWithValues: rows.map { ($0.relativePath, $0) })
+        XCTAssertTrue(byPath["src"]!.isExcluded)
+        XCTAssertFalse(byPath["src"]!.excludedByAncestor, "src is directly excluded")
+        // Descendant file + subfolder inherit the exclusion.
+        XCTAssertTrue(byPath["src/a.swift"]!.isExcluded)
+        XCTAssertTrue(byPath["src/a.swift"]!.excludedByAncestor)
+        XCTAssertTrue(byPath["src/sub"]!.isExcluded)
+        XCTAssertTrue(byPath["src/sub"]!.excludedByAncestor)
+        XCTAssertTrue(byPath["src/sub/b.swift"]!.isExcluded)
+        // Unrelated folder stays included.
+        XCTAssertFalse(byPath["other"]!.isExcluded)
+        XCTAssertFalse(byPath["other/c.swift"]!.isExcluded)
+    }
+
+    func testBuildFileTreeMatchesInputTotals() {
+        let files = [
+            entry("a.swift", lines: 10),
+            entry("dir/b.swift", lines: 20),
+            entry("dir/sub/c.swift", lines: 30),
+        ]
+        let rows = buildFileTree(files: files, ignoredFolders: [])
+        // Sum of FILE rows equals the input total (folders are summaries, not double-counted).
+        let fileSum = rows.filter { !$0.isFolder }.reduce(0) { $0 + $1.lines }
+        XCTAssertEqual(fileSum, 60)
+        XCTAssertEqual(rows.filter { !$0.isFolder }.count, files.count)
+    }
+
+    func testBuildFileTreeEmptyInput() {
+        XCTAssertTrue(buildFileTree(files: [], ignoredFolders: []).isEmpty)
+    }
+
+    // MARK: - buildFileTreeNodes (nested form for OutlineGroup)
+
+    func testBuildFileTreeNodesNestStructureFoldersFirst() {
+        let files = [
+            entry("src/a.swift", lines: 10),
+            entry("src/sub/b.swift", lines: 20),
+            entry("readme.md", lines: 3, language: "Markdown", isDataProse: true),
+        ]
+        let nodes = buildFileTreeNodes(files: files, ignoredFolders: [])
+        // Top level: folder "src" first, then file "readme.md" (folders before files).
+        XCTAssertEqual(nodes.map(\.relativePath), ["src", "readme.md"])
+        let src = try! XCTUnwrap(nodes.first { $0.relativePath == "src" })
+        XCTAssertTrue(src.isFolder)
+        XCTAssertEqual(src.lines, 30)
+        // src's children: subfolder "src/sub" before file "src/a.swift".
+        let children = try! XCTUnwrap(src.children)
+        XCTAssertEqual(children.map(\.relativePath), ["src/sub", "src/a.swift"])
+        // Files are leaves (children == nil).
+        let readme = try! XCTUnwrap(nodes.first { $0.relativePath == "readme.md" })
+        XCTAssertNil(readme.children)
+        XCTAssertTrue(readme.isDataProse)
+    }
+
+    func testBuildFileTreeNodesExclusionPropagates() {
+        let files = [entry("src/a.swift", lines: 10), entry("src/sub/b.swift", lines: 20)]
+        let nodes = buildFileTreeNodes(files: files, ignoredFolders: ["src"])
+        let src = try! XCTUnwrap(nodes.first { $0.relativePath == "src" })
+        XCTAssertTrue(src.isExcluded)
+        XCTAssertFalse(src.excludedByAncestor)
+        func allDescendantsExcluded(_ node: FileTreeNode) -> Bool {
+            (node.children ?? []).allSatisfy { $0.isExcluded && allDescendantsExcluded($0) }
+        }
+        XCTAssertTrue(allDescendantsExcluded(src), "every descendant inherits the exclusion")
+    }
+
     // MARK: - dataProseBreakdown (Code vs Data/Prose split)
 
     func testDataProseBreakdownClassifiesLanguages() {

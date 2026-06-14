@@ -47,6 +47,7 @@ public enum SnapshotMode {
         case accounts = "accounts"
         case accountsUsage = "accounts-usage"
         case settings = "settings"
+        case statsSettings = "stats-settings"
         case errorBanner = "error-banner"
 
         var fileName: String { rawValue + ".png" }
@@ -62,7 +63,7 @@ public enum SnapshotMode {
                 return CGSize(width: 760, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)
             case .accounts, .accountsUsage: return CGSize(width: 560, height: 480)
-            case .settings: return CGSize(width: 560, height: 560)
+            case .settings, .statsSettings: return CGSize(width: 560, height: 560)
             case .errorBanner: return CGSize(width: 460, height: 584)
             }
         }
@@ -108,7 +109,10 @@ public enum SnapshotMode {
             path: "/Users/demo/Desktop/acme.shop",
             workspacesRoot: "/Users/demo/Workspaces/acme.shop",
             baseBranchOverrides: ["acme-server-config-a": "docker"],
-            defaultAccount: "work"      // settings.png shows the account picker non-empty
+            defaultAccount: "work",     // settings.png shows the account picker non-empty
+            // One pre-excluded folder so stats-settings shows the excluded (dimmed,
+            // disabled-descendant) state in the directory+file tree.
+            statsIgnoredFolders: ["Snapshot"]
         )
         state.config = GroveConfig(
             version: 1,
@@ -158,6 +162,10 @@ public enum SnapshotMode {
         state.codeStats = [project.id: fixtureCodeStats(now: now)]
         state.codeStatsHistory = [project.id: fixtureCodeStatsHistory(now: now)]
         state.repoStats = [project.id: fixtureRepoStats(now: now)]
+        // Per-file list (Stage 5 final): the stats-settings page builds its
+        // directory+file tree purely from this, so the tree renders offscreen.
+        // One folder (Snapshot) is pre-excluded so the disabled/dimmed state shows.
+        state.statsFiles = [project.id: fixtureStatFiles()]
 
         // Projects-tab session previews (item 4): a running session mapped to a
         // cmux workspace (Go) and a waiting one (Resume).
@@ -644,6 +652,32 @@ public enum SnapshotMode {
         ]
     }
 
+    /// A canned project-relative per-file list so the stats-settings page renders its
+    /// directory+file tree offscreen: a couple of nested source folders (so folder
+    /// rows show summed LOC + counts), a data/prose file (Markdown → neutral tint),
+    /// and one pre-excluded folder (see `fixtureState` setting `statsIgnoredFolders`).
+    /// The excluded folder's file carries `isExcluded` exactly as a live scan emits it,
+    /// so the Snapshot folder stays in the tree with its (enabled) re-include toggle.
+    static func fixtureStatFiles() -> [StatFileEntry] {
+        [
+            StatFileEntry(path: "Sources/GroveCore/Services/GitStatsService.swift",
+                          lines: 520, language: "Swift", isDataProse: false),
+            StatFileEntry(path: "Sources/GroveCore/Services/GitService.swift",
+                          lines: 310, language: "Swift", isDataProse: false),
+            StatFileEntry(path: "Sources/GroveAppKit/Views/RootView.swift",
+                          lines: 153, language: "Swift", isDataProse: false),
+            StatFileEntry(path: "Sources/GroveAppKit/Views/StatsSettingsScreen.swift",
+                          lines: 210, language: "Swift", isDataProse: false),
+            // Pre-excluded (its folder is in statsIgnoredFolders), so it carries
+            // isExcluded — exactly what a live scan emits for an excluded folder,
+            // keeping the Snapshot folder + its re-include toggle in the tree.
+            StatFileEntry(path: "Snapshot/SnapshotMode.swift",
+                          lines: 780, language: "Swift", isDataProse: false,
+                          isExcluded: true),
+            StatFileEntry(path: "README.md", lines: 48, language: "Markdown", isDataProse: true),
+        ]
+    }
+
     // MARK: - Identity fixture (consumed by AccountsScreen in Task 22)
 
     /// Deterministic identities for accounts.png: "default" is logged in,
@@ -707,6 +741,11 @@ public enum SnapshotMode {
             state.route = .accounts
         case .settings:
             state.route = .projectSettings(projectID)
+        case .statsSettings:
+            // The fixture pre-seeds statsFiles + one excluded folder, so the
+            // directory+file tree (summed folder LOC, file tints, the dimmed
+            // excluded folder) renders offscreen from injected data.
+            state.route = .statsSettings(projectID)
         case .errorBanner:
             // Pins the RootView error banner styling (DesignRadius.field,
             // material strip). The message mentions cmux so the "Launch cmux"

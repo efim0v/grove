@@ -333,6 +333,141 @@ final class GitStatsServiceTests: XCTestCase {
         XCTAssertEqual(result.aggregateDelta, .zero)
     }
 
+    // MARK: - 10. Path-level exclusion (excludedFolders) removes matching files
+
+    func testExcludedFoldersRemoveFilesFromCountAndList() async throws {
+        let dir = try Fixture.tempDir("excluded")
+        // The repo lives at <project>/r, so its files are project-relative under "r/".
+        let repo = try emptyRepo(in: dir, name: "r")
+        try write("let a = 1\n", to: "src/keep.swift", in: repo)
+        try write("let b = 2\n", to: "gen/skip.swift", in: repo)
+        try write("let c = 3\n", to: "data/nested/also.swift", in: repo)
+        try commit("c1", in: repo, date: day1)
+
+        var cache: [String: RepoFileCache] = [:]
+        let result = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                        excludedRepos: [], excludedFolders: ["r/gen", "r/data"],
+                                        cache: &cache)
+        let s = result.aggregate
+        XCTAssertEqual(s.code, 1, "only r/src/keep.swift counted; r/gen and r/data excluded")
+        XCTAssertEqual(s.totalFiles, 1)
+        // The excluded files are STILL emitted (so the settings tree can re-include
+        // them) but flagged `isExcluded`; only the kept file counts toward totals.
+        XCTAssertEqual(result.files.map(\.path).sorted(),
+                       ["r/data/nested/also.swift", "r/gen/skip.swift", "r/src/keep.swift"])
+        XCTAssertEqual(Set(result.files.filter { $0.isExcluded }.map(\.path)),
+                       ["r/gen/skip.swift", "r/data/nested/also.swift"])
+        let kept = try XCTUnwrap(result.files.first { $0.path == "r/src/keep.swift" })
+        XCTAssertFalse(kept.isExcluded)
+        // Per-file lines of the NON-excluded files sum to the aggregate total.
+        let keptLines = result.files.filter { !$0.isExcluded }.reduce(0) { $0 + $1.lines }
+        XCTAssertEqual(keptLines, s.code + s.comment + s.blank)
+    }
+
+    // MARK: - 11. .ignorestats matching removes files (reuses the gitignore parser)
+
+    func testIgnorestatsFilesExcluded() async throws {
+        let dir = try Fixture.tempDir("ignorestats")
+        let repo = try emptyRepo(in: dir, name: "r")
+        try write("let a = 1\n", to: "keep.swift", in: repo)
+        try write("let b = 2\n", to: "skip.swift", in: repo)
+        // A nested .ignorestats applies only within its directory subtree.
+        try write("let c = 3\n", to: "sub/drop.swift", in: repo)
+        try write("let d = 4\n", to: "sub/stay.swift", in: repo)
+        try write("skip.swift\n", to: ".ignorestats", in: repo)
+        try write("drop.swift\n", to: "sub/.ignorestats", in: repo)
+        try commit("c1", in: repo, date: day1)
+
+        var cache: [String: RepoFileCache] = [:]
+        let result = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                        excludedRepos: [], excludedFolders: [],
+                                        cache: &cache)
+        let s = result.aggregate
+        XCTAssertEqual(s.code, 2, "keep.swift + sub/stay.swift survive; skip.swift & sub/drop.swift ignored")
+        // Output paths are project-relative (repo "r" under the project root -> "r/" prefix).
+        XCTAssertEqual(Set(result.files.map(\.path)), ["r/keep.swift", "r/sub/stay.swift"])
+    }
+
+    // MARK: - 12. Per-file list present and SUMS to the aggregate totals
+
+    func testPerFileListMatchesAggregate() async throws {
+        let dir = try Fixture.tempDir("files")
+        let repo = try emptyRepo(in: dir, name: "r")
+        // a.swift: 3 code, 1 comment, 1 blank = 5 lines.
+        try write("import Foundation\n// c\nlet x = 1\n\nlet y = 2\n", to: "a.swift", in: repo)
+        // b.py: 2 code = 2 lines.
+        try write("x = 1\ny = 2\n", to: "b.py", in: repo)
+        // doc.md: data/prose.
+        try write("# Title\n\ntext\n", to: "doc.md", in: repo)
+        try commit("c1", in: repo, date: day1)
+
+        var cache: [String: RepoFileCache] = [:]
+        let result = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                        excludedRepos: [], excludedFolders: [],
+                                        cache: &cache)
+        XCTAssertEqual(result.files.count, result.aggregate.totalFiles, "one file entry per counted file")
+        let sumLines = result.files.reduce(0) { $0 + $1.lines }
+        XCTAssertEqual(sumLines, result.aggregate.code + result.aggregate.comment + result.aggregate.blank,
+                       "per-file lines sum to the aggregate code+comment+blank total")
+        // The data/prose flag is carried through for the markdown file (paths are
+        // project-relative, so under the repo "r" they carry an "r/" prefix).
+        let md = try XCTUnwrap(result.files.first { $0.path == "r/doc.md" })
+        XCTAssertTrue(md.isDataProse)
+        let swift = try XCTUnwrap(result.files.first { $0.path == "r/a.swift" })
+        XCTAssertFalse(swift.isDataProse)
+        XCTAssertEqual(swift.lines, 5)
+    }
+
+    // MARK: - 13. Project-relative paths correct for a NESTED repo
+
+    func testProjectRelativePathsCorrectForNestedRepos() async throws {
+        let dir = try Fixture.tempDir("nested")
+        // Root-level repo: its files have NO prefix.
+        let repo1 = try emptyRepo(in: dir, name: "r1")
+        try write("let a = 1\n", to: "a.swift", in: repo1)
+        try commit("c1", in: repo1, date: day1)
+        // A repo nested under <project>/nested/r2: its files are prefixed "nested/r2/".
+        let subdir = dir.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: subdir, withIntermediateDirectories: true)
+        let repo2 = try emptyRepo(in: subdir, name: "r2")
+        try write("let b = 2\n", to: "deep/b.swift", in: repo2)
+        try commit("c2", in: repo2, date: day1)
+
+        var cache: [String: RepoFileCache] = [:]
+        let result = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                        excludedRepos: [], excludedFolders: [],
+                                        cache: &cache)
+        XCTAssertGreaterThanOrEqual(result.files.count, 2)
+        // repo1 file (the root repo "r1" is itself a child of the project root).
+        XCTAssertTrue(result.files.contains { $0.path == "r1/a.swift" },
+                      "root-level repo's file mapped under its dir relative to the project")
+        // repo2 file carries the full nested prefix.
+        XCTAssertTrue(result.files.contains { $0.path == "nested/r2/deep/b.swift" },
+                      "nested repo's file has the correct project-relative prefix")
+        // Excluding the nested repo's project-relative dir drops its file from the
+        // COUNT but still emits it (flagged) so the tree can re-include it.
+        var cache2: [String: RepoFileCache] = [:]
+        let excluded = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                          excludedRepos: [], excludedFolders: ["nested"],
+                                          cache: &cache2)
+        XCTAssertEqual(excluded.aggregate.code, 1, "only r1/a.swift counts; nested/ excluded")
+        let nestedFile = try XCTUnwrap(excluded.files.first { $0.path == "nested/r2/deep/b.swift" })
+        XCTAssertTrue(nestedFile.isExcluded, "the excluded folder's file is present but flagged")
+        let rootFile = try XCTUnwrap(excluded.files.first { $0.path == "r1/a.swift" })
+        XCTAssertFalse(rootFile.isExcluded)
+    }
+
+    // MARK: - 14. projectRelativePrefix pure helper
+
+    func testProjectRelativePrefixComputation() {
+        XCTAssertEqual(GitStatsService.projectRelativePrefix(
+            repoPath: "/p/proj/nested/r2", projectPath: "/p/proj"), "nested/r2")
+        XCTAssertEqual(GitStatsService.projectRelativePrefix(
+            repoPath: "/p/proj", projectPath: "/p/proj"), "", "repo IS the project root -> empty prefix")
+        XCTAssertEqual(GitStatsService.projectRelativePrefix(
+            repoPath: "/elsewhere/x", projectPath: "/p/proj"), "", "repo outside project -> empty fallback")
+    }
+
     // MARK: - Pure-helper unit tests (no git)
 
     func testParseLsFilesZSplitsOnNUL() {

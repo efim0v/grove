@@ -45,6 +45,38 @@ public struct RepoDelta: Sendable, Equatable, Codable {
     public static let zero = RepoDelta(added: 0, removed: 0, filesChanged: 0)
 }
 
+/// One counted file in a scan, carrying its PROJECT-root-relative path and its
+/// classified line total. This is the lightweight per-file list that feeds the
+/// settings-page directory+file tree; it is summed/grouped purely in the UI layer.
+/// `lines` is the file's total classified lines (code+comment+blank), matching the
+/// per-language totals so a sum over the NON-excluded `files` equals the aggregate's
+/// `totalLines`.
+///
+/// A file under a user-excluded folder (`excludedFolders`) is STILL emitted, with
+/// `isExcluded == true`, and is kept OUT of the `CodeStats` totals — so the
+/// settings tree can still render the excluded folder (and its re-include toggle)
+/// while the headline numbers shrink. Files dropped by `.ignorestats` are NOT
+/// emitted at all (that exclusion is file-driven config, not UI-toggleable).
+public struct StatFileEntry: Sendable, Equatable, Identifiable {
+    public let path: String           // project-root-relative (e.g. "nested/r2/a.swift")
+    public let lines: Int             // total classified lines (code + comment + blank)
+    public let language: String
+    public let isDataProse: Bool
+    /// True when this file lives under a user-excluded folder: present in the list
+    /// (so the tree can show/un-exclude the folder) but excluded from the totals.
+    public let isExcluded: Bool
+    public var id: String { path }
+
+    public init(path: String, lines: Int, language: String, isDataProse: Bool,
+                isExcluded: Bool = false) {
+        self.path = path
+        self.lines = lines
+        self.language = language
+        self.isDataProse = isDataProse
+        self.isExcluded = isExcluded
+    }
+}
+
 /// Full per-repo result: current LOC (reuses the existing `CodeStats` shape),
 /// per-day cumulative history, and a period delta.
 public struct RepoStats: Sendable, Equatable {
@@ -54,14 +86,17 @@ public struct RepoStats: Sendable, Equatable {
     public let stats: CodeStats        // REUSED: current LOC, byLanguage, totals
     public let history: [RepoHistoryPoint]   // per-day cumulative net lines, oldest first
     public let delta: RepoDelta              // over the requested period
+    public let files: [StatFileEntry]        // this repo's counted files (project-relative paths)
     public init(repoPath: String, repoName: String, defaultBranch: String,
-                stats: CodeStats, history: [RepoHistoryPoint], delta: RepoDelta) {
+                stats: CodeStats, history: [RepoHistoryPoint], delta: RepoDelta,
+                files: [StatFileEntry] = []) {
         self.repoPath = repoPath
         self.repoName = repoName
         self.defaultBranch = defaultBranch
         self.stats = stats
         self.history = history
         self.delta = delta
+        self.files = files
     }
 }
 
@@ -75,13 +110,16 @@ public struct ProjectGitStats: Sendable, Equatable {
     public let aggregateHistory: [CodeStatsPoint]  // summed-per-day series (growth chart)
     public let aggregateDelta: RepoDelta     // summed delta across repos
     public let scannedAt: Date
+    public let files: [StatFileEntry]        // every counted file across repos, project-relative, sorted by path
     public init(repos: [RepoStats], aggregate: CodeStats,
-                aggregateHistory: [CodeStatsPoint], aggregateDelta: RepoDelta, scannedAt: Date) {
+                aggregateHistory: [CodeStatsPoint], aggregateDelta: RepoDelta, scannedAt: Date,
+                files: [StatFileEntry] = []) {
         self.repos = repos
         self.aggregate = aggregate
         self.aggregateHistory = aggregateHistory
         self.aggregateDelta = aggregateDelta
         self.scannedAt = scannedAt
+        self.files = files
     }
 }
 
@@ -147,6 +185,7 @@ public struct GitStatsService: Sendable {
         projectPath: String,
         scanDepth: Int,
         excludedRepos: Set<String>,
+        excludedFolders: Set<String> = [],
         period: TimeInterval = GitStatsService.defaultPeriod,
         now: Date = Date(),
         cache: inout [String: RepoFileCache]
@@ -156,7 +195,9 @@ public struct GitStatsService: Sendable {
         var repoStats: [RepoStats] = []
         for repo in repos {
             var repoCache = cache[repo.path] ?? RepoFileCache()
-            let (stats, updated) = await currentLOC(repo: repo, now: now, cache: repoCache)
+            let (stats, updated, files) = await currentLOC(
+                repo: repo, projectPath: projectPath, excludedFolders: excludedFolders,
+                now: now, cache: repoCache)
             repoCache = updated
             cache[repo.path] = repoCache
 
@@ -165,7 +206,7 @@ public struct GitStatsService: Sendable {
                                                  period: period, now: now)
             repoStats.append(RepoStats(
                 repoPath: repo.path, repoName: repo.dirName, defaultBranch: branch,
-                stats: stats, history: history, delta: delta))
+                stats: stats, history: history, delta: delta, files: files))
         }
         repoStats.sort { $0.repoPath < $1.repoPath }
         return Self.aggregate(repoStats, now: now)
@@ -203,9 +244,21 @@ public struct GitStatsService: Sendable {
     // MARK: Current LOC
 
     /// Classifies the repo's current file set (tracked + untracked-not-ignored).
-    /// Returns the `CodeStats` and the UPDATED per-repo cache. Degrades to empty
-    /// stats (but a populated/cleared cache) on any git failure.
-    func currentLOC(repo: RepoInfo, now: Date, cache: RepoFileCache) async -> (CodeStats, RepoFileCache) {
+    /// Returns the `CodeStats`, the UPDATED per-repo cache, and the per-file list
+    /// (project-relative paths). Degrades to empty stats (but a populated/cleared
+    /// cache, empty file list) on any git failure.
+    ///
+    /// `excludedFolders` are PROJECT-root-relative folder paths; a file whose
+    /// project-relative path equals or is nested under one of them is kept OUT of the
+    /// count but is STILL emitted in the file list with `isExcluded == true`, so the
+    /// settings tree can render the excluded folder and its re-include toggle. A
+    /// repo-local `.ignorestats` file (same syntax as `.gitignore`, parsed by the
+    /// shared `GitignoreRules`/`GitignoreScope`) provides further per-path excludes
+    /// evaluated against repo-relative paths; those matches are dropped ENTIRELY
+    /// (not emitted), since that exclusion is file-driven config, not UI-toggleable.
+    func currentLOC(repo: RepoInfo, projectPath: String, excludedFolders: Set<String>,
+                    now: Date, cache: RepoFileCache)
+        async -> (CodeStats, RepoFileCache, [StatFileEntry]) {
         let head = await self.head(repo: repo)
         // A changed HEAD invalidates the whole cache (a checkout/branch switch
         // remaps path→content, so per-file mtime reuse can't be trusted across it).
@@ -216,18 +269,31 @@ public struct GitStatsService: Sendable {
             "git", ["-C", repo.path, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             timeout: 60
         ) else {
-            return (Self.emptyStats(now: now), RepoFileCache(head: head, files: [:]))
+            return (Self.emptyStats(now: now), RepoFileCache(head: head, files: [:]), [])
         }
 
         let relPaths = Self.parseLsFilesZ(result.stdout)
         let fm = FileManager.default
         let base = URL(fileURLWithPath: repo.path, isDirectory: true)
 
+        // The project-relative prefix for this repo (e.g. "nested/r2"), used to map each
+        // repo-relative file path into a project-relative one for the file list and the
+        // folder-exclusion check. "" when the repo IS the project root.
+        let prefix = Self.projectRelativePrefix(repoPath: repo.path, projectPath: projectPath)
+
+        // Build a `.ignorestats` scope from every `.ignorestats` checked into the repo's
+        // working tree (they appear in `ls-files --others` output). Each file's parent
+        // dir becomes a frame keyed repo-relative, so a candidate's repo-relative path is
+        // matched against the nearest enclosing `.ignorestats` (deepest-first), reusing
+        // the exact gitignore precedence the matcher already implements.
+        let ignoreScope = Self.buildIgnoreStatsScope(relPaths: relPaths, base: base)
+
         // Accumulators keyed by language name.
         struct Acc { var files = 0; var code = 0; var comment = 0; var blank = 0 }
         var byLang: [String: Acc] = [:]
         var skippedBinary = 0
         var nextFiles: [String: CachedClassified] = [:]
+        var filesForResult: [StatFileEntry] = []
 
         for rel in relPaths {
             // Drop anything under a generated/vendored infrastructure dir (node_modules,
@@ -240,6 +306,23 @@ public struct GitStatsService: Sendable {
                 continue
             }
             guard let lang = CodeStatsEngine.language(forPath: rel) else { continue }
+
+            // Project-relative path: repo's project-relative prefix + repo-relative file.
+            let projectRel = prefix.isEmpty ? rel : prefix + "/" + rel
+
+            // `.ignorestats` exclusion: evaluate the repo-relative path (the scope's
+            // frames are keyed repo-relative). These are file-driven config (not
+            // UI-toggleable), so a match drops the file ENTIRELY — never emitted.
+            if ignoreScope.isIgnored(path: rel, isDirectory: false) {
+                continue
+            }
+            // Folder-exclusion (user toggle): equals an excluded folder or is nested
+            // under one. Unlike `.ignorestats`, we still EMIT the file (flagged
+            // `isExcluded`) so the settings tree retains the folder + its re-include
+            // toggle; it is just kept out of the byLanguage/CodeStats totals below.
+            let isExcluded = excludedFolders.contains {
+                projectRel == $0 || projectRel.hasPrefix($0 + "/")
+            }
 
             let absURL = base.appendingPathComponent(rel)
             let absPath = absURL.path
@@ -261,6 +344,16 @@ public struct GitStatsService: Sendable {
                 classification = CodeStatsEngine.classify(
                     contents: String(decoding: data, as: UTF8.self), language: lang)
             }
+
+            // Always emit the file (so the tree can show it); excluded files carry the
+            // flag and are kept out of the language/CodeStats totals.
+            filesForResult.append(StatFileEntry(
+                path: projectRel,
+                lines: classification.code + classification.comment + classification.blank,
+                language: lang.name,
+                isDataProse: CodeStatsEngine.isDataProse(lang.name),
+                isExcluded: isExcluded))
+            if isExcluded { continue }
 
             nextFiles[absPath] = CachedClassified(
                 mtime: mtime, size: size, language: lang.name, classification: classification)
@@ -285,7 +378,40 @@ public struct GitStatsService: Sendable {
         let stats = CodeStats(totalFiles: totalFiles, totalLines: code + comment + blank,
                               code: code, comment: comment, blank: blank,
                               byLanguage: byLanguage, scannedAt: now, skippedBinary: skippedBinary)
-        return (stats, RepoFileCache(head: head, files: nextFiles))
+        return (stats, RepoFileCache(head: head, files: nextFiles), filesForResult)
+    }
+
+    /// The PROJECT-root-relative directory prefix for a repo: `repoPath` made relative
+    /// to `projectPath` (both symlink-resolved so git's `/private/var/…` paths compare
+    /// cleanly). Returns "" when the repo IS the project root, or when `repoPath` is not
+    /// under `projectPath` (a defensive fallback — the discovery walk only yields repos
+    /// inside the project). Pure string math on standardized components, mirroring the
+    /// `standardize` convention used elsewhere in this service.
+    static func projectRelativePrefix(repoPath: String, projectPath: String) -> String {
+        let repoComps = URL(fileURLWithPath: standardize(repoPath)).pathComponents
+        let projComps = URL(fileURLWithPath: standardize(projectPath)).pathComponents
+        guard repoComps.count >= projComps.count else { return "" }
+        for i in 0..<projComps.count where repoComps[i] != projComps[i] { return "" }
+        return repoComps[projComps.count...].joined(separator: "/")
+    }
+
+    /// Build a `GitignoreScope` from every `.ignorestats` file in `relPaths` (repo-
+    /// relative). Each `.ignorestats` is read from disk and parsed by the shared
+    /// `GitignoreRules`; its frame's `directory` is the file's parent dir (repo-relative,
+    /// "" at the repo root), so matching a repo-relative candidate path honors the
+    /// nearest enclosing list deepest-first — exactly git's `.gitignore` precedence.
+    static func buildIgnoreStatsScope(relPaths: [String], base: URL) -> GitignoreScope {
+        var frames: [GitignoreScope.Frame] = []
+        for rel in relPaths where (rel as NSString).lastPathComponent == ".ignorestats" {
+            guard let contents = try? String(contentsOf: base.appendingPathComponent(rel), encoding: .utf8)
+            else { continue }
+            let dir = (rel as NSString).deletingLastPathComponent  // "" at repo root
+            frames.append(GitignoreScope.Frame(directory: dir, rules: GitignoreRules(contents: contents)))
+        }
+        // Shallower frames first so the scope's deepest-first traversal (it reverses the
+        // array) gives the deepest `.ignorestats` precedence.
+        frames.sort { $0.directory.count < $1.directory.count }
+        return GitignoreScope(frames: frames)
     }
 
     // MARK: History + delta
@@ -474,9 +600,13 @@ public struct GitStatsService: Sendable {
         let filesChanged = repos.reduce(0) { $0 + $1.delta.filesChanged }
         let aggregateDelta = RepoDelta(added: added, removed: removed, filesChanged: filesChanged)
 
+        // Flatten every repo's per-file list (already project-relative, globally unique
+        // by path) into one project-wide list, sorted by path for stable display/tests.
+        let files = repos.flatMap(\.files).sorted { $0.path < $1.path }
+
         return ProjectGitStats(repos: repos, aggregate: aggregate,
                                aggregateHistory: aggregateHistory, aggregateDelta: aggregateDelta,
-                               scannedAt: now)
+                               scannedAt: now, files: files)
     }
 
     /// Carry-forward-summed per-day history across repos. For each distinct day in the

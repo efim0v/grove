@@ -3,10 +3,11 @@ import Charts
 import GroveCore
 
 /// Code-stats tab (Stage 5): a per-project cloc-style breakdown rendered from the
-/// pure presentation models in CodeStatsPresentation. Four gray cards stacked in a
+/// pure presentation models in CodeStatsPresentation. Gray cards stacked in a
 /// scroll: a totals header (big numbers), a language breakdown (horizontal bars +
-/// a small per-language table), a growth chart (lines over time), and a toggleable
-/// folder-exclusion tree.
+/// a small per-language table), a growth chart (lines over time). Folder/file
+/// exclusion now lives on a separate page (StatsSettingsScreen), reached via the
+/// gear in the Totals header.
 ///
 /// The scan is lazy: `.task(id:)` triggers `state.refreshCodeStats` whenever the
 /// selected project changes, so opening the tab is what kicks off the (off-main)
@@ -16,11 +17,6 @@ import GroveCore
 struct CodeStatsScreen: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
-
-    /// The directory skeleton for the exclusion tree, loaded lazily alongside the
-    /// scan. Held locally (not on AppState) because only this screen needs it; nil
-    /// until the first load lands.
-    @State private var dirTree: DirNode?
 
     /// The window the Totals card + per-repo blocks recompute their deltas over.
     /// Pure client-side recompute from the per-day history — never a re-scan.
@@ -47,9 +43,6 @@ struct CodeStatsScreen: View {
             // stale date from the previous project can't resolve against a same-calendar
             // day in the new one (bar dates are GMT start-of-day).
             selectedBars = []
-            // The skeleton is cheap (walks dirs, reads no files); load it off-main
-            // before the heavier scan so the exclusion tree is ready when stats land.
-            dirTree = await state.statsDirectoryTree(projectID: id)
             await state.refreshCodeStats(projectID: id)
         }
     }
@@ -71,7 +64,6 @@ struct CodeStatsScreen: View {
             languageCard(stats: stats)
             reposCard()
             growthCard()
-            treeCard()
         }
         .padding(8)
         // ScrollView content isn't rendered offscreen — a plain VStack in snapshots,
@@ -99,6 +91,18 @@ struct CodeStatsScreen: View {
                 CardLabel(title: "Totals", systemImage: "chart.pie.fill")
                 Spacer(minLength: 8)
                 periodControl
+                // Opens the separate stats-settings page (the directory+file
+                // exclusion tree); disabled until a project is selected.
+                Button {
+                    if let id = selectedProjectID { state.open(.statsSettings(id)) }
+                } label: {
+                    Image(systemName: "gear")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(selectedProjectID == nil)
+                .help("Stats settings — file tree & exclusions")
             }
             HStack(alignment: .top, spacing: 24) {
                 // The headline is the LANGUAGE-GROUP split: total lines of non-data/prose
@@ -524,63 +528,6 @@ struct CodeStatsScreen: View {
                     .frame(maxHeight: .infinity, alignment: .bottom)
             }
         }
-    }
-
-    // MARK: - Exclusion tree
-
-    private func treeCard() -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            CardLabel(title: "Folders", systemImage: "folder")
-            Text("Toggle a folder off to exclude it from the scan.")
-                .font(.caption2).foregroundStyle(.secondary)
-            if let tree = dirTree {
-                let rows = buildStatsTree(tree, ignoredFolders: ignoredFolders)
-                if rows.isEmpty {
-                    Text("No sub-folders to exclude.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    ForEach(rows) { row in
-                        statsTreeRow(row)
-                    }
-                }
-            } else {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Loading folders…").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .glassCard()
-    }
-
-    private var ignoredFolders: Set<String> {
-        Set(state.selectedProject?.statsIgnoredFolders ?? [])
-    }
-
-    /// One folder row: a checkbox-style Toggle (INCLUDED = on) per folder. A folder
-    /// excluded by an ancestor is shown on but disabled (the ancestor governs it).
-    private func statsTreeRow(_ row: StatsTreeRow) -> some View {
-        let included = Binding<Bool>(
-            get: { !row.isExcluded },
-            set: { include in
-                guard let id = selectedProjectID else { return }
-                state.setStatsFolderExcluded(projectID: id, relativePath: row.relativePath,
-                                             excluded: !include)
-            })
-        return HStack(spacing: 6) {
-            Toggle(isOn: included) {
-                Text(row.name)
-                    .font(.caption)
-                    .foregroundStyle(row.isExcluded ? Color.secondary : Color.primary)
-                    .lineLimit(1)
-            }
-            .toggleStyle(.checkbox)
-            .disabled(row.excludedByAncestor)
-            Spacer(minLength: 0)
-        }
-        .padding(.leading, CGFloat(row.depth) * 14)
     }
 
     // MARK: - Loading / empty states

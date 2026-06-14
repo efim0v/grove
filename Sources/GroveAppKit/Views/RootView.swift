@@ -70,6 +70,7 @@ public struct RootView: View {
         case .project: return (760, 540)
         case .createWorkspace: return (540, nil)
         case .projectSettings: return (560, 560)
+        case .statsSettings: return (560, 560)
         case .accounts: return (560, 480)
         case .globalSettings: return (480, 420)
         }
@@ -95,6 +96,8 @@ public struct RootView: View {
                                           onClose: { state.goBack() })
                 case .projectSettings(let id):
                     ProjectSettingsScreen(state: state, projectID: id)
+                case .statsSettings(let id):
+                    StatsSettingsScreen(state: state, projectID: id)
                 case .accounts:
                     AccountsScreen(state: state)
                 case .globalSettings:

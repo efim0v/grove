@@ -43,7 +43,7 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertEqual(SnapshotMode.SnapshotScene.allCases.map(\.fileName),
                        ["projects.png", "charts.png", "root-workspaces.png", "workspaces-expanded.png",
                         "create-sheet.png", "graph.png", "stats.png", "sessions.png", "accounts.png",
-                        "accounts-usage.png", "settings.png", "error-banner.png"])
+                        "accounts-usage.png", "settings.png", "stats-settings.png", "error-banner.png"])
     }
 
     /// Every scene is RootView with a ROUTE (the panel is a state machine of
@@ -75,6 +75,13 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertFalse(usage.snapshotsByAccount.isEmpty, "accounts-usage must carry capture snapshots")
         XCTAssertEqual(state(.settings).route, .projectSettings(projectID))
 
+        // stats-settings routes to the new top-level page; the fixture seeds the
+        // per-file list (and one excluded folder) the directory+file tree builds from.
+        let statsSettings = state(.statsSettings)
+        XCTAssertEqual(statsSettings.route, .statsSettings(projectID))
+        XCTAssertFalse(statsSettings.statsFiles[projectID]?.isEmpty ?? true,
+                       "stats-settings must carry a per-file list for the tree")
+
         let create = state(.createSheet)
         XCTAssertEqual(create.route, .createWorkspace(projectID))
         XCTAssertEqual(create.createPrefill?.name, "checkout-flow")
@@ -104,6 +111,7 @@ final class SnapshotModeTests: XCTestCase {
         // accounts-usage shares the accounts adaptive panel frame.
         XCTAssertEqual(SnapshotMode.SnapshotScene.accountsUsage.size, CGSize(width: 560, height: 480))
         XCTAssertEqual(SnapshotMode.SnapshotScene.settings.size, CGSize(width: 560, height: 560))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.statsSettings.size, CGSize(width: 560, height: 560))
         // projects frame + vertical allowance for the banner stacked above it.
         XCTAssertEqual(SnapshotMode.SnapshotScene.errorBanner.size, CGSize(width: 460, height: 584))
     }

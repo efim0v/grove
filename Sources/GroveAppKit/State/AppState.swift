@@ -93,6 +93,10 @@ public final class AppState: ObservableObject {
     /// Per-project aggregate delta (added/removed/net/filesChanged) over the scan window,
     /// summed across repos. Published for the later Totals up/down-triangle UI.
     @Published public var codeStatsDelta: [UUID: RepoDelta] = [:]
+    /// Per-project per-file list (project-root-relative path + classified line total +
+    /// language), produced by the same scan that fills `codeStats`. Feeds the stats
+    /// settings page's directory+file tree; honors the folder/.ignorestats exclusions.
+    @Published public var statsFiles: [UUID: [StatFileEntry]] = [:]
     /// True only while a code-stats scan is in flight (drives the screen's spinner).
     @Published public var isStatsScanning: Bool = false
 
@@ -1030,6 +1034,7 @@ extension AppState {
         let path = project.path
         let depth = project.scanDepth
         let excluded = Set(project.excludedRepos)
+        let excludedFolders = Set(project.statsIgnoredFolders)
         let cache = gitStatsCacheByProject[projectID] ?? [:]
         let service = gitStats
 
@@ -1040,7 +1045,8 @@ extension AppState {
             () -> (stats: ProjectGitStats, cache: [String: RepoFileCache]) in
             var local = cache
             let stats = await service.scan(projectPath: path, scanDepth: depth,
-                                           excludedRepos: excluded, now: now, cache: &local)
+                                           excludedRepos: excluded, excludedFolders: excludedFolders,
+                                           now: now, cache: &local)
             return (stats, local)
         }.value
         statsScanInFlight.remove(projectID)
@@ -1055,6 +1061,7 @@ extension AppState {
         codeStats[projectID] = result.stats.aggregate
         repoStats[projectID] = result.stats.repos
         codeStatsDelta[projectID] = result.stats.aggregateDelta
+        statsFiles[projectID] = result.stats.files
         gitStatsCacheByProject[projectID] = result.cache
 
         // History now comes from GIT and is authoritative — OVERWRITE the stored series
@@ -1090,6 +1097,10 @@ extension AppState {
         config.projects[i].statsIgnoredFolders = folders
         gitStatsCacheByProject[projectID] = [:]
         persist()
+        // Trigger an immediate rescan so the toggle actually changes the numbers + the
+        // file tree. `refreshCodeStats` serializes per project (queues a clean rescan if
+        // one is already in flight), so rapid toggling never races on the shared cache.
+        Task { await refreshCodeStats(projectID: projectID) }
     }
 
     /// I/O-light directory skeleton for the exclusion picker (off the main actor —
