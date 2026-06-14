@@ -82,9 +82,17 @@ public final class AppState: ObservableObject {
     /// Per-project code-stats snapshot (Stage 4), filled lazily by refreshCodeStats
     /// from the stats screen's .task (NOT the global refresh). Empty until scanned.
     @Published public var codeStats: [UUID: CodeStats] = [:]
-    /// Per-project code-stats history (the "lines over time" series), loaded from the
-    /// stats store and grown by each refreshCodeStats append.
+    /// Per-project code-stats history (the "lines over time" series). Now GIT-derived:
+    /// `refreshCodeStats` OVERWRITES it each scan with the per-day cumulative net-lines
+    /// series summed across the project's repos (no longer an append-only snapshot log).
     @Published public var codeStatsHistory: [UUID: [CodeStatsPoint]] = [:]
+    /// Per-project per-repo breakdown (current LOC + history + delta per repo), produced
+    /// alongside the aggregate by GitStatsService. Published for a LATER per-repo UI pass;
+    /// the current screen reads only `codeStats`/`codeStatsHistory`.
+    @Published public var repoStats: [UUID: [RepoStats]] = [:]
+    /// Per-project aggregate delta (added/removed/net/filesChanged) over the scan window,
+    /// summed across repos. Published for the later Totals up/down-triangle UI.
+    @Published public var codeStatsDelta: [UUID: RepoDelta] = [:]
     /// True only while a code-stats scan is in flight (drives the screen's spinner).
     @Published public var isStatsScanning: Bool = false
 
@@ -96,14 +104,18 @@ public final class AppState: ObservableObject {
     private let claude = ClaudeService()
     private let usageAnalytics = UsageAnalytics()
 
-    /// Persistent code-stats scanner; the per-project mtime/size cache below must
-    /// survive across refreshes so steady-state scans only re-read changed files.
+    /// Git-as-source-of-truth code-stats service (per-repo, honors .gitignore via git's
+    /// own engine, excludes worktrees). Stateless value type; the per-project/per-repo
+    /// file cache below survives across refreshes so steady-state scans only re-read
+    /// changed files. Replaces the old filesystem-walk scanner for the stats numbers.
+    private let gitStats = GitStatsService()
+    /// Retained ONLY for `statsDirectoryTree` (the folder-exclusion picker still walks
+    /// the directory skeleton via this; its `scan` is no longer used for the numbers).
     private let statsScanner = CodeStatsScanner()
-    /// Per-project file classification cache, keyed by project UUID then absolute
-    /// file path. Mutated only on the main actor (the detached scan takes a COPY of
-    /// the relevant project's cache and returns the updated one — same pattern as
-    /// refreshUsage's off-main work).
-    private var statsCacheByProject: [UUID: [String: CachedFile]] = [:]
+    /// Per-project git-stats file cache, keyed by project UUID then repo path. Mutated
+    /// only on the main actor (the detached scan takes a COPY of the relevant project's
+    /// cache and returns the updated one — same pattern as refreshUsage's off-main work).
+    private var gitStatsCacheByProject: [UUID: [String: RepoFileCache]] = [:]
     /// Per-project scan serialization. Two scans of the SAME project must never run
     /// concurrently: both would start from the same cache snapshot and the slower one
     /// would overwrite the faster's cache on completion, silently dropping mtime
@@ -255,7 +267,9 @@ public final class AppState: ObservableObject {
         // re-added project at the same path starts clean (the UUID differs anyway).
         codeStats.removeValue(forKey: id)
         codeStatsHistory.removeValue(forKey: id)
-        statsCacheByProject.removeValue(forKey: id)
+        repoStats.removeValue(forKey: id)
+        codeStatsDelta.removeValue(forKey: id)
+        gitStatsCacheByProject.removeValue(forKey: id)
         statsStore.delete(projectID: id)
         if selectedProjectID == id {
             selectedProjectID = config.projects.first?.id
@@ -990,12 +1004,13 @@ extension AppState {
     /// scanner + cache that must persist across ticks live on `self`, not here.
     private var statsStore: CodeStatsStore { CodeStatsStore(dir: statsStoreDir) }
 
-    /// Scans the project's code, updates `codeStats`, persists/loads its history, and
-    /// grows `codeStatsHistory`. Built like refreshUsage: the project's path,
-    /// excluded folders, and that project's cache are captured OFF the main actor in
-    /// a `.utility` Task.detached; the heavy directory walk + file reads happen there
-    /// so they never freeze the panel. Results (and the updated cache) are assigned
-    /// back on the main actor, where the new total is coalesced into the store.
+    /// Scans the project's code per-GIT-REPO (GitStatsService), updates the aggregate
+    /// `codeStats`, the per-repo `repoStats`/`codeStatsDelta` breakdown, and overwrites
+    /// `codeStatsHistory` with the git-derived per-day series. Built like refreshUsage:
+    /// the project's path, scan depth, excluded repos, and that project's git-stats
+    /// cache are captured OFF the main actor in a `.utility` Task.detached; the git
+    /// subprocesses + file reads happen there so they never freeze the panel. Results
+    /// (and the updated cache) are assigned back on the main actor.
     /// No-op for an unknown id. `isStatsScanning` brackets the whole operation.
     public func refreshCodeStats(projectID: UUID, now: Date = Date()) async {
         // Serialize per project: if a scan for this project is already running, record
@@ -1013,18 +1028,19 @@ extension AppState {
     private func runCodeStatsScan(projectID: UUID, now: Date) async {
         guard let project = config.projects.first(where: { $0.id == projectID }) else { return }
         let path = project.path
-        let ignored = Set(project.statsIgnoredFolders)
-        let cache = statsCacheByProject[projectID] ?? [:]
-        let scanner = statsScanner
+        let depth = project.scanDepth
+        let excluded = Set(project.excludedRepos)
+        let cache = gitStatsCacheByProject[projectID] ?? [:]
+        let service = gitStats
 
         statsScanInFlight.insert(projectID)
         statsRescanPending.remove(projectID)
         isStatsScanning = true
         let result = await Task.detached(priority: .utility) {
-            () -> (stats: CodeStats, cache: [String: CachedFile]) in
+            () -> (stats: ProjectGitStats, cache: [String: RepoFileCache]) in
             var local = cache
-            let stats = scanner.scan(projectPath: path, extraIgnoredFolders: ignored,
-                                     now: now, cache: &local)
+            let stats = await service.scan(projectPath: path, scanDepth: depth,
+                                           excludedRepos: excluded, now: now, cache: &local)
             return (stats, local)
         }.value
         statsScanInFlight.remove(projectID)
@@ -1035,19 +1051,21 @@ extension AppState {
             statsRescanPending.remove(projectID)
             return
         }
-        codeStats[projectID] = result.stats
-        statsCacheByProject[projectID] = result.cache
+        // Aggregate feeds the existing screen; the per-repo breakdown + delta are new.
+        codeStats[projectID] = result.stats.aggregate
+        repoStats[projectID] = result.stats.repos
+        codeStatsDelta[projectID] = result.stats.aggregateDelta
+        gitStatsCacheByProject[projectID] = result.cache
 
-        let point = CodeStatsPoint(date: result.stats.scannedAt,
-                                   totalLines: result.stats.totalLines,
-                                   code: result.stats.code, comment: result.stats.comment,
-                                   blank: result.stats.blank, totalFiles: result.stats.totalFiles)
-        let store = statsStore
-        try? store.append(projectID: projectID, point: point)
-        codeStatsHistory[projectID] = store.load(projectID: projectID).points
+        // History now comes from GIT and is authoritative — OVERWRITE the stored series
+        // each scan (not append/coalesce). The store stays as the cross-launch cache;
+        // the screen reads `codeStatsHistory[id]` unchanged.
+        let history = CodeStatsHistory(points: result.stats.aggregateHistory)
+        try? statsStore.save(projectID: projectID, history: history)
+        codeStatsHistory[projectID] = result.stats.aggregateHistory
 
         // Honor a refresh that arrived while this scan was running (its cache may now
-        // be stale — e.g. a folder toggle wiped it), serialized strictly after us.
+        // be stale — e.g. a repo-exclusion toggle), serialized strictly after us.
         if statsRescanPending.remove(projectID) != nil {
             await runCodeStatsScan(projectID: projectID, now: Date())
         }
@@ -1070,7 +1088,7 @@ extension AppState {
             folders.removeAll { $0 == relativePath }
         }
         config.projects[i].statsIgnoredFolders = folders
-        statsCacheByProject[projectID] = [:]
+        gitStatsCacheByProject[projectID] = [:]
         persist()
     }
 

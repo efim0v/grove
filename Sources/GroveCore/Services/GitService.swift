@@ -33,9 +33,13 @@ public struct GitService: Sendable {
         self.runner = runner
     }
 
-    /// Directory names that are never descended into and never reported as repos.
+    /// Directory names that are never descended into and never reported as repos —
+    /// and, for code stats, never counted (generated/vendored output). `.next` is the
+    /// Next.js build dir; the rest cover node/dart/jvm build + dependency trees. These
+    /// are the dirs git's `--exclude-standard` MISSES when an umbrella repo doesn't
+    /// gitignore a nested project's build output (the acme.shop over-count).
     static let alwaysSkippedDirNames: Set<String> = [
-        "node_modules", ".git", "build", "dist", "out", "target", ".dart_tool", ".worktrees",
+        "node_modules", ".git", "build", "dist", "out", "target", ".dart_tool", ".worktrees", ".next",
     ]
 
     public func discoverRepos(projectPath: String, scanDepth: Int, excluded: Set<String>) async -> [RepoInfo] {
