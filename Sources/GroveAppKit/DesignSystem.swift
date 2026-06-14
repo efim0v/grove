@@ -1,5 +1,23 @@
 import SwiftUI
 
+/// The app's accent palette — ONE source of truth for every accent / status /
+/// capacity color. Semantics:
+/// - `primary` (blue): the MAIN accent. Buttons, card icons, all charts' main
+///   color, growth / additions, "on track" / plenty capacity, the running status.
+/// - `negative` (pink): the antonym to growth — deletions, decline, critical /
+///   near-limit capacity.
+/// - `mid` (yellow): the waiting session status and tight / mid capacity.
+/// - `neutral` (gray): no-data / closed / idle.
+///
+/// Hex values are parsed via `Color(hex:)` (ProjectAccent.swift) so the palette
+/// stays declared with its source-of-truth hex strings.
+enum Palette {
+    static let primary = Color(hex: "#3478F6")!   // blue 52,120,246
+    static let negative = Color(hex: "#E45C9C")!  // pink 228,92,156
+    static let mid = Color(hex: "#F6C844")!       // yellow 246,200,68
+    static let neutral = Color.gray               // no-data / closed
+}
+
 /// Apple 26 corner system: one radius per chrome level, every corner drawn
 /// with the continuous (squircle) style, and nesting kept CONCENTRIC — an
 /// element inset by `d` inside a rounded parent wants radius `parent - d`,

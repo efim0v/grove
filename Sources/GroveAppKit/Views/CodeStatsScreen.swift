@@ -75,9 +75,9 @@ struct CodeStatsScreen: View {
                 bigNumber("\(totals.codePercent)%", "code")
             }
             HStack(spacing: 12) {
-                metric("Code", stats.code, .green)
-                metric("Comment", stats.comment, .cyan)
-                metric("Blank", stats.blank, .secondary)
+                metric("Code", stats.code, Palette.primary)
+                metric("Comment", stats.comment, Palette.primary.opacity(0.5))
+                metric("Blank", stats.blank, Palette.neutral)
                 if state.isStatsScanning {
                     ProgressView().controlSize(.small)
                 }
@@ -131,10 +131,12 @@ struct CodeStatsScreen: View {
         .glassCard()
     }
 
-    /// Color from GraphScreen.lanePalette, cycled — keeps the stats hues consistent
-    /// with the graph's lane colors.
+    /// On-brand single-hue ramp: every language bar is `Palette.primary`, stepped
+    /// down in opacity by rank so the breakdown reads as one cohesive blue chart
+    /// (the leading languages are the most saturated). Floored at 0.35 so even a
+    /// long tail of languages stays legible against the dark card.
     private func laneColor(_ index: Int) -> Color {
-        GraphScreen.lanePalette[index % GraphScreen.lanePalette.count]
+        Palette.primary.opacity(max(0.35, 1.0 - Double(index) * 0.12))
     }
 
     private func languageBarRow(_ bar: LanguageBar, color: Color) -> some View {

@@ -87,10 +87,10 @@ struct AggregateChip: View {
         let badge = AggregateBadge(aggregate)   // .noData when aggregate.total == 0
         let color: Color = {
             switch badge.level {
-            case .noData:   return .gray
-            case .plenty:   return .green
-            case .tight:    return .orange
-            case .critical: return .red
+            case .noData:   return Palette.neutral
+            case .plenty:   return Palette.primary
+            case .tight:    return Palette.mid
+            case .critical: return Palette.negative
             }
         }()
         let percent = badge.hasData ? "\(Int((aggregate.fraction * 100).rounded()))%" : "—"

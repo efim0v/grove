@@ -73,7 +73,7 @@ struct RootShell: View {
             .keyboardShortcut("r")
             .help("Refresh (⌘R)")
             if let issue = state.configIssue {
-                Text(issue).font(.caption).foregroundStyle(.orange).lineLimit(1)
+                Text(issue).font(.caption).foregroundStyle(Palette.mid).lineLimit(1)
             }
             Spacer(minLength: 6)
             Text("v\(GroveVersion.current)")

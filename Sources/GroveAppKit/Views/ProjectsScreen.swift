@@ -134,7 +134,7 @@ struct SessionBlock: View {
               systemImage: isLive ? "arrow.right.circle.fill" : "play.circle")
             .labelStyle(.titleAndIcon)
             .font(.callout.weight(.semibold))
-            .foregroundStyle(isLive ? Color.green : .secondary)
+            .foregroundStyle(isLive ? Palette.primary : .secondary)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(Capsule().fill(.white.opacity(0.07)))
@@ -150,9 +150,9 @@ struct SessionBlock: View {
 
     private var statusColor: Color {
         switch row.status {
-        case .running: return .green
-        case .waiting: return .yellow
-        case .closed: return .gray
+        case .running: return Palette.primary
+        case .waiting: return Palette.mid
+        case .closed: return Palette.neutral
         }
     }
 

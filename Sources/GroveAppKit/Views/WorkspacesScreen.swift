@@ -12,7 +12,17 @@ struct TreeConnector: View {
     let isLast: Bool
 
     static let indent: CGFloat = 20
-    static let palette: [Color] = [.green, .orange, .purple, .cyan, .pink, .yellow]
+    /// On-brand depth ramp: every connector lane is `Palette.primary`, stepped
+    /// down in opacity by depth so nested columns stay distinguishable while the
+    /// whole tree reads as one cohesive blue hierarchy.
+    static let palette: [Color] = [
+        Palette.primary,
+        Palette.primary.opacity(0.8),
+        Palette.primary.opacity(0.62),
+        Palette.primary.opacity(0.48),
+        Palette.primary.opacity(0.38),
+        Palette.primary.opacity(0.3),
+    ]
 
     var body: some View {
         Canvas { context, size in
@@ -292,10 +302,10 @@ struct WorkspacesScreen: View {
                     .foregroundStyle(.secondary)
                 Text(loose.entry.branch ?? "detached")
                 if let meta = loose.meta {
-                    Text("+\(meta.ahead)").foregroundStyle(.green)
-                    Text("−\(meta.behind)").foregroundStyle(.red)
+                    Text("+\(meta.ahead)").foregroundStyle(Palette.primary)
+                    Text("−\(meta.behind)").foregroundStyle(Palette.negative)
                     Text(meta.dirtyCount > 0 ? "✎\(meta.dirtyCount)" : "✓")
-                        .foregroundStyle(meta.dirtyCount > 0 ? .orange : .secondary)
+                        .foregroundStyle(meta.dirtyCount > 0 ? Palette.mid : .secondary)
                 }
                 Spacer()
                 if isSnapshotRender {
@@ -357,7 +367,7 @@ struct WorkspacesScreen: View {
         let isLive = loose.liveProcesses.contains { $0.sessionId == session.id }
         return HStack(spacing: 6) {
             Circle()
-                .fill(isLive ? Color.green : Color.gray)
+                .fill(isLive ? Palette.primary : Palette.neutral)
                 .frame(width: 6, height: 6)
             Text(session.title ?? "(untitled session)")
                 .lineLimit(1)
@@ -370,7 +380,7 @@ struct WorkspacesScreen: View {
                 // .buttonStyle(.link) draws a yellow placeholder offscreen —
                 // static link-colored lookalike instead.
                 Text(isLive ? "Go" : "Resume")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Palette.primary)
             } else {
                 Button(isLive ? "Go" : "Resume") {
                     let account = state.config.accounts.first { $0.name == session.accountName }

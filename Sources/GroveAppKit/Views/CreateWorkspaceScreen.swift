@@ -104,7 +104,7 @@ struct CreateWorkspaceScreen: View {
             if let issue = workspaceNameIssue(name), !name.isEmpty {
                 Text(issue)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Palette.negative)
             }
         }
     }
@@ -178,7 +178,7 @@ struct CreateWorkspaceScreen: View {
                     } label: {
                         HStack {
                             Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
-                                .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+                                .foregroundStyle(isOn.wrappedValue ? Palette.primary : Color.secondary)
                             Text(repo.dirName)
                             Spacer()
                         }
@@ -282,7 +282,7 @@ struct CreateWorkspaceScreen: View {
         if case .failed(let message) = phase {
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(Palette.negative)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         if phase == .rolledBack {

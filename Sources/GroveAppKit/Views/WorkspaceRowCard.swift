@@ -65,10 +65,10 @@ struct WorkspaceRowCard: View {
 
     private var ageColor: Color {
         switch badges.ageBucket {
-        case .fresh: return .green
-        case .aging: return .orange
-        case .stale: return .red
-        case .unknown: return .gray
+        case .fresh: return Palette.primary
+        case .aging: return Palette.mid
+        case .stale: return Palette.negative
+        case .unknown: return Palette.neutral
         }
     }
 
@@ -81,18 +81,18 @@ struct WorkspaceRowCard: View {
             }
             if badges.dirtyTotal > 0 {
                 Label("\(badges.dirtyTotal)", systemImage: "pencil")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Palette.mid)
             } else {
                 Image(systemName: "checkmark")
                     .foregroundStyle(.secondary)
             }
             if badges.busyCount > 0 {
                 Label("\(badges.busyCount)", systemImage: "circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Palette.primary)
             }
             if badges.waitingCount > 0 {
                 Label("\(badges.waitingCount)", systemImage: "circle.fill")
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(Palette.mid)
             }
             if badges.resumableCount > 0 {
                 Label("\(badges.resumableCount)", systemImage: "circle.dotted")
@@ -160,14 +160,14 @@ struct WorkspaceRowCard: View {
                         if let meta = repoState.meta {
                             Text("from \(meta.baseBranch)")
                                 .foregroundStyle(.tertiary)
-                            Text("+\(meta.ahead)").foregroundStyle(.green)
-                            Text("−\(meta.behind)").foregroundStyle(.red)
+                            Text("+\(meta.ahead)").foregroundStyle(Palette.primary)
+                            Text("−\(meta.behind)").foregroundStyle(Palette.negative)
                             Text(meta.dirtyCount > 0 ? "✎\(meta.dirtyCount)" : "✓")
-                                .foregroundStyle(meta.dirtyCount > 0 ? .orange : .secondary)
+                                .foregroundStyle(meta.dirtyCount > 0 ? Palette.mid : .secondary)
                         }
                         if let error = repoState.scanError {
                             Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.red)
+                                .foregroundStyle(Palette.negative)
                                 .help(error)
                         }
                     }
@@ -237,7 +237,7 @@ struct WorkspaceRowCard: View {
                 Text(relativeAge(session.lastActivity, now: now)).foregroundStyle(.tertiary)
                 if isSnapshotRender {
                     Text(liveProcess(for: session) == nil ? "Resume" : "Go")
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(Palette.primary)
                 } else {
                     Button(liveProcess(for: session) == nil ? "Resume" : "Go") { open(session) }
                         .buttonStyle(.link)
@@ -279,13 +279,14 @@ struct WorkspaceRowCard: View {
         workspace.liveProcesses.first { $0.sessionId == session.id }
     }
 
-    /// busy -> green, waiting -> yellow, other live -> cyan, no process -> gray.
+    /// running -> primary (blue), waiting -> mid (yellow), other live or no
+    /// process -> neutral (gray).
     private func activityColor(for session: ClaudeSession) -> Color {
-        guard let live = liveProcess(for: session) else { return .gray }
+        guard let live = liveProcess(for: session) else { return Palette.neutral }
         switch live.status {
-        case "busy": return .green
-        case "waiting": return .yellow
-        default: return .cyan
+        case "busy": return Palette.primary
+        case "waiting": return Palette.mid
+        default: return Palette.neutral
         }
     }
 

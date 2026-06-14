@@ -133,7 +133,7 @@ struct DashboardColumnView: View {
 
 /// The single accent color for card icons (and other accent affordances). One
 /// consistent hue across every card, per the design direction.
-let cardAccent = Color.green
+let cardAccent = Palette.primary
 
 /// Card section header: an ACCENT-colored icon + the title at the SAME caption
 /// size as the rest of the card text (the metric values no longer out-size it).
@@ -197,7 +197,7 @@ struct LimitCardView: View {
                 Spacer(minLength: 6)
                 let delta = card.usedPercentage - avg
                 Text("\(delta >= 0 ? "+" : "−")\(Int(abs(delta).rounded()))% vs avg")
-                    .foregroundStyle(delta <= 0 ? .green : .orange)
+                    .foregroundStyle(delta <= 0 ? Palette.primary : Palette.mid)
                     .fixedSize()
             }
             .font(.caption2)
@@ -212,8 +212,8 @@ struct LimitCardView: View {
     }
 
     private var noteColor: Color {
-        if card.noteIsWarning { return .orange }
-        return card.note == "On track" ? .green : .secondary
+        if card.noteIsWarning { return Palette.mid }
+        return card.note == "On track" ? Palette.primary : .secondary
     }
 }
 
@@ -347,7 +347,7 @@ struct TokenUsageCardView: View {
                         Spacer(minLength: 6)
                         Text("\(Int(share.percent.rounded()))%")
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(.green)
+                            .foregroundStyle(Palette.primary)
                             .monospacedDigit().fixedSize()
                     }
                 }
@@ -400,18 +400,20 @@ struct ProgressBar: View {
 
 func levelColor(_ level: CapacityLevel) -> Color {
     switch level {
-    case .noData: return .secondary
-    case .plenty: return .green
-    case .tight: return .orange
-    case .critical: return .red
+    case .noData: return Palette.neutral
+    case .plenty: return Palette.primary
+    case .tight: return Palette.mid
+    case .critical: return Palette.negative
     }
 }
 
-/// Daily-bar colour by intensity (reference: orange busiest, yellow mid, green light).
+/// Daily-bar colour by intensity. ONE-HUE on brand: the busiest days are solid
+/// `Palette.primary`, lighter days the same blue at reduced opacity — so the
+/// whole daily chart reads as a single coherent blue gradient by activity.
 func intensityColor(_ intensity: Double) -> Color {
     switch intensity {
-    case 0.66...: return .orange
-    case 0.33...: return .yellow
-    default: return .green
+    case 0.66...: return Palette.primary
+    case 0.33...: return Palette.primary.opacity(0.55)
+    default: return Palette.primary.opacity(0.35)
     }
 }

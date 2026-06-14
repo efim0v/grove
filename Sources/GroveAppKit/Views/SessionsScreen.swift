@@ -144,10 +144,10 @@ struct SessionsScreen: View {
 
     private func dotColor(_ status: SessionLiveStatus?) -> Color {
         switch status {
-        case .busy: return .green
-        case .waiting: return .yellow
-        case .idle: return Color(red: 0.4, green: 0.7, blue: 0.75)   // gray-cyan
-        case nil: return .gray
+        case .busy: return Palette.primary
+        case .waiting: return Palette.mid
+        case .idle: return Palette.neutral
+        case nil: return Palette.neutral
         }
     }
 
@@ -181,7 +181,7 @@ struct SessionsScreen: View {
     private func actionLabel(_ text: String) -> some View {
         Text(text)
             .font(.callout)
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(Palette.primary)
     }
 
     /// Other-account selector. Snapshot-safe: a static chevron lookalike

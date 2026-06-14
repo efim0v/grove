@@ -145,7 +145,7 @@ struct AccountsScreen: View {
         if account.monitoring {
             HStack(spacing: 4) {
                 Label("monitoring", systemImage: "dot.radiowaves.left.and.right")
-                    .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                    .font(.caption2).foregroundStyle(Palette.primary).labelStyle(.titleAndIcon)
                 if isSnapshotRender {
                     Text("Stop").font(.caption2).foregroundStyle(.secondary)
                 } else {
@@ -155,7 +155,7 @@ struct AccountsScreen: View {
                 }
             }
         } else if isSnapshotRender {
-            Text("Monitor").font(.caption2).foregroundStyle(Color.accentColor)
+            Text("Monitor").font(.caption2).foregroundStyle(Palette.primary)
         } else {
             Button("Monitor") { state.installMonitoring(account) }
                 .controlSize(.small)
@@ -176,7 +176,7 @@ struct AccountsScreen: View {
                     .foregroundStyle(.secondary)
             } else {
                 Text("not logged in")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Palette.mid)
             }
         }
         .font(.caption)
@@ -241,10 +241,10 @@ struct AccountsScreen: View {
 
     private func barColor(_ level: CapacityLevel) -> Color {
         switch level {
-        case .plenty: return .green
-        case .tight: return .orange
-        case .critical: return .red
-        case .noData: return .secondary
+        case .plenty: return Palette.primary
+        case .tight: return Palette.mid
+        case .critical: return Palette.negative
+        case .noData: return Palette.neutral
         }
     }
 
@@ -319,7 +319,7 @@ struct AccountsScreen: View {
         HStack(spacing: 8) {
             if usage.liveCount > 0 {
                 Label("\(usage.liveCount) live", systemImage: "circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Palette.primary)
             }
             Label("\(usage.sessionCount) sessions", systemImage: "text.bubble")
                 .foregroundStyle(.secondary)
@@ -353,9 +353,9 @@ struct AccountsScreen: View {
                 .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
         } else if account.sharedStore {
             Label("shared", systemImage: "link")
-                .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                .font(.caption2).foregroundStyle(Palette.primary).labelStyle(.titleAndIcon)
         } else if isSnapshotRender {
-            Text("Link").font(.caption2).foregroundStyle(Color.accentColor)
+            Text("Link").font(.caption2).foregroundStyle(Palette.primary)
         } else {
             Button("Link to shared store") { state.linkAccount(account) }
                 .controlSize(.small)
@@ -380,7 +380,7 @@ struct AccountsScreen: View {
                     if entry.liveCount > 0 {
                         Text("\(entry.liveCount) live")
                             .font(.caption2)
-                            .foregroundStyle(.green)
+                            .foregroundStyle(Palette.primary)
                     }
                     Text("\(entry.sessionCount) session\(entry.sessionCount == 1 ? "" : "s")")
                         .font(.caption2)
@@ -460,7 +460,7 @@ struct AccountsScreen: View {
             HStack(spacing: 6) {
                 if model.isLive {
                     Label("live", systemImage: "circle.fill")
-                        .font(.caption2).foregroundStyle(.green).labelStyle(.titleAndIcon)
+                        .font(.caption2).foregroundStyle(Palette.primary).labelStyle(.titleAndIcon)
                 }
                 Text(session.title ?? (session.cwd as NSString).lastPathComponent)
                     .font(.caption.weight(.medium))
@@ -511,10 +511,10 @@ struct AccountsScreen: View {
         let session = model.session
         HStack(spacing: 6) {
             if isSnapshotRender {
-                Text("Resume").font(.caption2).foregroundStyle(Color.accentColor)
+                Text("Resume").font(.caption2).foregroundStyle(Palette.primary)
                 SnapshotPickerLookalike(text: project?.defaultModel ?? "(default)")
                 SnapshotPickerLookalike(text: project?.defaultEffort ?? "(default)")
-                Text("Relaunch").font(.caption2).foregroundStyle(Color.accentColor)
+                Text("Relaunch").font(.caption2).foregroundStyle(Palette.primary)
             } else {
                 Button("Resume") {
                     Task { await state.resumeSession(session, as: account) }

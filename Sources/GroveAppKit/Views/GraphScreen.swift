@@ -190,8 +190,8 @@ struct GraphScreen: View {
                     Text("\(files.count) file\(files.count == 1 ? "" : "s")")
                         .font(.caption2).foregroundStyle(.secondary)
                     Spacer(minLength: 8)
-                    Text("+\(adds)").foregroundStyle(.green)
-                    Text("−\(dels)").foregroundStyle(.red)
+                    Text("+\(adds)").foregroundStyle(Palette.primary)
+                    Text("−\(dels)").foregroundStyle(Palette.negative)
                 }
                 .font(.caption2.weight(.semibold).monospacedDigit())
                 ScrollView {
@@ -203,8 +203,8 @@ struct GraphScreen: View {
                                 if f.isBinary {
                                     Text("bin").foregroundStyle(.tertiary)
                                 } else {
-                                    Text("+\(f.additions)").foregroundStyle(.green)
-                                    Text("−\(f.deletions)").foregroundStyle(.red)
+                                    Text("+\(f.additions)").foregroundStyle(Palette.primary)
+                                    Text("−\(f.deletions)").foregroundStyle(Palette.negative)
                                 }
                             }
                             .font(.caption2.monospacedDigit())

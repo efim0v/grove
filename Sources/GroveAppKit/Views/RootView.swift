@@ -22,6 +22,10 @@ public struct RootView: View {
             errorBanner
             routedScreen
         }
+        // One brand accent for every system-styled control (default-action
+        // buttons, links, toggles) so they pick up Palette.primary instead of
+        // the OS accent — the single source of truth for the app's blue.
+        .tint(Palette.primary)
         // The window backdrop (substrate + scrim) is supplied ONCE by windowChrome
         // at the panel level, shared identically with the Charts window. Here we
         // only declare the container shape for concentric nesting underneath.
@@ -114,7 +118,7 @@ public struct RootView: View {
         if let error = state.actionError {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Palette.negative)
                 Text(error)
                     .font(.caption)
                     .lineLimit(2)

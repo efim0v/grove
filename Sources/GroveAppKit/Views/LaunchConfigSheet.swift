@@ -12,7 +12,7 @@ struct LaunchConfigSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: request.isResume ? "play.circle.fill" : "plus.circle.fill")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(Palette.primary)
                 Text(request.isResume ? "Resume session" : "New session")
                     .font(.headline)
             }
@@ -50,6 +50,7 @@ struct LaunchConfigSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
+                .tint(Palette.primary)
             }
         }
         .padding(18)
