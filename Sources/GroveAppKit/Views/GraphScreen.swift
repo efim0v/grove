@@ -116,11 +116,18 @@ struct GraphScreen: View {
         let now = Date()
         let maxLane = nodes.map(\.lane).max() ?? 0
         let graphWidth = Self.laneOrigin + CGFloat(maxLane) * Self.laneSpacing + 16
+        let expandedIndex = nodes.firstIndex { $0.hash == state.expandedCommit }
+        let extra = expansionHeight()
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(nodes, id: \.hash) { node in
                 commitRow(node, now: now)
                     .frame(height: Self.rowHeight)
                     .padding(.leading, graphWidth)
+                if node.hash == state.expandedCommit {
+                    expandedCommitPanel()
+                        .frame(height: extra)
+                        .padding(.leading, graphWidth)
+                }
             }
             if state.graphCanLoadMore {
                 Button("Load more") {
@@ -132,30 +139,89 @@ struct GraphScreen: View {
             }
         }
         .background(alignment: .topLeading) {
-            GraphLanesCanvas(nodes: nodes)
-                .frame(width: graphWidth, height: CGFloat(nodes.count) * Self.rowHeight)
+            GraphLanesCanvas(nodes: nodes, expandedRow: expandedIndex, expandedExtra: extra)
+                .frame(width: graphWidth, height: CGFloat(nodes.count) * Self.rowHeight + extra)
         }
         .padding(.top, 4)
     }
 
+    /// Height of the inline file-change panel below the expanded commit (0 when
+    /// none): a small spinner while loading, else header + up to 10 file rows.
+    private func expansionHeight() -> CGFloat {
+        guard state.expandedCommit != nil else { return 0 }
+        guard let files = state.expandedCommitFiles else { return 42 }
+        return CGFloat(26 + min(files.count, 10) * 18 + 10)
+    }
+
     private func commitRow(_ node: CommitNode, now: Date) -> some View {
-        HStack(spacing: 6) {
-            ForEach(refChips(node.refs)) { chip in
-                refChipView(chip)
+        Button {
+            Task { await state.expandCommit(node.hash) }
+        } label: {
+            HStack(spacing: 6) {
+                ForEach(refChips(node.refs)) { chip in
+                    refChipView(chip)
+                }
+                Text(node.subject)
+                    .font(.callout)
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                Text(node.author)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Text(relativeAge(node.date, now: now))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, alignment: .trailing)
             }
-            Text(node.subject)
-                .font(.callout)
-                .lineLimit(1)
-            Spacer(minLength: 12)
-            Text(node.author)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            Text(relativeAge(node.date, now: now))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 32, alignment: .trailing)
+            .padding(.trailing, 12)
+            .contentShape(Rectangle())
         }
-        .padding(.trailing, 12)
+        .buttonStyle(.plain)
+        .background(state.expandedCommit == node.hash ? Color.white.opacity(0.06) : .clear)
+    }
+
+    /// The file list for the expanded commit: per-file +adds/−dels + a total.
+    @ViewBuilder private func expandedCommitPanel() -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let files = state.expandedCommitFiles {
+                let adds = files.reduce(0) { $0 + max(0, $1.additions) }
+                let dels = files.reduce(0) { $0 + max(0, $1.deletions) }
+                HStack(spacing: 8) {
+                    Text("\(files.count) file\(files.count == 1 ? "" : "s")")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text("+\(adds)").foregroundStyle(.green)
+                    Text("−\(dels)").foregroundStyle(.red)
+                }
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(files) { f in
+                            HStack(spacing: 8) {
+                                Text(f.path).lineLimit(1).truncationMode(.middle)
+                                Spacer(minLength: 8)
+                                if f.isBinary {
+                                    Text("bin").foregroundStyle(.tertiary)
+                                } else {
+                                    Text("+\(f.additions)").foregroundStyle(.green)
+                                    Text("−\(f.deletions)").foregroundStyle(.red)
+                                }
+                            }
+                            .font(.caption2.monospacedDigit())
+                        }
+                    }
+                }
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading changes…").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.04))
     }
 
     // MARK: - Ref chips
@@ -245,6 +311,10 @@ struct GraphScreen: View {
 /// when the parent is beyond the loaded page.
 struct GraphLanesCanvas: View {
     let nodes: [CommitNode]
+    /// The expanded commit's row index and the extra vertical space below it, so
+    /// rows AFTER it shift down by that amount and their dots stay aligned.
+    var expandedRow: Int? = nil
+    var expandedExtra: CGFloat = 0
 
     var body: some View {
         Canvas { context, _ in
@@ -253,9 +323,13 @@ struct GraphLanesCanvas: View {
             // menu-bar app; same pattern as TreeModel's session map).
             let rowOf = Dictionary(nodes.enumerated().map { ($0.element.hash, $0.offset) },
                                    uniquingKeysWith: { first, _ in first })
+            func yShift(_ row: Int) -> CGFloat {
+                if let e = expandedRow, row > e { return expandedExtra }
+                return 0
+            }
             func center(lane: Int, row: Int) -> CGPoint {
                 CGPoint(x: GraphScreen.laneOrigin + CGFloat(lane) * GraphScreen.laneSpacing,
-                        y: CGFloat(row) * GraphScreen.rowHeight + GraphScreen.rowHeight / 2)
+                        y: CGFloat(row) * GraphScreen.rowHeight + GraphScreen.rowHeight / 2 + yShift(row))
             }
             func color(_ lane: Int) -> Color {
                 GraphScreen.lanePalette[lane % GraphScreen.lanePalette.count]

@@ -3,6 +3,22 @@ import XCTest
 
 final class GraphTests: XCTestCase {
 
+    // MARK: parseNumstat (commit file changes)
+
+    func testParseNumstatTabSeparatedWithBinary() {
+        let out = "15\t2\tSources/A.swift\n0\t9\tSources/B.swift\n-\t-\tassets/logo.png\n"
+        let changes = GitService.parseNumstat(out)
+        XCTAssertEqual(changes.count, 3)
+        XCTAssertEqual(changes[0], CommitFileChange(path: "Sources/A.swift", additions: 15, deletions: 2))
+        XCTAssertEqual(changes[1].deletions, 9)
+        XCTAssertTrue(changes[2].isBinary)               // "-\t-" → binary
+        XCTAssertEqual(changes[2].path, "assets/logo.png")
+    }
+
+    func testParseNumstatIgnoresBlankAndMalformedLines() {
+        XCTAssertTrue(GitService.parseNumstat("\n  \nnotnumstat\n").isEmpty)
+    }
+
     // MARK: layoutLanes (pure)
 
     private func raw(_ hash: String, parents: [String]) -> RawCommit {

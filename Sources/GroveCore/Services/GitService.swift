@@ -345,7 +345,44 @@ extension GitService {
 
 // MARK: - Commit graph
 
+/// One file's change in a commit. `additions`/`deletions` are -1 for a binary
+/// file (git numstat prints "-" for both).
+public struct CommitFileChange: Sendable, Equatable, Identifiable {
+    public var id: String { path }
+    public let path: String
+    public let additions: Int
+    public let deletions: Int
+    public var isBinary: Bool { additions < 0 || deletions < 0 }
+    public init(path: String, additions: Int, deletions: Int) {
+        self.path = path
+        self.additions = additions
+        self.deletions = deletions
+    }
+}
+
 extension GitService {
+    /// The files changed in commit `sha` with +additions/−deletions, via
+    /// `git show --numstat`. Loaded lazily when a commit is expanded.
+    public func fileChanges(repoPath: String, sha: String) async throws -> [CommitFileChange] {
+        let result = try await runner.runOK("git", [
+            "-C", repoPath, "show", sha, "--numstat", "--format=",
+        ])
+        return Self.parseNumstat(result.stdout)
+    }
+
+    static func parseNumstat(_ output: String) -> [CommitFileChange] {
+        var changes: [CommitFileChange] = []
+        for raw in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let fields = raw.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard fields.count >= 3, !fields[2].isEmpty else { continue }
+            changes.append(CommitFileChange(
+                path: String(fields[2]),
+                additions: Int(fields[0]) ?? -1,    // "-" → binary
+                deletions: Int(fields[1]) ?? -1))
+        }
+        return changes
+    }
+
     public func commitGraph(repoPath: String, limit: Int = 300, skip: Int = 0) async throws -> [CommitNode] {
         let result = try await runner.runOK("git", [
             "-C", repoPath,

@@ -69,6 +69,10 @@ public final class AppState: ObservableObject {
     @Published public var graphNodes: [CommitNode] = []
     /// True when the last graph page came back full — drives the "Load more" row.
     @Published public var graphCanLoadMore: Bool = false
+    /// The commit whose file changes are expanded inline, and the lazily-loaded
+    /// list (nil while loading). Tapping the same commit collapses it.
+    @Published public var expandedCommit: String?
+    @Published public var expandedCommitFiles: [CommitFileChange]?
     /// Local branch names per repo (key = repo.path), filled by loadBranches.
     /// Branch pickers fall back to the resolved default while a repo is absent.
     @Published public var branchesByRepo: [String: [String]] = [:]
@@ -355,6 +359,20 @@ extension AppState {
         graphNodes = []
         graphRepoPath = nil
         graphCanLoadMore = false
+        expandedCommit = nil
+        expandedCommitFiles = nil
+    }
+
+    /// Toggles the inline file-change list for commit `sha`. Loads the files lazily
+    /// (`git show --numstat`) on first expand; a second tap collapses it.
+    public func expandCommit(_ sha: String) async {
+        if expandedCommit == sha { expandedCommit = nil; expandedCommitFiles = nil; return }
+        guard let repoPath = graphRepoPath else { return }
+        expandedCommit = sha
+        expandedCommitFiles = nil   // spinner until loaded
+        let files = try? await GitService().fileChanges(repoPath: repoPath, sha: sha)
+        // Ignore a stale result if the user expanded a different commit meanwhile.
+        if expandedCommit == sha { expandedCommitFiles = files ?? [] }
     }
 
     public func loadGraph(repoPath: String) async {
