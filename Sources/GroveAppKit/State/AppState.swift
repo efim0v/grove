@@ -481,17 +481,23 @@ extension AppState {
             return
         }
         // LIVE → redirect to the running process; NEVER spawn a duplicate. cmux is
-        // the gate Grove can focus precisely (by workspace id, or re-resolved from
-        // the hook map by session id). A live session running in a terminal Grove
-        // can't focus is surfaced honestly instead of silently relaunching.
-        let target = row.cmuxWorkspaceId
-            ?? cmux().claudeSessionWorkspaceMap(hookFile: cmuxHookFile)[row.sessionId]
-        if let target {
+        // the precise gate (by workspace id, or re-resolved from the hook map).
+        if let target = row.cmuxWorkspaceId
+            ?? cmux().claudeSessionWorkspaceMap(hookFile: cmuxHookFile)[row.sessionId] {
             do { try await cmux().selectWorkspace(target) }
             catch { actionError = String(describing: error) }
-        } else {
+            return
+        }
+        // Not in cmux → try Apple's Terminal.app by matching the process's tty.
+        let claude = self.claude
+        let sessionId = row.sessionId
+        let focused = await Task.detached(priority: .userInitiated) { () -> Bool in
+            guard let tty = claude.ttyForSession(sessionId) else { return false }
+            return TerminalFocus.focusTerminalApp(tty: tty)
+        }.value
+        if !focused {
             actionError = "“\(row.location)” is running, but in a terminal Grove can't focus "
-                + "(not a cmux workspace). Switch to it in your terminal."
+                + "(not cmux or Terminal.app). Switch to it in your terminal."
         }
     }
 

@@ -343,18 +343,51 @@ public final class ClaudeService: @unchecked Sendable {
         var result: [LiveProcess] = []
         var seen = Set<String>()
         for line in listing.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard let space = trimmed.firstIndex(of: " "),
-                  let pid = Int32(trimmed[..<space]) else { continue }
-            let command = String(trimmed[space...])
-            guard command.contains("claude"),
+            guard let (pid, cpu, command) = Self.parsePidCpuCommand(String(line)),
+                  command.contains("claude"),
                   let sessionId = Self.resumeSessionId(in: command),
                   !seen.contains(sessionId) else { continue }
             seen.insert(sessionId)
+            // We can't see "generating" from outside (it's network-bound, low CPU,
+            // indistinguishable from idle). But clear CPU use means the session is
+            // actively executing (tools / a turn) → "busy" → running; otherwise it's
+            // alive-but-quiet → "idle" → waiting (ready for input).
+            let status = cpu >= Self.busyCPUThreshold ? "busy" : "idle"
             result.append(LiveProcess(pid: pid, sessionId: sessionId, cwd: "",
-                                      status: "idle", accountName: "", startedAt: nil))
+                                      status: status, accountName: "", startedAt: nil))
         }
         return result.sorted { $0.pid < $1.pid }
+    }
+
+    /// CPU% at/above which a live session is treated as actively running. The
+    /// observed split is stark (busy ~18%+, idle ≤0.3%), so a moderate threshold
+    /// avoids false "running" from the decaying ps average.
+    static let busyCPUThreshold = 9.0
+
+    /// The controlling tty (e.g. "/dev/ttys025") of a live `claude --resume <id>`
+    /// process, for focusing its Terminal.app tab. nil when no such process exists.
+    public func ttyForSession(_ sessionId: String) -> String? {
+        for line in Self.runTtyListing().split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard let space = trimmed.firstIndex(of: " ") else { continue }
+            let tty = String(trimmed[..<space])
+            let command = String(trimmed[trimmed.index(after: space)...])
+            guard command.contains("claude"), Self.resumeSessionId(in: command) == sessionId,
+                  tty != "??" else { continue }
+            return tty.hasPrefix("/dev/") ? tty : "/dev/" + tty
+        }
+        return nil
+    }
+
+    /// Parses "  <pid> <%cpu> <command…>" from `ps`. nil on malformed lines.
+    static func parsePidCpuCommand(_ raw: String) -> (pid: Int32, cpu: Double, command: String)? {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        guard let s1 = line.firstIndex(of: " "), let pid = Int32(line[..<s1]) else { return nil }
+        let afterPid = line[line.index(after: s1)...].drop { $0 == " " }
+        guard let s2 = afterPid.firstIndex(of: " ") else { return nil }
+        let cpu = Double(afterPid[..<s2]) ?? 0
+        let command = String(afterPid[afterPid.index(after: s2)...])
+        return (pid, cpu, command)
     }
 
     /// Extracts the session id from a `claude --resume <uuid>` command line. nil for
@@ -367,10 +400,13 @@ public final class ClaudeService: @unchecked Sendable {
         return id.count == 36 && id.allSatisfy { $0.isHexDigit || $0 == "-" } ? id : nil
     }
 
-    private static func runProcessListing() -> String {
+    private static func runProcessListing() -> String { runPS(["-axo", "pid=,%cpu=,command="]) }
+    private static func runTtyListing() -> String { runPS(["-axo", "tty=,command="]) }
+
+    private static func runPS(_ arguments: [String]) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "pid=,command="]
+        process.arguments = arguments
         let stdout = Pipe()
         process.standardOutput = stdout
         process.standardError = Pipe()

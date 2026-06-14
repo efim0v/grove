@@ -108,6 +108,10 @@ struct ChartsSideContent: View {
     var body: some View {
         DashboardScreen(state: state)
             .frame(width: ChartsSideContent.width)
+            // The SAME faint scrim the projects window uses — without it the charts
+            // cards floated on bare glass and read differently from the projects
+            // ones. Keep this value identical to RootView's window scrim.
+            .background(.black.opacity(0.10))
     }
 }
 

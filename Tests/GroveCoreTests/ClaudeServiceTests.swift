@@ -350,6 +350,17 @@ final class ClaudeServiceTests: XCTestCase {
             "2c07347f-f9bc-4d2c-afcf-1c295d20dd32")
     }
 
+    func testParsePidCpuCommandSplitsThreeFields() {
+        let r = ClaudeService.parsePidCpuCommand("  44679  18.6 claude --resume 41f451c9-1658-4981-9465-a4dbb252ff11")
+        XCTAssertEqual(r?.pid, 44679)
+        XCTAssertEqual(r?.cpu ?? 0, 18.6, accuracy: 1e-9)
+        XCTAssertEqual(r?.cpu ?? 0 >= ClaudeService.busyCPUThreshold, true)   // → running
+        XCTAssertEqual(r?.command, "claude --resume 41f451c9-1658-4981-9465-a4dbb252ff11")
+        // an idle process stays below the threshold → waiting
+        XCTAssertEqual(ClaudeService.parsePidCpuCommand("44785   0.0 claude --resume x")?.cpu ?? 1, 0)
+        XCTAssertNil(ClaudeService.parsePidCpuCommand("garbage"))
+    }
+
     func testResumeSessionIdRejectsNonResumeAndWrappers() {
         XCTAssertNil(ClaudeService.resumeSessionId(in: "claude"))                       // bare new session
         XCTAssertNil(ClaudeService.resumeSessionId(in: "claude --print hello"))          // no --resume

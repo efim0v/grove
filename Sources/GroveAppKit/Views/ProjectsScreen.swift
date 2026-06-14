@@ -42,9 +42,7 @@ struct ProjectsTab: View {
                     .padding(.leading, 2)
             } else {
                 ForEach(sessions) { row in
-                    SessionBlock(row: row, accent: ProjectAccent.color(for: project)) {
-                        Task { await state.openSession(row) }
-                    }
+                    SessionBlock(row: row) { Task { await state.openSession(row) } }
                 }
             }
         }
@@ -57,7 +55,6 @@ struct ProjectsTab: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(project.name)
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(ProjectAccent.color(for: project))
                     .lineLimit(1)
                 Text(project.path)
                     .font(.caption2.monospaced())
@@ -95,9 +92,6 @@ struct ProjectsTab: View {
 /// dot + word, title, location · account, age, and a Go/Resume affordance.
 struct SessionBlock: View {
     let row: ProjectSessionRow
-    /// The owning project's accent — colors the workspace name so sessions are
-    /// easy to attribute at a glance.
-    var accent: Color = cardAccent
     let onTap: () -> Void
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
@@ -105,30 +99,26 @@ struct SessionBlock: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 9) {
+            HStack(spacing: 10) {
                 Circle().fill(statusColor).frame(width: 7, height: 7)
-                VStack(alignment: .leading, spacing: 1) {
-                    // Lead with the WORKSPACE (accent) — not the project name (that's
-                    // the card header) and not the often-junk session title.
-                    HStack(spacing: 8) {
-                        Text(row.location)
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(accent)
-                            .lineLimit(1)
-                        Spacer(minLength: 6)
-                        action
-                    }
-                    // Secondary: status word (colored) + age.
+                VStack(alignment: .leading, spacing: 2) {
+                    // Lead with the WORKSPACE — not the project name (card header)
+                    // and not the often-junk session title.
+                    Text(row.location)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                    // Secondary: status word (lighter) + age.
                     HStack(spacing: 5) {
                         Text(statusWord).foregroundStyle(statusColor)
                         Text("· \(relativeAge(row.lastActivity, now: Date()))").foregroundStyle(.tertiary)
-                        Spacer(minLength: 0)
                     }
-                    .font(.caption2)
+                    .font(.caption2.weight(.regular))
                 }
+                Spacer(minLength: 8)
+                action   // bigger, vertically-centered Go / Resume
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 8)
             .contentShape(Rectangle())
             .background(blockBackground)
         }
@@ -138,13 +128,16 @@ struct SessionBlock: View {
     }
 
     /// Live → "Go" (jump to the running session). Closed → "Resume" (clearly a NEW
-    /// process). The label keys off the live status, not on whether cmux hosts it.
+    /// process). A real, centered capsule button — not a cramped corner label.
     private var action: some View {
         Label(isLive ? "Go" : "Resume",
               systemImage: isLive ? "arrow.right.circle.fill" : "play.circle")
             .labelStyle(.titleAndIcon)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(isLive ? accent : .secondary)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(isLive ? Color.green : .secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(.white.opacity(0.07)))
             .fixedSize()
     }
 
