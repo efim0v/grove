@@ -557,4 +557,63 @@ final class GitStatsServiceTests: XCTestCase {
         XCTAssertEqual(history[1].netLines, 15)
         XCTAssertTrue(history[0].date < history[1].date, "date-sorted oldest-first")
     }
+
+    // MARK: - Branch override: history/delta follow the chosen branch
+
+    /// A `branchOverrides[repo.path]` naming a real branch makes the scan use THAT
+    /// branch's commit history (and report it as the effective `defaultBranch`), while
+    /// the default scan uses the auto-detected branch. The two branches carry distinct
+    /// commit histories, so the per-repo cumulative net-lines differ. (Current LOC comes
+    /// from the working tree and is branch-independent, so we assert on history, which is
+    /// the only branch-dependent output.)
+    func testOverrideBranchChangesHistory() async throws {
+        let dir = try Fixture.tempDir("override")
+        let repo = try emptyRepo(in: dir, name: "r")
+        // main: +10 lines on day1.
+        try write(String(repeating: "a\n", count: 10), to: "f.swift", in: repo)
+        try commit("c1", in: repo, date: day1)
+        // other branches off main and adds another +10 (so its history ends at 20).
+        try sh("git -C \(shellQuote(repo.path)) checkout -qb other")
+        try write(String(repeating: "a\n", count: 20), to: "f.swift", in: repo)
+        try commit("c2", in: repo, date: day2)
+
+        let now = gmtStartOfDay(2025, 1, 4)
+
+        // Default scan resolves to main: history ends at the 10-line day1 commit.
+        var cacheMain: [String: RepoFileCache] = [:]
+        let statsMain = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                           excludedRepos: [], now: now, cache: &cacheMain)
+        XCTAssertEqual(statsMain.repos.first?.defaultBranch, "main")
+        XCTAssertEqual(statsMain.repos.first?.history.last?.netLines, 10,
+                       "default (main) history tops out at 10")
+
+        // Override to `other`: history now includes c2, topping out at 20, and the
+        // effective branch reported back is `other`.
+        var cacheOther: [String: RepoFileCache] = [:]
+        let statsOther = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                            excludedRepos: [],
+                                            branchOverrides: [norm(repo.path): "other"],
+                                            now: now, cache: &cacheOther)
+        XCTAssertEqual(statsOther.repos.first?.defaultBranch, "other")
+        XCTAssertEqual(statsOther.repos.first?.history.last?.netLines, 20,
+                       "override (other) history tops out at 20")
+    }
+
+    /// An override that does NOT name a real local branch is ignored: the scan silently
+    /// falls back to the auto-detected default branch.
+    func testInvalidOverrideBranchFallsBackToDefault() async throws {
+        let dir = try Fixture.tempDir("invalid-override")
+        let repo = try emptyRepo(in: dir, name: "r")
+        try write("let x = 1\n", to: "f.swift", in: repo)
+        try commit("c1", in: repo, date: day1)
+
+        var cache: [String: RepoFileCache] = [:]
+        let stats = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                       excludedRepos: [],
+                                       branchOverrides: [norm(repo.path): "nonexistent"],
+                                       now: gmtStartOfDay(2025, 1, 4), cache: &cache)
+        XCTAssertEqual(stats.repos.first?.defaultBranch, "main",
+                       "invalid override falls back to the detected default")
+        XCTAssertEqual(stats.repos.first?.stats.code, 1)
+    }
 }

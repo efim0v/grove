@@ -518,6 +518,17 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertEqual(cards.map(\.repoName), ["alpha", "mid", "zebra"])
     }
 
+    func testRepoCardCarriesRepoPath() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let repo = repoStat("app", branch: "main", totalLines: 100, history: [])
+        let cards = repoCells([repo], period: .d7, now: now)
+        XCTAssertEqual(cards.count, 1)
+        // repoPath is threaded through so the row can key the branch switcher off it.
+        XCTAssertEqual(cards[0].repoPath, "/tmp/app")
+        XCTAssertEqual(cards[0].repoName, "app")
+        XCTAssertEqual(cards[0].id, "/tmp/app", "RepoCard.id is the repoPath")
+    }
+
     func testRepoCellsPeriodFiltersOutOfWindowDays() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let recent = now.addingTimeInterval(-3 * 86_400)   // in 7d window

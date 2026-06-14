@@ -189,6 +189,57 @@ final class AppStateCodeStatsTests: XCTestCase {
         XCTAssertFalse(state.statsFiles[project.id]?.contains { $0.isExcluded } ?? true)
     }
 
+    // MARK: - setStatsBranch (Stats-tab branch switcher)
+
+    func testSetStatsBranchUpdatesDictAndRescansWithOverride() async throws {
+        let state = makeState()
+        // Branch `alt` off main and add a commit ON A LATER DAY so its history has an
+        // extra point the default (main) history lacks.
+        try FixtureLite.sh("git -C \(shellQuote(projectDir.path)) checkout -qb alt")
+        try "let a = 2\n".write(to: projectDir.appendingPathComponent("alt.swift"),
+                               atomically: true, encoding: .utf8)
+        try commitAll("alt-commit", date: "2025-03-07T12:00:00Z")
+        // Leave HEAD on main so the working tree (and current LOC) match the default.
+        try FixtureLite.sh("git -C \(shellQuote(projectDir.path)) checkout -q main")
+
+        await state.refreshCodeStats(projectID: project.id,
+                                     now: Date(timeIntervalSince1970: 1_000_000))
+        // Default scan resolves to main: one commit-day, branch reported as main.
+        let repoPath = try XCTUnwrap(state.repoStats[project.id]?.first?.repoPath)
+        XCTAssertEqual(state.repoStats[project.id]?.first?.defaultBranch, "main")
+        XCTAssertEqual(state.codeStatsHistory[project.id]?.count, 1)
+
+        // Switch the branch: the dict updates and a rescan fires (no explicit refresh).
+        state.setStatsBranch(projectID: project.id, repoPath: repoPath, branch: "alt")
+        XCTAssertEqual(state.selectedStatsBranchByRepo[repoPath], "alt",
+                       "override recorded immediately")
+
+        // The rescan settles with the override applied: effective branch is `alt` and
+        // its history now carries the extra commit-day -> 2 points.
+        try await waitUntil { state.repoStats[self.project.id]?.first?.defaultBranch == "alt" }
+        XCTAssertEqual(state.codeStatsHistory[project.id]?.count, 2,
+                       "alt branch's extra commit-day shows up in the rescanned history")
+        // The switcher's options were loaded for the repo (loadBranches ran in the scan).
+        let branches = try XCTUnwrap(state.branchesByRepo[repoPath])
+        XCTAssertTrue(branches.contains("alt") && branches.contains("main"))
+    }
+
+    func testRemoveProjectClearsStatsBranchOverrides() async throws {
+        let state = makeState()
+        await state.refreshCodeStats(projectID: project.id,
+                                     now: Date(timeIntervalSince1970: 1_000_000))
+        let repoPath = try XCTUnwrap(state.repoStats[project.id]?.first?.repoPath)
+
+        state.setStatsBranch(projectID: project.id, repoPath: repoPath, branch: "main")
+        XCTAssertEqual(state.selectedStatsBranchByRepo[repoPath], "main")
+        // Let the rescan triggered by setStatsBranch settle before tearing down.
+        try await waitUntil { !state.isStatsScanning }
+
+        state.removeProject(id: project.id)
+        XCTAssertNil(state.selectedStatsBranchByRepo[repoPath],
+                     "branch override cleared on removeProject")
+    }
+
     /// Polls `condition` on the main actor until true or a timeout, yielding to let
     /// the rescan `Task` (launched by `setStatsFolderExcluded`) run to completion.
     private func waitUntil(timeout: TimeInterval = 5,

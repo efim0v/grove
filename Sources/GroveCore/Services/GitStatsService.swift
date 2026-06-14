@@ -186,6 +186,7 @@ public struct GitStatsService: Sendable {
         scanDepth: Int,
         excludedRepos: Set<String>,
         excludedFolders: Set<String> = [],
+        branchOverrides: [String: String] = [:],
         period: TimeInterval = GitStatsService.defaultPeriod,
         now: Date = Date(),
         cache: inout [String: RepoFileCache]
@@ -201,7 +202,14 @@ public struct GitStatsService: Sendable {
             repoCache = updated
             cache[repo.path] = repoCache
 
-            let branch = await resolveBranch(repo: repo)
+            // Effective branch: a user override wins ONLY if it's a real local ref;
+            // otherwise fall back to the auto-detected default. RepoStats carries the
+            // branch actually used so the UI shows the real selection.
+            var branch = await resolveBranch(repo: repo)
+            if let override = branchOverrides[repo.path],
+               await git.branchExists(repoPath: repo.path, override) {
+                branch = override
+            }
             let (history, delta) = await history(repo: repo, branch: branch,
                                                  period: period, now: now)
             repoStats.append(RepoStats(

@@ -78,6 +78,11 @@ public final class AppState: ObservableObject {
     /// Local branch names per repo (key = repo.path), filled by loadBranches.
     /// Branch pickers fall back to the resolved default while a repo is absent.
     @Published public var branchesByRepo: [String: [String]] = [:]
+    /// Stats-tab per-repo branch override (key = repo.path → chosen branch). Repo paths
+    /// are unique across projects, so a flat dict is fine. Empty ⇒ each repo uses its
+    /// auto-detected default. Fed into GitStatsService.scan as `branchOverrides`; an
+    /// override that no longer names a real branch is silently ignored by the engine.
+    @Published public var selectedStatsBranchByRepo: [String: String] = [:]
 
     /// Per-project code-stats snapshot (Stage 4), filled lazily by refreshCodeStats
     /// from the stats screen's .task (NOT the global refresh). Empty until scanned.
@@ -269,6 +274,11 @@ public final class AppState: ObservableObject {
         snapshots.removeValue(forKey: id)
         // Drop all per-project code-stats state and delete its history file so a
         // re-added project at the same path starts clean (the UUID differs anyway).
+        // Clear any stats-branch overrides for this project's repos before dropping
+        // repoStats (the only place that maps the project → its repo paths).
+        for repo in repoStats[id] ?? [] {
+            selectedStatsBranchByRepo.removeValue(forKey: repo.repoPath)
+        }
         codeStats.removeValue(forKey: id)
         codeStatsHistory.removeValue(forKey: id)
         repoStats.removeValue(forKey: id)
@@ -1037,6 +1047,7 @@ extension AppState {
         let excludedFolders = Set(project.statsIgnoredFolders)
         let cache = gitStatsCacheByProject[projectID] ?? [:]
         let service = gitStats
+        let branchOverrides = selectedStatsBranchByRepo
 
         statsScanInFlight.insert(projectID)
         statsRescanPending.remove(projectID)
@@ -1046,6 +1057,7 @@ extension AppState {
             var local = cache
             let stats = await service.scan(projectPath: path, scanDepth: depth,
                                            excludedRepos: excluded, excludedFolders: excludedFolders,
+                                           branchOverrides: branchOverrides,
                                            now: now, cache: &local)
             return (stats, local)
         }.value
@@ -1071,11 +1083,28 @@ extension AppState {
         try? statsStore.save(projectID: projectID, history: history)
         codeStatsHistory[projectID] = result.stats.aggregateHistory
 
+        // Populate the branch-switcher menus: the scan already discovered every repo,
+        // so reuse its [RepoStats] to load each repo's local branches into
+        // branchesByRepo (the same source the Graph's branch pickers use).
+        let reposForBranches = result.stats.repos.map {
+            RepoInfo(path: $0.repoPath, dirName: $0.repoName)
+        }
+        await loadBranches(for: reposForBranches)
+
         // Honor a refresh that arrived while this scan was running (its cache may now
         // be stale — e.g. a repo-exclusion toggle), serialized strictly after us.
         if statsRescanPending.remove(projectID) != nil {
             await runCodeStatsScan(projectID: projectID, now: Date())
         }
+    }
+
+    /// Stats-tab branch switcher: record the chosen branch for `repoPath` and rescan
+    /// the project so its history/delta reflect the new branch (current LOC is taken
+    /// from the working tree and is branch-independent, so it stays put). Honors the
+    /// per-project scan serialization via refreshCodeStats.
+    public func setStatsBranch(projectID: UUID, repoPath: String, branch: String) {
+        selectedStatsBranchByRepo[repoPath] = branch
+        Task { await refreshCodeStats(projectID: projectID) }
     }
 
     /// Excludes (or re-includes) a project-root-relative folder from code-stats

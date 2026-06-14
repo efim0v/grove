@@ -557,16 +557,18 @@ public func barSelectionReadout(_ d: BarSelectionDelta) -> String {
 /// One per-repo block on the screen: name, default branch (read-only for now), total
 /// LOC, and a period delta with a formatted ▲/▼ triangle.
 public struct RepoCard: Equatable, Sendable, Identifiable {
-    public var id: String { repoName }
+    public var id: String { repoPath }
     public let repoName: String
-    public let defaultBranch: String
+    public let repoPath: String           // absolute repo path; keys the branch switcher
+    public let defaultBranch: String      // EFFECTIVE branch (resolved or overridden)
     public let totalLines: Int
     public let totalLinesText: String
     public let delta: RepoDelta
     public let triangle: DeltaTriangle
-    public init(repoName: String, defaultBranch: String, totalLines: Int,
+    public init(repoName: String, repoPath: String, defaultBranch: String, totalLines: Int,
                 delta: RepoDelta) {
         self.repoName = repoName
+        self.repoPath = repoPath
         self.defaultBranch = defaultBranch
         self.totalLines = totalLines
         self.totalLinesText = groupedThousands(totalLines)
@@ -582,7 +584,8 @@ public func repoCells(_ repos: [RepoStats], period: StatsPeriod, now: Date) -> [
     repos.map { repo in
         let delta = deltaBetween(start: period.start(now: now), end: now,
                                  dayDeltas: repoDayDeltas(repo.history))
-        return RepoCard(repoName: repo.repoName, defaultBranch: repo.defaultBranch,
+        return RepoCard(repoName: repo.repoName, repoPath: repo.repoPath,
+                        defaultBranch: repo.defaultBranch,
                         totalLines: repo.stats.totalLines, delta: delta)
     }
     .sorted { $0.repoName < $1.repoName }

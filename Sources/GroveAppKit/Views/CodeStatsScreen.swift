@@ -374,14 +374,7 @@ struct CodeStatsScreen: View {
                 .font(.body.weight(.medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            // Read-only branch chip — the switcher is a later pass.
-            Text(card.defaultBranch)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(.white.opacity(0.08), in: Capsule())
+            branchSwitcher(card)
             Spacer(minLength: 8)
             Text(card.totalLinesText)
                 .font(.callout.monospacedDigit())
@@ -395,6 +388,49 @@ struct CodeStatsScreen: View {
                 .foregroundStyle(triangleColor(card.triangle.direction))
                 .frame(minWidth: 56, alignment: .trailing)
         }
+    }
+
+    /// Per-repo branch switcher: a borderless `Menu` whose label is the effective
+    /// branch (a capsule chip), listing the repo's local branches (fallback to just
+    /// the current one) and rescanning on pick.
+    ///
+    /// `Menu` is AppKit-backed and draws an ERROR PLACEHOLDER under `ImageRenderer`
+    /// (same failure mode as `Picker(.segmented)` and Swift Charts elsewhere in this
+    /// screen), so the snapshot path renders the chip label on its own — the dropdown
+    /// is inherently live-only anyway. The chip visuals are shared so both paths match.
+    @ViewBuilder
+    private func branchSwitcher(_ card: RepoCard) -> some View {
+        if isSnapshotRender {
+            branchChip(card)
+        } else {
+            Menu {
+                let branches = state.branchesByRepo[card.repoPath] ?? [card.defaultBranch]
+                ForEach(branches, id: \.self) { branch in
+                    Button(branch) {
+                        if let id = selectedProjectID {
+                            state.setStatsBranch(projectID: id, repoPath: card.repoPath,
+                                                 branch: branch)
+                        }
+                    }
+                }
+            } label: {
+                branchChip(card)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    /// The branch chip (the Menu's label): the effective branch in a subtle capsule.
+    private func branchChip(_ card: RepoCard) -> some View {
+        Text(card.defaultBranch)
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(.white.opacity(0.08), in: Capsule())
     }
 
     // MARK: - Growth chart (per-day bars)
