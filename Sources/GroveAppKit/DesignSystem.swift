@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// The app's accent palette — ONE source of truth for every accent / status /
 /// capacity color. Semantics:
@@ -16,6 +17,32 @@ enum Palette {
     static let negative = Color(hex: "#E45C9C")!  // pink 228,92,156
     static let mid = Color(hex: "#F6C844")!       // yellow 246,200,68
     static let neutral = Color.gray               // no-data / closed
+
+    /// A continuous "heat" ramp across the brand palette for activity/intensity
+    /// (0…1): calm = blue (primary), mid = yellow, hot = pink (negative). Derived
+    /// from the palette colors themselves (no hardcoded channels) so charts pick up
+    /// any future palette change. Used by the multi-colour daily-usage bars.
+    static func heat(_ t: Double) -> Color {
+        let u = min(max(t, 0), 1)
+        return u < 0.5 ? primary.blended(to: mid, u / 0.5)
+                       : mid.blended(to: negative, (u - 0.5) / 0.5)
+    }
+}
+
+extension Color {
+    /// Linear RGB interpolation toward `other` by `t` (0…1), via sRGB components.
+    /// Lets brand ramps be built FROM the Palette instead of copying its channels,
+    /// keeping one source of truth (memory: prefer robust over copy-and-sync).
+    func blended(to other: Color, _ t: Double) -> Color {
+        let a = NSColor(self).usingColorSpace(.sRGB) ?? NSColor(self)
+        let b = NSColor(other).usingColorSpace(.sRGB) ?? NSColor(other)
+        let u = CGFloat(min(max(t, 0), 1))
+        return Color(.sRGB,
+                     red:   Double(a.redComponent   + (b.redComponent   - a.redComponent)   * u),
+                     green: Double(a.greenComponent + (b.greenComponent - a.greenComponent) * u),
+                     blue:  Double(a.blueComponent  + (b.blueComponent  - a.blueComponent)  * u),
+                     opacity: Double(a.alphaComponent + (b.alphaComponent - a.alphaComponent) * u))
+    }
 }
 
 /// Apple 26 corner system: one radius per chrome level, every corner drawn

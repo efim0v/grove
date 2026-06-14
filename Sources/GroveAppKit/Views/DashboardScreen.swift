@@ -407,13 +407,9 @@ func levelColor(_ level: CapacityLevel) -> Color {
     }
 }
 
-/// Daily-bar colour by intensity. ONE-HUE on brand: the busiest days are solid
-/// `Palette.primary`, lighter days the same blue at reduced opacity — so the
-/// whole daily chart reads as a single coherent blue gradient by activity.
+/// Daily-bar colour by intensity — a multi-colour HEAT ramp across the brand
+/// palette (calm days blue, mid days yellow, the busiest days pink) so the daily
+/// chart reads as activity at a glance instead of one flat blue.
 func intensityColor(_ intensity: Double) -> Color {
-    switch intensity {
-    case 0.66...: return Palette.primary
-    case 0.33...: return Palette.primary.opacity(0.55)
-    default: return Palette.primary.opacity(0.35)
-    }
+    Palette.heat(intensity)
 }
