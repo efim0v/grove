@@ -276,7 +276,9 @@ struct WorkspaceRowCard: View {
     }
 
     private func liveProcess(for session: ClaudeSession) -> LiveProcess? {
-        workspace.liveProcesses.first { $0.sessionId == session.id }
+        // id OR fresh-cwd join, so a bare `claude` running at this session's
+        // directory shows as live (not "closed") — matches every other surface.
+        workspace.liveProcesses.liveProcess(forSessionId: session.id, cwd: session.cwd)
     }
 
     /// running -> primary (blue), waiting -> mid (yellow), other live or no

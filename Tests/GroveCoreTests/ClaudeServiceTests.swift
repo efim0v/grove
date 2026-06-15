@@ -423,6 +423,72 @@ final class ClaudeServiceTests: XCTestCase {
         XCTAssertEqual(merged.filter { $0.sessionId == "A" }.count, 1)    // exactly one A
     }
 
+    func testMergeLiveDropsFreshTableDuplicateOfSamePid() {
+        // A bare `claude` that has written its statusline record surfaces TWICE: once
+        // as a file record (real id) and once as a fresh empty-id table row for the
+        // SAME pid. The fresh duplicate must be dropped so the one process isn't
+        // counted twice; an unrelated fresh process (different pid) is still kept.
+        let file = [LiveProcess(pid: 7, sessionId: "A", cwd: "/ws/a", status: "busy", accountName: "x")]
+        let table = [LiveProcess(pid: 7, sessionId: "", cwd: "/ws/a", status: "idle", accountName: ""),  // same pid → drop
+                     LiveProcess(pid: 8, sessionId: "", cwd: "/ws/b", status: "busy", accountName: "")]  // distinct → keep
+        let merged = ClaudeService.mergeLive(fileRecords: file, table: table)
+        XCTAssertEqual(merged.count, 2)
+        XCTAssertEqual(merged.filter { $0.pid == 7 }.count, 1)            // pid 7 appears once
+        XCTAssertEqual(merged.first { $0.pid == 7 }?.sessionId, "A")      // the file record, not the fresh dup
+        XCTAssertEqual(merged.filter { $0.sessionId.isEmpty }.count, 1)   // only the distinct fresh one remains
+    }
+
+    func testResumeSessionIdAcceptsEqualsForm() {
+        // Both `--resume <id>` and `--resume=<id>` must resolve; the equals form would
+        // otherwise leave the session unmatchable (read as fresh/closed).
+        XCTAssertEqual(
+            ClaudeService.resumeSessionId(in: "claude --resume=41f451c9-1658-4981-9465-a4dbb252ff11"),
+            "41f451c9-1658-4981-9465-a4dbb252ff11")
+        XCTAssertEqual(
+            ClaudeService.resumeSessionId(in: "claude --resume=41f451c9-1658-4981-9465-a4dbb252ff11 --foo"),
+            "41f451c9-1658-4981-9465-a4dbb252ff11")
+    }
+
+    func testLaunchCommandTreatsEmptyModelEffortAsNil() {
+        // A hand-edited config with model: "" / effort: "" must NOT emit `--model ''`.
+        let account = AccountConfig(name: "def", configDir: NSHomeDirectory() + "/.claude")
+        let cmd = ClaudeService.launchCommand(account: account, resume: "", model: "", effort: "")
+        XCTAssertFalse(cmd.contains("--model"))
+        XCTAssertFalse(cmd.contains("--effort"))
+        XCTAssertFalse(cmd.contains("--resume"))
+    }
+
+    func testLiveProcessJoinsByIdOrCanonicalCwd() throws {
+        // A REAL temp dir so both path spellings resolve: NSTemporaryDirectory is
+        // /var/folders/… (a symlink); resolvingSymlinksInPath gives the /private/var/…
+        // realpath. canonicalPath must collapse the two — a non-existent path wouldn't
+        // resolve, so the dir must actually exist.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("grove-live-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let varSpelling = dir.path                                 // /var/folders/… (exists)
+        try XCTSkipUnless(varSpelling.hasPrefix("/var/"), "needs a /var-symlinked temp dir")
+        let realSpelling = "/private" + varSpelling                // /private/var/folders/… (same dir, realpath form)
+        XCTAssertNotEqual(varSpelling, realSpelling)               // the two spellings differ as strings
+        XCTAssertEqual(canonicalPath(varSpelling), canonicalPath(realSpelling))   // …but canonicalize to one
+
+        let live = [
+            LiveProcess(pid: 1, sessionId: "S1", cwd: "/ws/a", status: "busy", accountName: "x"),
+            // Fresh, empty-id process whose cwd is stored as the realpath spelling.
+            LiveProcess(pid: 2, sessionId: "", cwd: realSpelling, status: "idle", accountName: ""),
+        ]
+        // by id (cwd irrelevant)
+        XCTAssertEqual(live.liveProcess(forSessionId: "S1", cwd: "/anything")?.pid, 1)
+        // by fresh cwd, across the /var ↔ /private/var symlink spelling
+        XCTAssertEqual(live.liveProcess(forSessionId: "S2", cwd: varSpelling)?.pid, 2)
+        // no id and no cwd match → nil (reads as closed/resumable, correctly)
+        XCTAssertNil(live.liveProcess(forSessionId: "S2", cwd: "/ws/elsewhere"))
+        // a real-id process must NOT be cwd-matched: session at /ws/a (where pid 1
+        // lives) finds no FRESH process there → nil, not pid 1.
+        XCTAssertNil(live.liveProcess(forSessionId: "S3", cwd: "/ws/a"))
+    }
+
     func testIsBareClaudeCommandDetectsFreshCliOnly() {
         XCTAssertTrue(ClaudeService.isBareClaudeCommand("claude --model claude-opus-4-8"))
         XCTAssertTrue(ClaudeService.isBareClaudeCommand("/Users/x/.local/bin/claude"))

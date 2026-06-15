@@ -364,7 +364,7 @@ struct WorkspacesScreen: View {
     }
 
     private func looseSessionRow(_ session: ClaudeSession, loose: LooseWorktree) -> some View {
-        let isLive = loose.liveProcesses.contains { $0.sessionId == session.id }
+        let isLive = loose.liveProcesses.liveProcess(forSessionId: session.id, cwd: session.cwd) != nil
         return HStack(spacing: 6) {
             Circle()
                 .fill(isLive ? Palette.primary : Palette.neutral)

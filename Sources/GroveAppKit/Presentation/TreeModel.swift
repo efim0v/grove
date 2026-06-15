@@ -77,7 +77,6 @@ public func badges(for ws: FeatureWorkspace, now: Date) -> WorkspaceBadges {
 
     let dirtyTotal = ws.repos.reduce(0) { $0 + ($1.meta?.dirtyCount ?? 0) }
 
-    func norm(_ p: String) -> String { var s = p; while s.count > 1 && s.hasSuffix("/") { s.removeLast() }; return s }
     // Dedup by process identity (sessionId, or pid for fresh empty-id ones) so the
     // same process can't be counted twice if it surfaces in more than one container.
     var busyCount = 0
@@ -93,13 +92,12 @@ public func badges(for ws: FeatureWorkspace, now: Date) -> WorkspaceBadges {
         }
     }
 
-    let liveSessionIds = Set(ws.liveProcesses.map { $0.sessionId }.filter { !$0.isEmpty })
-    // ONLY fresh processes' cwds (empty sessionId) — those can't be matched by id,
-    // so an id-only check would wrongly call them resumable. We must NOT exclude
-    // every session sharing a worktree with some other live session.
-    let freshLiveCwds = Set(ws.liveProcesses.filter { $0.sessionId.isEmpty && !$0.cwd.isEmpty }.map { norm($0.cwd) })
+    // A session is RESUMABLE only if it has no live process — matched by id OR (for a
+    // fresh, empty-id process) by its canonicalized cwd. The shared id-or-cwd join
+    // keeps the /var↔/private/var spellings aligned, so a live fresh session is never
+    // miscounted as closed (a trailing-slash-only normalize missed that).
     let resumableCount = ws.sessions.filter {
-        !liveSessionIds.contains($0.id) && !freshLiveCwds.contains(norm($0.cwd))
+        ws.liveProcesses.liveProcess(forSessionId: $0.id, cwd: $0.cwd) == nil
     }.count
 
     return WorkspaceBadges(ageDays: ageDays, ageBucket: ageBucket, dirtyTotal: dirtyTotal,

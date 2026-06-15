@@ -178,9 +178,11 @@ public func buildSessionRows(snapshot: ProjectSnapshot,
         let group = grouped[key]!
         let firstOcc = group[0]
         let first = firstOcc.session
-        // First live process for this session across any occurrence in the group.
-        let liveOcc = group.first { occ in occ.live.contains { $0.sessionId == first.id } }
-        let process = liveOcc?.live.first { $0.sessionId == first.id }
+        // First live process for this session across any occurrence in the group —
+        // by sessionId OR (for a fresh, empty-id process) the canonicalized cwd, so a
+        // bare `claude` running at the session's directory reads as live here too.
+        let liveOcc = group.first { occ in occ.live.liveProcess(forSessionId: first.id, cwd: first.cwd) != nil }
+        let process = liveOcc?.live.liveProcess(forSessionId: first.id, cwd: first.cwd)
         // Primary account: the live owner if its account is among the group, else first-seen.
         let liveOwner = process.flatMap { p in
             group.map(\.session).first { $0.accountName == p.accountName }

@@ -59,6 +59,25 @@ public struct LiveProcess: Sendable, Equatable {
     }
 }
 
+public extension Array where Element == LiveProcess {
+    /// The live process backing a session: matched by `sessionId` first, else by a
+    /// FRESH (empty-id, cwd-carried) process sitting at the same working directory.
+    ///
+    /// Fresh sessions are launched as a bare `claude` (no `--resume`), so the process
+    /// table can't attribute a session id to them — only their cwd. Matching by id
+    /// alone would make every such running session read as "closed/resumable" and let
+    /// a tap spawn a transcript-corrupting duplicate. The cwd is canonicalized so the
+    /// macOS `/var` vs `/private/var` (and symlinked-worktree) spellings collapse to
+    /// one form — a trailing-slash-only normalize misses that and silently drops the
+    /// match. This is THE single id-or-cwd join every liveness surface must use so no
+    /// tab disagrees (spec M2).
+    func liveProcess(forSessionId id: String, cwd: String) -> LiveProcess? {
+        if let byId = first(where: { $0.sessionId == id }) { return byId }
+        let key = canonicalPath(cwd)
+        return first { $0.sessionId.isEmpty && !$0.cwd.isEmpty && canonicalPath($0.cwd) == key }
+    }
+}
+
 /// Reads Claude Code account identity, session transcripts and (Task 9) live processes
 /// from a `CLAUDE_CONFIG_DIR`. A class (not a struct) so it can keep an mtime-keyed
 /// parse cache: a jsonl file is re-parsed only when its modification date changes.
@@ -397,20 +416,29 @@ public final class ClaudeService: @unchecked Sendable {
 
     /// Union of file records (which carry the REAL busy/waiting status — they win on
     /// a sessionId tie) and process-table entries (fill the gaps), deduped by
-    /// sessionId. Fresh entries (empty sessionId, cwd-carried) are all kept. Pure.
+    /// sessionId. Fresh entries (empty sessionId, cwd-carried) are all kept — EXCEPT
+    /// when the same PID already came in as a file record: a bare `claude` that has
+    /// written its statusline record surfaces twice (once with its real id from the
+    /// record, once as a fresh empty-id table row for the same pid), so we must drop
+    /// the fresh duplicate or the one process is counted twice. Pure.
     static func mergeLive(fileRecords: [LiveProcess], table: [LiveProcess]) -> [LiveProcess] {
         var result: [LiveProcess] = []
         var seen = Set<String>()
+        var seenPids = Set<Int32>()
         for p in fileRecords where !p.sessionId.isEmpty && !seen.contains(p.sessionId) {
             result.append(p)
             seen.insert(p.sessionId)
+            seenPids.insert(p.pid)
         }
         for p in table {
             if p.sessionId.isEmpty {
-                result.append(p)                       // fresh (cwd-carried) — keep all
+                guard !seenPids.contains(p.pid) else { continue }   // same pid already a file record
+                result.append(p)                                    // fresh (cwd-carried)
+                seenPids.insert(p.pid)
             } else if !seen.contains(p.sessionId) {
                 result.append(p)
                 seen.insert(p.sessionId)
+                seenPids.insert(p.pid)
             }
         }
         return result.sorted { $0.pid < $1.pid }
@@ -512,7 +540,10 @@ public final class ClaudeService: @unchecked Sendable {
     /// processes without `--resume` (a bare new session can't be mapped to an id)
     /// and for the cmux wrapper scripts (their path lacks the `--resume` flag).
     static func resumeSessionId(in command: String) -> String? {
-        guard let range = command.range(of: "--resume ") else { return nil }
+        // Accept BOTH `--resume <id>` (space) and `--resume=<id>` (equals); the
+        // equals form would otherwise leave the session unmatchable (read as fresh).
+        guard let range = command.range(of: "--resume ") ?? command.range(of: "--resume=")
+        else { return nil }
         let token = command[range.upperBound...].prefix { !$0.isWhitespace }
         let id = String(token)
         return id.count == 36 && id.allSatisfy { $0.isHexDigit || $0 == "-" } ? id : nil
@@ -607,9 +638,11 @@ public final class ClaudeService: @unchecked Sendable {
         let isDefaultAccount = dir == NSHomeDirectory() + "/.claude"
         let claude = shellQuote(claudeExecutable())
         var command = isDefaultAccount ? claude : "CLAUDE_CONFIG_DIR=\(shellQuote(dir)) \(claude)"
-        if let sessionId { command += " --resume \(shellQuote(sessionId))" }
-        if let model { command += " --model \(shellQuote(model))" }
-        if let effort { command += " --effort \(shellQuote(effort))" }
+        // Guard on non-empty so an empty value (e.g. a hand-edited config with
+        // model: "") is treated like nil instead of emitting `--model ''`.
+        if let sessionId, !sessionId.isEmpty { command += " --resume \(shellQuote(sessionId))" }
+        if let model, !model.isEmpty { command += " --model \(shellQuote(model))" }
+        if let effort, !effort.isEmpty { command += " --effort \(shellQuote(effort))" }
         return command
     }
 }
