@@ -19,6 +19,28 @@ final class GraphTests: XCTestCase {
         XCTAssertTrue(GitService.parseNumstat("\n  \nnotnumstat\n").isEmpty)
     }
 
+    func testParseNumstatResolvesRenamesToNewPath() {
+        // `git show --numstat` renders renames as `{old => new}` (the real
+        // output of commit 0d68daa); the file list should show only the new path.
+        let out = "15\t13\tSources/GroveAppKit/Views/{CreateWorkspaceSheet.swift => CreateWorkspaceScreen.swift}\n"
+            + "49\t108\tSources/GroveAppKit/Views/{SettingsSheet.swift => ProjectSettingsScreen.swift}\n"
+            + "5\t1\t{old.txt => new.txt}\n"
+            + "2\t0\tSources/Plain.swift\n"
+        let changes = GitService.parseNumstat(out)
+        XCTAssertEqual(changes.map(\.path), [
+            "Sources/GroveAppKit/Views/CreateWorkspaceScreen.swift",
+            "Sources/GroveAppKit/Views/ProjectSettingsScreen.swift",
+            "new.txt",
+            "Sources/Plain.swift",
+        ])
+    }
+
+    func testRenamedNewPathHandlesDirectoryRename() {
+        // Directory renames keep the surrounding segments: `a/{x => y}/f` → `a/y/f`.
+        XCTAssertEqual(GitService.renamedNewPath("a/{old => new}/file.swift"), "a/new/file.swift")
+        XCTAssertEqual(GitService.renamedNewPath("plain/path.swift"), "plain/path.swift")
+    }
+
     // MARK: layoutLanes (pure)
 
     private func raw(_ hash: String, parents: [String]) -> RawCommit {

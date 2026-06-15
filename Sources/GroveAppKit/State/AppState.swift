@@ -608,6 +608,19 @@ extension AppState {
             model: project?.defaultModel, effort: project?.defaultEffort, target: .cmux)
     }
 
+    /// Presents the launch sheet for a fresh ("New Claude") session in `cwd`
+    /// under `account`. Parallels `beginResume` (`sessionId: nil`), seeding the
+    /// pickers with the owning project's default model/effort so the user can
+    /// confirm target/model/effort before a process is spawned.
+    public func beginNew(cwd: String, title: String, account: AccountConfig) {
+        let owner = project(forCwd: cwd)
+        launchRequest = LaunchRequest(
+            sessionId: nil, cwd: cwd, title: title,
+            account: account.name,
+            model: owner?.defaultModel ?? account.defaultModel,
+            effort: owner?.defaultEffort ?? account.defaultEffort, target: .cmux)
+    }
+
     /// Runs the configured launch (Resume or New) at the chosen target. Closes the
     /// sheet first so it can't be double-submitted.
     public func confirmLaunch(_ request: LaunchRequest) async {

@@ -59,6 +59,30 @@ final class AppStateSessionsTests: XCTestCase {
         XCTAssertTrue(args[commandIndex + 1].contains("--resume 'abc'"), args[commandIndex + 1])
     }
 
+    // MARK: - beginNew (New Claude opens the launch sheet)
+
+    func testBeginNewPresentsSheetSeededFromProjectDefaults() async throws {
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner)
+        state.config.accounts = [AccountConfig(name: "work", configDir: "/tmp/grove-work")]
+        state.config.projects = [ProjectConfig(name: "demo", path: "/ws",
+                                               defaultModel: "opus", defaultEffort: "high")]
+        let account = state.config.accounts[0]
+
+        state.beginNew(cwd: "/ws/feature-a", title: "feature-a", account: account)
+
+        // No process is spawned — only the sheet is presented.
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)
+        let req = try XCTUnwrap(state.launchRequest)
+        XCTAssertNil(req.sessionId)                 // fresh session, not a resume
+        XCTAssertEqual(req.cwd, "/ws/feature-a")
+        XCTAssertEqual(req.title, "feature-a")
+        XCTAssertEqual(req.account, "work")
+        XCTAssertEqual(req.model, "opus")           // seeded from the owning project
+        XCTAssertEqual(req.effort, "high")
+        XCTAssertEqual(req.target, .cmux)
+    }
+
     // MARK: - refreshSessionIndex
 
     func testRefreshSessionIndexPopulatesRecentSessionsPerProject() async throws {

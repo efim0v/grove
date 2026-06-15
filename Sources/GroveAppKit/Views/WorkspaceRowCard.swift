@@ -351,10 +351,7 @@ struct WorkspaceRowCard: View {
     }
 
     private func launch(account: AccountConfig) {
-        Task {
-            await state.launchClaude(cwd: workspace.umbrellaPath, title: workspace.name,
-                                     account: account, resume: nil)
-        }
+        state.beginNew(cwd: workspace.umbrellaPath, title: workspace.name, account: account)
     }
 
     private var cmuxButton: some View {

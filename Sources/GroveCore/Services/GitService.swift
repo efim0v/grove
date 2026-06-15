@@ -391,11 +391,24 @@ extension GitService {
             let fields = raw.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
             guard fields.count >= 3, !fields[2].isEmpty else { continue }
             changes.append(CommitFileChange(
-                path: String(fields[2]),
+                path: renamedNewPath(String(fields[2])),
                 additions: Int(fields[0]) ?? -1,    // "-" → binary
                 deletions: Int(fields[1]) ?? -1))
         }
         return changes
+    }
+
+    /// `git --numstat` renders renames as `{old => new}` embedded in the path
+    /// (e.g. `Sources/{A.swift => B.swift}` or a whole-path `{old => new}`).
+    /// Collapse it to the NEW path so the file list reads like a git UI; a path
+    /// without `=>` is returned unchanged.
+    static func renamedNewPath(_ path: String) -> String {
+        guard let open = path.range(of: "{"),
+              let arrow = path.range(of: " => ", range: open.upperBound..<path.endIndex),
+              let close = path.range(of: "}", range: arrow.upperBound..<path.endIndex)
+        else { return path }
+        let newSegment = path[arrow.upperBound..<close.lowerBound]
+        return path.replacingCharacters(in: open.lowerBound..<close.upperBound, with: newSegment)
     }
 
     public func commitGraph(repoPath: String, limit: Int = 300, skip: Int = 0) async throws -> [CommitNode] {
