@@ -41,7 +41,7 @@ struct SessionsScreen: View {
                 table(rows: rows, now: now)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
-                ScrollView { table(rows: rows, now: now) }
+                ScrollView { table(rows: rows, now: now).collapsesSearchOnScroll() }
             }
         }
     }

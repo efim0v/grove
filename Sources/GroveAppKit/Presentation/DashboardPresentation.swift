@@ -184,6 +184,44 @@ public func currentWindow(_ snapshots: [UsageSnapshot],
     return latestCapture(snapshots).flatMap(pick)   // nothing provably fresh
 }
 
+/// The most-recent provably-FRESH window (resets_at still in the future), or nil
+/// when none of these snapshots carry a fresh value for `pick`. Unlike
+/// `currentWindow`, it does NOT fall back to a stale latest capture — callers that
+/// want that fallback layer it themselves.
+func freshWindow(_ snapshots: [UsageSnapshot],
+                 _ pick: (UsageSnapshot) -> CapturedWindow?,
+                 now: Date) -> CapturedWindow? {
+    var best: (at: Date, window: CapturedWindow)?
+    for snap in snapshots {
+        guard let window = pick(snap), let capturedAt = snap.capturedAt else { continue }
+        if let raw = window.resetsAt, let reset = parseISODate(raw), reset <= now { continue } // stale
+        if best == nil || capturedAt > best!.at { best = (capturedAt, window) }
+    }
+    return best?.window
+}
+
+/// Resolves ONE account's limit window for aggregation (FIX I2). Each account
+/// contributes whatever data it has, per window INDEPENDENTLY, with this priority:
+///   1. freshest statusline window (the live local source),
+///   2. freshest OAuth-fetched window (`sessionId == "oauth"`) — the fallback that
+///      lets an account whose statusline emits no `rate_limits` (e.g.
+///      "work-account") still contribute its OAuth weekly/sonnet to "Overall",
+///   3. a stale statusline window, then a stale OAuth window (last-known reading).
+/// Returns nil only when NEITHER source ever carried the window — then the account
+/// is correctly excluded for that window.
+public func accountWindow(_ snapshots: [UsageSnapshot],
+                          _ pick: (UsageSnapshot) -> CapturedWindow?,
+                          now: Date) -> CapturedWindow? {
+    let statusline = snapshots.filter { $0.sessionId != "oauth" }
+    let oauth = snapshots.filter { $0.sessionId == "oauth" }
+    // Fresh statusline, then fresh OAuth (never let a stale statusline reading mask
+    // a fresh OAuth window), then stale statusline, then stale OAuth.
+    return freshWindow(statusline, pick, now: now)
+        ?? freshWindow(oauth, pick, now: now)
+        ?? latestCapture(statusline).flatMap(pick)
+        ?? latestCapture(oauth).flatMap(pick)
+}
+
 // MARK: - Model breakdown (token share per model)
 
 public struct ModelShare: Equatable, Sendable, Identifiable {

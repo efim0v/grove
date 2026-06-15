@@ -737,4 +737,102 @@ final class CodeStatsPresentationTests: XCTestCase {
         // The pre-window growth (the old day's 500) is the baseline, not counted in the window.
         XCTAssertEqual(cards[0].net, 10, "only in-window growth counts; old baseline excluded")
     }
+
+    // MARK: - Repo scope (shared controls strip filters)
+
+    /// A repo whose `stats.byLanguage` is the given list (so a scoped Languages card reads
+    /// it), with an explicit per-day classified history.
+    private func repoStat(_ name: String, langs: [LanguageStats],
+                          history: [RepoHistoryPoint]) -> RepoStats {
+        let totalLines = langs.reduce(0) { $0 + $1.total }
+        let cs = CodeStats(totalFiles: langs.reduce(0) { $0 + $1.files },
+                           totalLines: totalLines,
+                           code: langs.reduce(0) { $0 + $1.code },
+                           comment: langs.reduce(0) { $0 + $1.comment },
+                           blank: langs.reduce(0) { $0 + $1.blank },
+                           byLanguage: langs,
+                           scannedAt: Date(timeIntervalSince1970: 0), skippedBinary: 0)
+        return RepoStats(repoPath: "/tmp/\(name)", repoName: name, defaultBranch: "main",
+                         stats: cs, history: history, delta: .zero)
+    }
+
+    func testRepoScopeOptionsAllFirstThenSortedByName() {
+        let z = repoStat("zebra", langs: [], history: [])
+        let a = repoStat("alpha", langs: [], history: [])
+        let options = repoScopeOptions([z, a])
+        XCTAssertEqual(options.map(\.label), ["All repos", "alpha", "zebra"])
+        XCTAssertNil(options[0].name, "first option is All (nil name)")
+        XCTAssertEqual(options[1].name, "alpha")
+        XCTAssertEqual(options[0].id, "", "All's id is the empty token")
+        XCTAssertEqual(options[1].id, "alpha")
+    }
+
+    func testFilterAggregateByRepoNilReturnsAggregate() {
+        let aggregate = stats([lang("Swift", files: 3, code: 300)])
+        let repo = repoStat("a", langs: [lang("Go", files: 1, code: 10)], history: [])
+        XCTAssertEqual(filterAggregateByRepo(aggregate, repos: [repo], repoName: nil), aggregate)
+    }
+
+    func testFilterAggregateByRepoSelectsRepoStats() {
+        let aggregate = stats([lang("Swift", files: 3, code: 300)])
+        let repoLangs = [lang("Go", files: 1, code: 10, comment: 2, blank: 1)]
+        let repo = repoStat("a", langs: repoLangs, history: [])
+        let scoped = filterAggregateByRepo(aggregate, repos: [repo], repoName: "a")
+        XCTAssertEqual(scoped.byLanguage, repoLangs, "scoped Languages come from the repo")
+        XCTAssertEqual(scoped.totalLines, 13)
+    }
+
+    func testFilterAggregateByRepoUnknownFallsBackToAggregate() {
+        let aggregate = stats([lang("Swift", files: 3, code: 300)])
+        let repo = repoStat("a", langs: [lang("Go", files: 1, code: 10)], history: [])
+        // A stale selection that no longer matches any repo must NOT blank the screen.
+        XCTAssertEqual(filterAggregateByRepo(aggregate, repos: [repo], repoName: "gone"),
+                       aggregate)
+    }
+
+    func testFilterRepoStatsScopesToOneOrAll() {
+        let a = repoStat("alpha", langs: [], history: [])
+        let b = repoStat("beta", langs: [], history: [])
+        XCTAssertEqual(filterRepoStats([a, b], repoName: nil).map(\.repoName), ["alpha", "beta"])
+        XCTAssertEqual(filterRepoStats([a, b], repoName: "beta").map(\.repoName), ["beta"])
+        // Unknown name → all (never an empty Repositories/chart card).
+        XCTAssertEqual(filterRepoStats([a, b], repoName: "gone").map(\.repoName),
+                       ["alpha", "beta"])
+    }
+
+    func testFilterHistoryByRepoNilReturnsAggregateHistory() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let agg = [CodeStatsPoint(date: now, totalLines: 500, code: 400, comment: 50,
+                                  blank: 50, totalFiles: 9)]
+        let repo = repoStat("a", langs: [], history: [])
+        XCTAssertEqual(filterHistoryByRepo(agg, repos: [repo], repoName: nil), agg)
+    }
+
+    func testFilterHistoryByRepoProjectsRepoNetDelta() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let day = now.addingTimeInterval(-2 * 86_400)
+        // A repo grew 240 net (180 code, 60 data) on a day inside the 7d window.
+        let repo = repoStat("a", langs: [], history: [
+            RepoHistoryPoint(date: day, netLines: 240, dayAdded: 300, dayRemoved: 60,
+                             codeAdded: 220, codeRemoved: 40, dataAdded: 80, dataRemoved: 20),
+        ])
+        let scoped = filterHistoryByRepo([], repos: [repo], repoName: "a")
+        // The cumulative netLines (240) becomes totalLines, so the aggregate net delta reads
+        // the repo's own growth over the window.
+        XCTAssertEqual(netLinesDelta(scoped, period: .d7, now: now), 240)
+        // The per-day classified churn carries through, so the per-category deltas split.
+        let byCat = netLinesDeltaByCategory(scoped, period: .d7, now: now)
+        XCTAssertEqual(byCat.code, 220 - 40)       // codeAdded − codeRemoved
+        XCTAssertEqual(byCat.dataProse, 80 - 20)   // dataAdded − dataRemoved
+    }
+
+    func testFilterHistoryByRepoClampsNegativeNetToZero() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let day = now.addingTimeInterval(-1 * 86_400)
+        let repo = repoStat("a", langs: [], history: [
+            RepoHistoryPoint(date: day, netLines: -30),
+        ])
+        let scoped = filterHistoryByRepo([], repos: [repo], repoName: "a")
+        XCTAssertEqual(scoped.first?.totalLines, 0, "negative cumulative net clamps to 0")
+    }
 }

@@ -87,6 +87,25 @@ final class CodeStatsRenderTests: XCTestCase {
         XCTAssertTrue(isNonBlank(image!), "stats scene with repo blocks rendered blank")
     }
 
+    /// The LIVE path evaluates the shared controls strip's repo-selector `Menu` and the
+    /// language-row continuous-hover overlay expression (cursor-anchored tooltip) — a crash
+    /// in the menu/overlay branch is caught even though offscreen pixels stay blank. The
+    /// fixture seeds two repos so the repo selector renders.
+    func testStatsScreenLiveSharedControlsAndHoverOverlay() {
+        let state = SnapshotMode.fixtureState()
+        let id = state.selectedProjectID!
+        XCTAssertGreaterThan((state.repoStats[id] ?? []).count, 1, "fixture has >1 repo")
+        state.selectedTab = .stats
+        state.route = .project(id)
+        let view = CodeStatsScreen(state: state)
+            .frame(width: projectSize.width, height: projectSize.height)
+            .environment(\.colorScheme, .dark)
+            .environment(\.isSnapshotRender, false)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 1
+        _ = renderer.cgImage   // forces body eval, incl. the repo-selector Menu + hover overlay
+    }
+
     /// The new stats-settings page (directory+file exclusion tree) renders real
     /// content offscreen — it builds purely from the seeded per-file list, so the
     /// flat expanded fallback (snapshot path) draws folder + file rows.

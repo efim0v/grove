@@ -950,7 +950,12 @@ extension AppState {
     public func aggregateRemaining(window: LimitWindow, now: Date) -> RateLimitModel.Aggregate {
         let accounts: [RateLimitModel.AccountWindow] = config.accounts.compactMap { account in
             let snaps = snapshotsByAccount[account.name] ?? []
-            let captured = currentWindow(snaps, Self.pick(window), now: now)
+            // Per-window resolution: statusline first, OAuth-fetched limits as the
+            // fallback (FIX I2). An account whose statusline lacks rate_limits but
+            // whose limits come from the OAuth usage API still contributes here, so
+            // the "Overall" scope consolidates EVERY account, not just the ones with
+            // statusline windows. Only a window absent from BOTH sources drops out.
+            let captured = accountWindow(snaps, Self.pick(window), now: now)
             guard let used = captured?.usedPercentage else { return nil }
             return RateLimitModel.AccountWindow(tier: tier(for: account), usedPercentage: used)
         }
@@ -965,7 +970,9 @@ extension AppState {
     public func aggregateReset(window: LimitWindow, now: Date) -> Date? {
         let windows: [CapturedWindow] = config.accounts.compactMap { account in
             let snaps = snapshotsByAccount[account.name] ?? []
-            return currentWindow(snaps, Self.pick(window), now: now)
+            // Same statusline-first, OAuth-fallback resolution as aggregateRemaining
+            // (FIX I2) so the soonest reset spans EVERY account's windows.
+            return accountWindow(snaps, Self.pick(window), now: now)
         }
         return soonestReset(windows, now: now).flatMap(parseISODate)
     }

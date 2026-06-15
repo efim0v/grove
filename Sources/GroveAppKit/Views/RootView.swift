@@ -85,24 +85,34 @@ public struct RootView: View {
     @ViewBuilder private var routedScreen: some View {
         let size = currentPanelSize
         ZStack(alignment: .top) {
-            Group {
-                switch state.route {
-                case .projects:
-                    RootShell(state: state)
-                case .project:
-                    ProjectScreen(state: state)
-                case .createWorkspace:
-                    CreateWorkspaceScreen(state: state,
-                                          prefill: state.createPrefill ?? CreatePrefill(),
-                                          onClose: { state.goBack() })
-                case .projectSettings(let id):
-                    ProjectSettingsScreen(state: state, projectID: id)
-                case .statsSettings(let id):
-                    StatsSettingsScreen(state: state, projectID: id)
-                case .accounts:
-                    AccountsScreen(state: state)
-                case .globalSettings:
-                    GlobalSettingsScreen(state: state)
+            VStack(spacing: 0) {
+                Group {
+                    switch state.route {
+                    case .projects:
+                        RootShell(state: state)
+                    case .project:
+                        ProjectScreen(state: state)
+                    case .createWorkspace:
+                        CreateWorkspaceScreen(state: state,
+                                              prefill: state.createPrefill ?? CreatePrefill(),
+                                              onClose: { state.goBack() })
+                    case .projectSettings(let id):
+                        ProjectSettingsScreen(state: state, projectID: id)
+                    case .statsSettings(let id):
+                        StatsSettingsScreen(state: state, projectID: id)
+                    case .accounts:
+                        AccountsScreen(state: state)
+                    case .globalSettings:
+                        GlobalSettingsScreen(state: state)
+                    }
+                }
+                // The routed screen fills the column so the SHARED footer (below)
+                // pins to the bottom edge and the screen's scroll area reaches just
+                // above it — no bare-glass gap above the footer.
+                .frame(maxHeight: .infinity)
+                if showsFooter {
+                    Divider()
+                    ProjectsFooter(state: state)
                 }
             }
             .modifier(RouteFrame(route: state.route, size: size, cap: maxPanelHeight))
@@ -111,20 +121,46 @@ public struct RootView: View {
         .clipped()
     }
 
-    /// Per-route frame. Every route except `.projects` keeps the exact prior
-    /// behavior (a fixed/adaptive height capped at `cap`). The `.projects` route
-    /// instead takes its height as a *minimum* with an unbounded max, so the
-    /// projects column can stretch DOWN to match the taller charts column when
-    /// embedded in `MergedRootView` (footer pinned to the bottom edge) while still
-    /// resolving to its natural 520 standalone or when the charts are collapsed.
-    /// The on-screen height is clamped by the controller's `applyContentSize`.
+    private var showsFooter: Bool { Self.showsFooter(for: state.route) }
+
+    /// The shared bottom chrome (ProjectsFooter) is shown on the project LIST
+    /// (.projects) AND the per-project tabs (.project) so it never disappears when
+    /// the user drills into a project. The deeper scoped routes (accounts /
+    /// settings / project-settings / stats-settings / create-workspace) have their
+    /// own back navigation, so they keep their own chrome and DON'T show it. Pure +
+    /// static so the gating is unit-testable without rendering.
+    static func showsFooter(for route: Route) -> Bool {
+        switch route {
+        case .projects, .project: return true
+        case .accounts, .globalSettings, .projectSettings,
+             .statsSettings, .createWorkspace:
+            return false
+        }
+    }
+
+    /// Per-route frame. The two footer-bearing routes (`.projects` and `.project`)
+    /// take their height as a *minimum* with an unbounded max, so the projects
+    /// column can stretch DOWN to match the taller charts column when embedded in
+    /// `MergedRootView` (footer pinned to the bottom edge, the route's content
+    /// filling up to it) while still resolving to their natural size standalone or
+    /// when the charts are collapsed. Every other (deep-scoped) route keeps the
+    /// exact prior behavior — a fixed/adaptive height capped at `cap` — since those
+    /// own their chrome and never carry the shared footer. The on-screen height is
+    /// clamped by the controller's `applyContentSize`.
     private struct RouteFrame: ViewModifier {
         let route: Route
         let size: (width: CGFloat, height: CGFloat?)
         let cap: CGFloat
 
+        private var stretches: Bool {
+            switch route {
+            case .projects, .project: return true
+            default: return false
+            }
+        }
+
         func body(content: Content) -> some View {
-            if case .projects = route {
+            if stretches {
                 content
                     .frame(width: size.width)
                     .frame(minHeight: size.height ?? 0, maxHeight: .infinity,

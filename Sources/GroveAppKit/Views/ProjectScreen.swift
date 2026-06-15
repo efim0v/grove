@@ -21,8 +21,28 @@ struct ProjectScreen: View {
         VStack(spacing: 0) {
             header
             Divider()
+            // Fill DOWN to the shared footer (pinned by RootView below this
+            // screen) so the active tab's scroll area reaches just above it —
+            // no bare-glass gap, matching the project LIST.
             content
+                .frame(maxHeight: .infinity)
+                // Hide-on-scroll: each tab's live ScrollView calls this when it
+                // moves, re-collapsing the floating search to the magnifier. ⌘F /
+                // tap still re-expand it (searchRow). Live-only — snapshots never
+                // scroll, so the closure is never fired offscreen.
+                .environment(\.collapseSearchOnScroll, collapseSearchOnScroll)
         }
+    }
+
+    /// Re-collapse the floating search row when the list is scrolled. Only acts
+    /// when the row is actually expanded with an empty query — a scroll mustn't
+    /// wipe a search the user has typed (the filtered list IS the result they're
+    /// scrolling). Clearing the focus lets the existing blur watcher animate the
+    /// row shut; the empty-query guard also covers the keyboard-focused case.
+    private func collapseSearchOnScroll() {
+        guard searchExpanded, state.searchQuery.isEmpty else { return }
+        searchFocused = false
+        withAnimation(.easeInOut(duration: 0.18)) { searchExpanded = false }
     }
 
     // MARK: - Header (3 rows)

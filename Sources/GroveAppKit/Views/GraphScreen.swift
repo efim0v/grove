@@ -107,6 +107,7 @@ struct GraphScreen: View {
                     rows
                 }
                 .padding(.bottom, 8)
+                .collapsesSearchOnScroll()
             }
         }
     }

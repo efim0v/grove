@@ -473,6 +473,73 @@ public func netLinesDeltaByCategory(_ history: [CodeStatsPoint], period: StatsPe
     return (code: codeNet, dataProse: dataNet)
 }
 
+// MARK: - Repo scope (filter every stats block to one repo, or all)
+
+/// The shared controls strip's repository selector model: "All repos" (`name == nil`)
+/// plus one entry per repo, sorted by name (matching the per-repo blocks + legend order).
+/// `id` is the selection token written by the menu (`name`, with the synthetic "" for All
+/// so SwiftUI's tag is non-optional-friendly). The view reads `name` to drive the scope.
+public struct RepoScopeOption: Equatable, Sendable, Identifiable {
+    public var id: String { name ?? "" }
+    public let name: String?      // nil == "All repos"
+    public let label: String      // "All repos" / the repo name
+    public init(name: String?, label: String) {
+        self.name = name
+        self.label = label
+    }
+}
+
+/// Build the repo-selector options: "All repos" first, then each repo by name (sorted,
+/// matching `repoCells`/the legend). PURE + deterministic.
+public func repoScopeOptions(_ repos: [RepoStats]) -> [RepoScopeOption] {
+    var options = [RepoScopeOption(name: nil, label: "All repos")]
+    for name in repos.map(\.repoName).sorted() {
+        options.append(RepoScopeOption(name: name, label: name))
+    }
+    return options
+}
+
+/// The aggregate `CodeStats` (Totals headline + Languages bars + line kinds) SCOPED to
+/// the selected repo: `nil` returns the project aggregate unchanged; a repo name returns
+/// that repo's own `stats` (its `byLanguage`, totals, file count). An unknown name falls
+/// back to the aggregate so a stale selection can't blank the screen. PURE.
+public func filterAggregateByRepo(_ aggregate: CodeStats, repos: [RepoStats],
+                                  repoName: String?) -> CodeStats {
+    guard let repoName, let repo = repos.first(where: { $0.repoName == repoName })
+    else { return aggregate }
+    return repo.stats
+}
+
+/// The aggregate per-day history (drives the Totals net-delta triangles) SCOPED to the
+/// selected repo: `nil` returns the project aggregate history unchanged; a repo name
+/// projects that repo's `[RepoHistoryPoint]` into the `[CodeStatsPoint]` shape the delta
+/// helpers consume — `netLines` (cumulative) → `totalLines`, and the per-day classified
+/// churn fields carry over verbatim, so `netLinesDelta` / `netLinesDeltaByCategory` read
+/// the repo's own growth. The non-delta fields (`code`/`comment`/`blank`/`totalFiles`)
+/// aren't carried per-day on a repo's history, so they're 0 here — the deltas are the
+/// only consumer of this scoped series. PURE.
+public func filterHistoryByRepo(_ aggregateHistory: [CodeStatsPoint], repos: [RepoStats],
+                                repoName: String?) -> [CodeStatsPoint] {
+    guard let repoName, let repo = repos.first(where: { $0.repoName == repoName })
+    else { return aggregateHistory }
+    return repo.history.map { p in
+        CodeStatsPoint(date: p.date, totalLines: max(p.netLines, 0),
+                       code: 0, comment: 0, blank: 0, totalFiles: 0,
+                       dayAdded: p.dayAdded, dayRemoved: p.dayRemoved,
+                       codeAdded: p.codeAdded, codeRemoved: p.codeRemoved,
+                       dataAdded: p.dataAdded, dataRemoved: p.dataRemoved)
+    }
+}
+
+/// The per-repo list (per-repo blocks + stacked growth chart + legend) SCOPED to the
+/// selected repo: `nil` returns every repo unchanged; a repo name returns just that one
+/// (an unknown name returns all, never an empty screen). PURE.
+public func filterRepoStats(_ repos: [RepoStats], repoName: String?) -> [RepoStats] {
+    guard let repoName else { return repos }
+    let scoped = repos.filter { $0.repoName == repoName }
+    return scoped.isEmpty ? repos : scoped
+}
+
 // MARK: - Stacked cumulative bars (codebase size over time, stacked by repo)
 
 /// One repo's slice of a single day's stacked bar: the repo's carried-forward cumulative

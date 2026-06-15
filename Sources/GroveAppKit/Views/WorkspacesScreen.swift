@@ -100,6 +100,7 @@ struct WorkspacesScreen: View {
             } else {
                 ScrollView {
                     cardsColumn(snapshot: snapshot, visible: visible, now: now)
+                        .collapsesSearchOnScroll()
                 }
             }
         }

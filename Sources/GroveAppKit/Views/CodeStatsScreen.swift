@@ -33,10 +33,22 @@ struct CodeStatsScreen: View {
     /// from the in-card metric selector. Default `.code` (the historical behavior).
     @State private var languageMetric: LanguageMetric = .code
 
+    /// The repository the shared controls strip scopes ALL stats blocks to, or nil for
+    /// "All repos" (the project aggregate). A repo name filters the Totals, Languages,
+    /// growth chart, and per-repo blocks down to that one repo via the pure
+    /// `filter*ByRepo` helpers. Default nil ("All").
+    @State private var selectedRepo: String?
+
     /// The language whose bar row the cursor is over, if any → a small details overlay
     /// anchored to that row (files / code / comment / blank / %). Live-only: `.onHover`
     /// never fires under ImageRenderer, so snapshots draw the bars with no overlay.
     @State private var hoveredLanguage: String?
+
+    /// The cursor's position WITHIN the hovered language bar row (row-local coordinates),
+    /// so the details overlay floats next to the pointer instead of pinning to the row's
+    /// trailing edge. Live-only: continuous-hover never fires under ImageRenderer, so the
+    /// snapshot path never reads it.
+    @State private var hoveredLanguagePosition: CGPoint?
 
     /// The day the cursor is over in the "Lines over time" strip, if any → a hover tooltip
     /// (date + total + per-repo breakdown). Live-only (continuous-hover never fires
@@ -57,8 +69,14 @@ struct CodeStatsScreen: View {
             guard let id = selectedProjectID else { return }
             // A day selection is scoped to one project's series; clear it so a stale date
             // from the previous project can't resolve against a same-calendar day in the
-            // new one (bar dates are GMT start-of-day).
+            // new one (bar dates are GMT start-of-day). The repo scope is the SAME hazard:
+            // repos are matched by name, so a stale name would either silently re-scope the
+            // new project to its own same-named repo (a name collision the user never chose)
+            // or, when the new project lacks that name, leave the chip on "All repos" while
+            // the menu marks nothing active and the stale value keeps filtering. Reset both
+            // so every project opens at "All repos".
             selectedDay = nil
+            selectedRepo = nil
             await state.refreshCodeStats(projectID: id)
         }
     }
@@ -75,11 +93,20 @@ struct CodeStatsScreen: View {
 
     @ViewBuilder
     private func content(stats: CodeStats) -> some View {
+        // Every block scopes to the selected repo (nil == "All"): the Totals headline +
+        // Languages bars read the scoped aggregate, the deltas read the scoped history, and
+        // the per-repo blocks + growth chart read the scoped repo list. The shared controls
+        // strip (repo + period) sits ABOVE the first card as a plain row, not a glassCard.
+        let repos = state.repoStats[selectedProjectID ?? UUID()] ?? []
+        let scopedStats = filterAggregateByRepo(stats, repos: repos, repoName: selectedRepo)
+        let scopedHistory = filterHistoryByRepo(history, repos: repos, repoName: selectedRepo)
+        let scopedRepos = filterRepoStats(repos, repoName: selectedRepo)
         let cards = VStack(spacing: 8) {
-            totalsCard(stats: stats)
-            languageCard(stats: stats)
-            reposCard()
-            growthCard()
+            sharedControlsStrip(repos: repos)
+            totalsCard(stats: scopedStats, scopedHistory: scopedHistory)
+            languageCard(stats: scopedStats)
+            reposCard(repos: scopedRepos)
+            growthCard(repos: scopedRepos)
         }
         .padding(8)
         // ScrollView content isn't rendered offscreen — a plain VStack in snapshots,
@@ -87,41 +114,113 @@ struct CodeStatsScreen: View {
         if isSnapshotRender {
             cards
         } else {
-            ScrollView { cards }
+            // Only the OUTER vertical scroll collapses the search; the inner
+            // horizontal chart scroll has its own axis and is left untouched.
+            ScrollView { cards.collapsesSearchOnScroll() }
         }
+    }
+
+    // MARK: - Shared controls strip (scopes EVERY block below)
+
+    /// A plain row ABOVE the first card (not a glassCard) holding the controls that apply to
+    /// ALL stats blocks: the repository selector (scopes Totals/Languages/chart/deltas to one
+    /// repo or all) and the period selector (drives every net delta). Both write `@State`
+    /// that the pure `filter*ByRepo` helpers + the delta recompute read. The stats-settings
+    /// gear lives here too (it was in the Totals header) so the Totals card is pure data.
+    private func sharedControlsStrip(repos: [RepoStats]) -> some View {
+        HStack(spacing: 8) {
+            repoSelector(repos: repos)
+            Spacer(minLength: 8)
+            periodControl
+            // Opens the separate stats-settings page (the directory+file exclusion tree);
+            // disabled until a project is selected.
+            Button {
+                if let id = selectedProjectID { state.open(.statsSettings(id)) }
+            } label: {
+                Image(systemName: "gear")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedProjectID == nil)
+            .help("Stats settings — file tree & exclusions")
+        }
+        .padding(.horizontal, 4)
+    }
+
+    /// The repository scope selector: "All repos" + one entry per repo, writing
+    /// `selectedRepo` (nil == All). A `Menu` is AppKit-backed and draws an ERROR PLACEHOLDER
+    /// under `ImageRenderer` (same as the branch switcher / `Picker(.segmented)`), so the
+    /// snapshot path renders the chip label alone — selection is inherently live-only. The
+    /// chip visuals are shared so both paths match. Single-repo projects hide the selector
+    /// entirely (nothing to scope).
+    @ViewBuilder
+    private func repoSelector(repos: [RepoStats]) -> some View {
+        if repos.count > 1 {
+            let options = repoScopeOptions(repos)
+            let current = options.first { $0.name == selectedRepo } ?? options[0]
+            if isSnapshotRender {
+                repoSelectorChip(current.label)
+            } else {
+                Menu {
+                    ForEach(options) { option in
+                        Button {
+                            selectedRepo = option.name
+                        } label: {
+                            if option.name == selectedRepo {
+                                Label(option.label, systemImage: "checkmark")
+                            } else {
+                                Text(option.label)
+                            }
+                        }
+                    }
+                } label: {
+                    repoSelectorChip(current.label)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+        }
+    }
+
+    /// The repo selector's label chip: the active scope in a subtle capsule with a
+    /// disclosure chevron, mirroring the branch chip's look so the strip reads as a control.
+    private func repoSelectorChip(_ label: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "shippingbox")
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+            Text(label)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 7))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(.white.opacity(0.08), in: Capsule())
     }
 
     // MARK: - Totals header
 
-    private func totalsCard(stats: CodeStats) -> some View {
+    private func totalsCard(stats: CodeStats, scopedHistory: [CodeStatsPoint]) -> some View {
         // Both headline numbers (Code / Data·Prose), the file counts, and the per-category
         // deltas are pure recomputes from already-scanned data — switching the period never
         // triggers a git re-scan. Each headline now carries its OWN net delta inline at the
         // value's top-right: how much that category's lines grew (▲, blue) or shrank (▼, pink)
         // over the period, a churn-free per-category state difference (a line churned 5×
-        // counts once). The old single combined net line below both headlines is gone.
+        // counts once). The old single combined net line below both headlines is gone. Both
+        // `stats` and `scopedHistory` are already scoped to the selected repo by the caller.
         let breakdown = dataProseBreakdown(stats)
-        let netByCategory = netLinesDeltaByCategory(history, period: period, now: .now)
+        let netByCategory = netLinesDeltaByCategory(scopedHistory, period: period, now: .now)
         // File-count delta isn't derivable from line history client-side, so the file
         // caption stays a plain count (the per-day series carries only lines).
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                CardLabel(title: "Totals", systemImage: "chart.pie.fill")
-                Spacer(minLength: 8)
-                periodControl
-                // Opens the separate stats-settings page (the directory+file
-                // exclusion tree); disabled until a project is selected.
-                Button {
-                    if let id = selectedProjectID { state.open(.statsSettings(id)) }
-                } label: {
-                    Image(systemName: "gear")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .disabled(selectedProjectID == nil)
-                .help("Stats settings — file tree & exclusions")
-            }
+            CardLabel(title: "Totals", systemImage: "chart.pie.fill")
             HStack(alignment: .top, spacing: 24) {
                 // The headline is the LANGUAGE-GROUP split: total lines of non-data/prose
                 // languages ("code") vs data/prose languages ("data"). Distinct axis from
@@ -352,18 +451,31 @@ struct CodeStatsScreen: View {
                 .frame(width: 48, alignment: .trailing)
         }
         .contentShape(Rectangle())
-        // Live-only hover: `.onHover` never fires under ImageRenderer, so snapshots draw the
-        // bars with no overlay. Set/clear this row's language as the hovered one.
-        .onHover { inside in
-            if inside { hoveredLanguage = bar.language }
-            else if hoveredLanguage == bar.language { hoveredLanguage = nil }
+        // Live-only hover: continuous-hover never fires under ImageRenderer, so snapshots
+        // draw the bars with no overlay. Track the row + the cursor's row-local position so
+        // the details tooltip follows the pointer instead of pinning to the row's edge.
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let point):
+                hoveredLanguage = bar.language
+                hoveredLanguagePosition = point
+            case .ended:
+                if hoveredLanguage == bar.language {
+                    hoveredLanguage = nil
+                    hoveredLanguagePosition = nil
+                }
+            }
         }
-        // The details overlay floats above the row at its top-trailing corner, gated on the
-        // live render so it never appears in snapshots.
-        .overlay(alignment: .topTrailing) {
-            if !isSnapshotRender && hoveredLanguage == bar.language {
+        // The details overlay floats as a tooltip NEXT TO THE CURSOR (anchored to the
+        // row-local hover position), gated on the live render so it never appears in
+        // snapshots. `.allowsHitTesting(false)` keeps it from stealing the hover.
+        .overlay(alignment: .topLeading) {
+            if !isSnapshotRender, hoveredLanguage == bar.language,
+               let pos = hoveredLanguagePosition {
                 languageHoverOverlay(bar)
-                    .offset(y: -6)
+                    // Offset up-and-right of the pointer so the cursor doesn't cover it; the
+                    // overlay's own width is unknown here, so a small lead keeps it readable.
+                    .offset(x: pos.x + 12, y: pos.y - 46)
                     .transition(.opacity)
                     .allowsHitTesting(false)
             }
@@ -394,10 +506,19 @@ struct CodeStatsScreen: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(.black.opacity(0.55),
-                    in: RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous))
+        // A heavier frosted backdrop so it reads as a floating tooltip: a real material blur
+        // (regular = strong frost) under a dark tint, with a hairline rim + a soft drop
+        // shadow lifting it off the bars. Clipped to the field radius.
+        .background {
+            RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+                .fill(.regularMaterial)
+                .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+                    .fill(.black.opacity(0.45)))
+        }
+        .clipShape(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
-            .strokeBorder(.white.opacity(0.12)))
+            .strokeBorder(.white.opacity(0.14)))
+        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
         .fixedSize()
     }
 
@@ -421,8 +542,7 @@ struct CodeStatsScreen: View {
     /// repo projects collapse to one block; multi-repo (e.g. acme.shop's 4) stack
     /// tight inside one card.
     @ViewBuilder
-    private func reposCard() -> some View {
-        let repos = state.repoStats[selectedProjectID ?? UUID()] ?? []
+    private func reposCard(repos: [RepoStats]) -> some View {
         if !repos.isEmpty {
             let cards = repoCells(repos, period: period, now: .now)
             // The same stable name→color map the stacked chart's segments + legend use, so
@@ -549,8 +669,7 @@ struct CodeStatsScreen: View {
     /// Height of the X-axis month-label strip drawn under the bars.
     private let monthLabelStripHeight: CGFloat = 14
 
-    private func growthCard() -> some View {
-        let repos = state.repoStats[selectedProjectID ?? UUID()] ?? []
+    private func growthCard(repos: [RepoStats]) -> some View {
         let bars = stackedRepoSeries(repos, daysBack: stackedBarMaxDaysBack, now: .now)
         let colors = repoColorMap(repos)
         let hasCode = bars.contains { $0.total > 0 }

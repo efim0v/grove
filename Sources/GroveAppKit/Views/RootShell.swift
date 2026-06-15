@@ -6,8 +6,10 @@ import GroveCore
 /// The usage dashboard is no longer a tab here — it's the embedded charts section
 /// (ChartsSideContent) of the merged window, shown to the RIGHT of this shell in
 /// MergedRootView's HStack whenever `state.showCharts` is true. So this shell is
-/// just the add-project row, the Projects content, and the footer (whose collapse
-/// toggle flips `state.showCharts`).
+/// just the add-project row and the Projects content. The footer (Accounts ·
+/// settings · refresh · charts-collapse · version · Quit) is now SHARED chrome
+/// hoisted into RootView's `ProjectsFooter`, pinned below BOTH this list and the
+/// per-project tabs so it never disappears when the user drills into a project.
 struct RootShell: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
@@ -15,9 +17,11 @@ struct RootShell: View {
     var body: some View {
         VStack(spacing: 0) {
             addRow
+            // Fill DOWN to the shared footer (pinned by RootView) so the list
+            // scroll area reaches just above it — no bare-glass gap above the
+            // bottom edge.
             content
-            Divider()
-            footer
+                .frame(maxHeight: .infinity)
         }
     }
 
@@ -45,62 +49,6 @@ struct RootShell: View {
 
     @ViewBuilder private var content: some View {
         ProjectsTab(state: state)
-    }
-
-    // MARK: - Footer: Accounts, settings, refresh, version, Quit
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            Button { state.open(.accounts) } label: {
-                Label("Accounts", systemImage: "person.2").font(.caption).fixedSize()
-            }
-            .buttonStyle(.plain)
-            .help("Claude accounts")
-            Button { state.open(.globalSettings) } label: {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
-            Button {
-                Task { await state.refresh() }
-            } label: {
-                if state.isScanning {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut("r")
-            .help("Refresh (⌘R)")
-            // Collapse / expand the side-by-side charts (account-stats) section.
-            // Toggling showCharts changes MergedRootView's body → the hosting
-            // controller's preferredContentSize → the window grows/shrinks from
-            // the right edge (pinned to the menu-bar icon).
-            Button {
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    state.showCharts.toggle()
-                }
-            } label: {
-                Image(systemName: state.showCharts
-                      ? "sidebar.right" : "chart.bar")
-            }
-            .buttonStyle(.plain)
-            .help(state.showCharts ? "Hide charts" : "Show charts")
-            if let issue = state.configIssue {
-                Text(issue).font(.caption).foregroundStyle(Palette.mid).lineLimit(1)
-            }
-            Spacer(minLength: 6)
-            Text("v\(GroveVersion.current)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize()
-            Button("Quit") { NSApp.terminate(nil) }
-                .keyboardShortcut("q")
-                .fixedSize()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
     /// NSOpenPanel is LIVE-only (it sits behind a button action, so snapshot

@@ -645,21 +645,37 @@ public enum SnapshotMode {
                                         dataAdded: dataAdded, dataRemoved: dataRemoved)
             }
         }
-        func stats(files: Int, lines: Int) -> CodeStats {
+        func stats(files: Int, lines: Int, langs: [LanguageStats]) -> CodeStats {
             CodeStats(totalFiles: files, totalLines: lines, code: Int(Double(lines) * 0.82),
                       comment: Int(Double(lines) * 0.09), blank: Int(Double(lines) * 0.09),
-                      byLanguage: [], scannedAt: now, skippedBinary: 0)
+                      byLanguage: langs, scannedAt: now, skippedBinary: 0)
+        }
+        func lang(_ name: String, files: Int, code: Int, comment: Int = 0, blank: Int = 0) -> LanguageStats {
+            LanguageStats(language: name, files: files, code: code, comment: comment, blank: blank,
+                          total: code + comment + blank)
         }
         return [
             RepoStats(repoPath: "/Users/demo/Workspaces/acme.shop/media-pipeline",
                       repoName: "media-pipeline",
-                      defaultBranch: "main", stats: stats(files: 184, lines: 31_400),
+                      defaultBranch: "main",
+                      // A per-repo language split so a snapshot scoped to this repo (via the
+                      // shared repo selector) shows real Languages bars, not an empty card.
+                      stats: stats(files: 184, lines: 31_400, langs: [
+                        lang("Swift", files: 120, code: 18_400, comment: 2_100, blank: 2_400),
+                        lang("Python", files: 44, code: 4_600, comment: 600, blank: 700),
+                        lang("Markdown", files: 20, code: 0, comment: 0, blank: 100),
+                      ]),
                       history: history([(0, 0, 0), (640, 700, 60), (1_180, 1_300, 120),
                                         (1_540, 1_720, 180), (820, 990, 170)], dataFraction: 0),
                       delta: RepoDelta(added: 4_010, removed: 530, filesChanged: 22)),
             RepoStats(repoPath: "/Users/demo/Workspaces/acme.shop/media-upload",
                       repoName: "media-upload",
-                      defaultBranch: "develop", stats: stats(files: 96, lines: 17_390),
+                      defaultBranch: "develop",
+                      stats: stats(files: 96, lines: 17_390, langs: [
+                        lang("TypeScript/JavaScript", files: 60, code: 9_800, comment: 900, blank: 1_300),
+                        lang("JSON", files: 18, code: 2_200, comment: 0, blank: 0),
+                        lang("CSS", files: 18, code: 1_900, comment: 100, blank: 290),
+                      ]),
                       history: history([(0, 0, 0), (310, 360, 50), (-120, 40, 160),
                                         (540, 620, 80), (290, 330, 40)], dataFraction: 0.25),
                       delta: RepoDelta(added: 1_350, removed: 330, filesChanged: 11)),
