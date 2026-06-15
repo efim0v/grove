@@ -49,14 +49,30 @@ public struct MergedRootView: View {
                 // Charts section: fixed narrow width, adaptive height capped so a
                 // tall charts column can't push the window off a short display
                 // (replaces the old per-window screen-height cap; the controller
-                // additionally clamps the final frame on-screen). Wrapped in its OWN
-                // rounded grouped block (the near-black .glassCard substrate) so it
-                // floats as a distinct block beside the projects — divider dropped,
-                // separation is the HStack `spacing` gap, not a hairline.
-                ChartsSideContent(state: state)
-                    .padding(8)
-                    .glassCard()
-                    .frame(maxHeight: 820)
+                // additionally clamps the final frame on-screen). Wrapped in a
+                // CLEAR Liquid-Glass "menu block" (GlassMenuContainer, a native
+                // NSGlassEffectView backdrop) — NOT the gray .glassCard — so it
+                // reads as a distinct floating glass layer and the inner gray
+                // content cards (DashboardScreen's GlassCards) stand out against
+                // it. Separation from the projects column is the HStack `spacing`
+                // gap, not a hairline divider.
+                //
+                // The 8pt OUTER inset (trailing + vertical) floats the glass
+                // block clear of the window's rounded corners — mirroring the
+                // footer block's outer inset in RootView so the two menu blocks
+                // are symmetric vs. the window edge (otherwise the block's tighter
+                // card radius sits inside the window's wider panel radius and
+                // leaves a sliver of substrate at the corners). The leading edge
+                // takes no inset: the HStack `spacing: 8` already gaps it from the
+                // projects column. The inner `.padding(8)` is the content padding
+                // INSIDE the glass.
+                GlassMenuContainer {
+                    ChartsSideContent(state: state)
+                        .padding(8)
+                }
+                .frame(maxHeight: 820)
+                .padding(.trailing, 8)
+                .padding(.vertical, 8)
             }
         }
         // The hairline edge that used to live on each of the two separate chromes

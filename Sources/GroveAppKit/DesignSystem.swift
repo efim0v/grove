@@ -97,46 +97,39 @@ enum DesignRadius {
 }
 
 /// Capsule chrome for selection chips (tab strips, view toggles, the graph
-/// repo selector): REAL Liquid Glass live; a plain translucent fill in
-/// snapshot mode, because ImageRenderer draws .glassEffect-modified views
-/// fully invisible offscreen (the GlassCard landmine).
+/// repo selector): a plain translucent capsule fill in BOTH live and snapshot
+/// mode. SwiftUI `.glassEffect`/`GlassEffectContainer` crash the window-server
+/// (EXC_BAD_ACCESS in GlassEffectContextResolvedData.updateValue) when nested
+/// inside our AppKit NSGlassEffectView window substrate, AND ImageRenderer
+/// draws .glassEffect views fully invisible offscreen — so the safe
+/// translucent fill (previously the snapshot-only fallback) is now the single
+/// render path everywhere.
 struct SelectionCapsule: ViewModifier {
-    @Environment(\.isSnapshotRender) private var isSnapshotRender
     let isOn: Bool
     /// Faint fill kept under unselected chips (GraphScreen's repo selector
     /// shows every repo as a chip, so idle chips stay barely visible).
     var idleOpacity: Double = 0
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if isSnapshotRender || !isOn {
-            content.background(.white.opacity(isOn ? 0.18 : idleOpacity), in: .capsule)
-        } else {
-            content.glassEffect(.regular.tint(.white.opacity(0.14)), in: .capsule)
-        }
+        content.background(.white.opacity(isOn ? 0.18 : idleOpacity), in: .capsule)
     }
 }
 
 extension View {
-    /// Selected state = glass capsule (translucent fill in snapshots);
-    /// unselected = `idleOpacity` fill. Group sibling chips in a
-    /// GlassEffectContainer so their glass renders (and morphs) together.
+    /// Selected state = translucent capsule fill; unselected = `idleOpacity`
+    /// fill. Same single material in live and snapshot mode (see SelectionCapsule
+    /// for why the SwiftUI glass path is gone).
     func selectionCapsule(isOn: Bool, idleOpacity: Double = 0) -> some View {
         modifier(SelectionCapsule(isOn: isOn, idleOpacity: idleOpacity))
     }
 }
 
-/// Pill chrome for the header search field: real Liquid Glass live, the old
-/// translucent fill in snapshots (same ImageRenderer invisibility landmine).
+/// Pill chrome for the header search field: a plain translucent capsule fill in
+/// BOTH live and snapshot mode. SwiftUI `.glassEffect` crashes nested inside the
+/// AppKit NSGlassEffectView window substrate (and renders invisible offscreen),
+/// so the safe translucent fill (previously snapshot-only) is the single path.
 struct SearchFieldChrome: ViewModifier {
-    @Environment(\.isSnapshotRender) private var isSnapshotRender
-
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if isSnapshotRender {
-            content.background(.white.opacity(0.07), in: Capsule())
-        } else {
-            content.glassEffect(.regular, in: .capsule)
-        }
+        content.background(.white.opacity(0.07), in: Capsule())
     }
 }

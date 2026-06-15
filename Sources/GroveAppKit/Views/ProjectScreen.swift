@@ -191,25 +191,22 @@ struct ProjectScreen: View {
 
     // Pure-SwiftUI tab strip (Workspaces | Graph | Claude). NOT
     // Picker(.segmented): that control is AppKit-backed and ImageRenderer draws
-    // it as an error placeholder offscreen. The selected pill is REAL Liquid
-    // Glass live (translucent fill in snapshots); siblings share one
-    // GlassEffectContainer so the glass renders as a group when the selection
-    // moves.
+    // it as an error placeholder offscreen. The selected pill is a translucent
+    // capsule (selectionCapsule); the SwiftUI GlassEffectContainer is gone — it
+    // crashes nested inside the AppKit NSGlassEffectView window substrate.
     private var tabStrip: some View {
-        GlassEffectContainer {
-            HStack(spacing: 4) {
-                ForEach(MainTab.allCases, id: \.rawValue) { tab in
-                    Button {
-                        state.selectedTab = tab
-                    } label: {
-                        Text(tab.label)
-                            .font(.callout.weight(state.selectedTab == tab ? .semibold : .regular))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .selectionCapsule(isOn: state.selectedTab == tab)
-                    }
-                    .buttonStyle(.plain)
+        HStack(spacing: 4) {
+            ForEach(MainTab.allCases, id: \.rawValue) { tab in
+                Button {
+                    state.selectedTab = tab
+                } label: {
+                    Text(tab.label)
+                        .font(.callout.weight(state.selectedTab == tab ? .semibold : .regular))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .selectionCapsule(isOn: state.selectedTab == tab)
                 }
+                .buttonStyle(.plain)
             }
         }
     }

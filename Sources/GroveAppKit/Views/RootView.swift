@@ -111,14 +111,20 @@ public struct RootView: View {
                 // above it — no bare-glass gap above the footer.
                 .frame(maxHeight: .infinity)
                 if showsFooter {
-                    // macOS-26 grouped block: the footer floats as its own rounded
-                    // near-black card inset from the window edges — NOT a full-width
-                    // strip under a flat hairline divider (which read as old chrome).
-                    ProjectsFooter(state: state)
-                        .glassCard()
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 8)
-                        .padding(.top, 4)
+                    // macOS-26 grouped block: the footer floats as its own CLEAR
+                    // Liquid-Glass "menu block" (GlassMenuContainer, a native
+                    // NSGlassEffectView backdrop) inset from the window edges — NOT
+                    // the gray .glassCard (which read as just another content card)
+                    // and NOT a full-width strip under a flat hairline divider. The
+                    // clear glass reads as chrome distinct from the gray content
+                    // cards in the scroll area above. Paddings match the charts
+                    // block's inset on the right (8pt) for a symmetric frame.
+                    GlassMenuContainer {
+                        ProjectsFooter(state: state)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 8)
+                    .padding(.top, 4)
                 }
             }
             .modifier(RouteFrame(route: state.route, size: size, cap: maxPanelHeight))
