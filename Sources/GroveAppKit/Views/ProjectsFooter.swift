@@ -44,9 +44,14 @@ struct ProjectsFooter: View {
             // controller's preferredContentSize → the window grows/shrinks from
             // the right edge (pinned to the menu-bar icon).
             Button {
-                withAnimation(.easeInOut(duration: 0.16)) {
-                    state.showCharts.toggle()
-                }
+                // INSTANT toggle — NO withAnimation. Animating showCharts adds/
+                // removes the charts column (its NSGlassEffectView substrate) under
+                // the window's glass; animating that resolve recursed Apple's Liquid
+                // Glass framework to a SIGSEGV — the same crash class that
+                // de-animated AppState.open()'s route swap. The window grow/shrink is
+                // driven at the AppKit layer (preferredContentSize KVO →
+                // applyContentSize), which resizes/re-pins without a SwiftUI animation.
+                state.showCharts.toggle()
             } label: {
                 Image(systemName: state.showCharts
                       ? "sidebar.right" : "chart.bar")
