@@ -41,6 +41,16 @@ final class GraphTests: XCTestCase {
         XCTAssertEqual(GitService.renamedNewPath("plain/path.swift"), "plain/path.swift")
     }
 
+    func testRenamedNewPathHandlesWholePathRenameWithoutBraces() {
+        // With NO common prefix git emits the bare `old => new` (no braces); the file
+        // list must show only the new path, not the literal "old => new" string.
+        XCTAssertEqual(GitService.renamedNewPath("oldname.swift => newname.swift"), "newname.swift")
+        XCTAssertEqual(GitService.renamedNewPath("src/a/old.txt => docs/b/new.txt"), "docs/b/new.txt")
+        // And end to end through the numstat parser.
+        let changes = GitService.parseNumstat("4\t2\told/path.swift => new/path.swift\n")
+        XCTAssertEqual(changes.map(\.path), ["new/path.swift"])
+    }
+
     // MARK: layoutLanes (pure)
 
     private func raw(_ hash: String, parents: [String]) -> RawCommit {

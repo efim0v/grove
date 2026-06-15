@@ -379,8 +379,13 @@ extension GitService {
     /// The files changed in commit `sha` with +additions/−deletions, via
     /// `git show --numstat`. Loaded lazily when a commit is expanded.
     public func fileChanges(repoPath: String, sha: String) async throws -> [CommitFileChange] {
+        // `--first-parent -m`: on a MERGE commit, plain `git show --numstat` prints a
+        // COMBINED diff that omits every file matching one parent — so the file list
+        // and totals come up short. `-m` diffs against each parent; `--first-parent`
+        // restricts that to the first parent, giving the changes the merge introduced.
+        // For a non-merge commit both flags are no-ops (output is byte-identical).
         let result = try await runner.runOK("git", [
-            "-C", repoPath, "show", sha, "--numstat", "--format=",
+            "-C", repoPath, "show", sha, "--first-parent", "-m", "--numstat", "--format=",
         ])
         return Self.parseNumstat(result.stdout)
     }
@@ -398,17 +403,23 @@ extension GitService {
         return changes
     }
 
-    /// `git --numstat` renders renames as `{old => new}` embedded in the path
-    /// (e.g. `Sources/{A.swift => B.swift}` or a whole-path `{old => new}`).
-    /// Collapse it to the NEW path so the file list reads like a git UI; a path
+    /// `git --numstat` renders renames two ways: with a common prefix the change is
+    /// embedded in braces (`Sources/{A.swift => B.swift}`, `{old => new}/file`), and
+    /// with NO common prefix it's the bare `old/path => new/path` (no braces).
+    /// Collapse either to the NEW path so the file list reads like a git UI; a path
     /// without `=>` is returned unchanged.
     static func renamedNewPath(_ path: String) -> String {
-        guard let open = path.range(of: "{"),
-              let arrow = path.range(of: " => ", range: open.upperBound..<path.endIndex),
-              let close = path.range(of: "}", range: arrow.upperBound..<path.endIndex)
-        else { return path }
-        let newSegment = path[arrow.upperBound..<close.lowerBound]
-        return path.replacingCharacters(in: open.lowerBound..<close.upperBound, with: newSegment)
+        if let open = path.range(of: "{"),
+           let arrow = path.range(of: " => ", range: open.upperBound..<path.endIndex),
+           let close = path.range(of: "}", range: arrow.upperBound..<path.endIndex) {
+            let newSegment = path[arrow.upperBound..<close.lowerBound]
+            return path.replacingCharacters(in: open.lowerBound..<close.upperBound, with: newSegment)
+        }
+        // Whole-path rename, no common prefix: `old => new` → the part after " => ".
+        if let arrow = path.range(of: " => ") {
+            return String(path[arrow.upperBound...])
+        }
+        return path
     }
 
     public func commitGraph(repoPath: String, limit: Int = 300, skip: Int = 0) async throws -> [CommitNode] {
