@@ -85,6 +85,34 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // Warm the heavier screens offscreen shortly after launch so the first
         // navigation is snappy (deferred so the menu-bar icon appears instantly).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { SnapshotMode.prewarm() }
+
+        // Smoke-test seam: GROVE_SMOKE_OPEN_PROJECT=<substr> shows the panel, opens the
+        // first matching project (exercising the live glass route change that can't be
+        // reproduced in a test process), then self-quits — so a real .app-bundle launch
+        // can verify "open a project doesn't crash" headlessly. No-op without the env var.
+        if let needle = ProcessInfo.processInfo.environment["GROVE_SMOKE_OPEN_PROJECT"] {
+            func smoke(_ s: String) { FileHandle.standardError.write(Data("SMOKE: \(s)\n".utf8)) }
+            smoke("hook armed (needle=\(needle))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                guard let self else { return }
+                self.showPanel()
+                smoke("panel shown; isVisible=\(self.panel?.isVisible ?? false)")
+                let projects = self.state.config.projects
+                if let p = projects.first(where: { $0.name.contains(needle) }) ?? projects.first {
+                    smoke("opening project \(p.name)")
+                    self.state.open(.project(p.id))
+                    smoke("opened project; route=\(self.state.route)")
+                } else { smoke("NO matching project") }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                self?.state.selectedTab = .stats
+                smoke("switched to Stats tab; route=\(self?.state.route as Any)")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+                smoke("SURVIVED — quitting")
+                NSApp.terminate(nil)
+            }
+        }
     }
 
     // MARK: - Panel lifecycle
