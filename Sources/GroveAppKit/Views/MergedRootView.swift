@@ -46,46 +46,42 @@ public struct MergedRootView: View {
             RootView(state: state)
                 .frame(maxHeight: .infinity, alignment: .top)
             if state.showCharts {
-                // Charts section: fixed narrow width, adaptive height capped so a
-                // tall charts column can't push the window off a short display
-                // (replaces the old per-window screen-height cap; the controller
-                // additionally clamps the final frame on-screen). Wrapped in a
-                // CLEAR Liquid-Glass "menu block" (GlassMenuContainer, a native
-                // NSGlassEffectView backdrop) — NOT the gray .glassCard — so it
-                // reads as a distinct floating glass layer and the inner gray
-                // content cards (DashboardScreen's GlassCards) stand out against
-                // it. Separation from the projects column is the HStack `spacing`
-                // gap, not a hairline divider.
+                // Charts section: its own floating "Usage" H1 (mirroring the left
+                // "Projects" large title) above a CLEAR Liquid-Glass "menu block"
+                // (GlassMenuContainer) holding the cards. The title floats on the
+                // bare window glass — exactly like "Projects" floats above the
+                // project list — so the two section titles share ONE baseline
+                // across the window (both columns top-align to the HStack top, both
+                // bands are 44pt with a 14pt top inset → aligned by construction).
+                // The glass block reads as a distinct floating layer so the inner
+                // gray content cards (DashboardScreen's GlassCards) stand out
+                // against it; separation from the projects column is the HStack
+                // `spacing` gap, not a hairline divider.
                 //
-                // The 8pt OUTER inset (trailing + vertical) floats the glass
-                // block clear of the window's rounded corners — mirroring the
-                // footer block's outer inset in RootView so the two menu blocks
-                // are symmetric vs. the window edge (otherwise the block's tighter
-                // card radius sits inside the window's wider panel radius and
-                // leaves a sliver of substrate at the corners). The leading edge
-                // takes no inset: the HStack `spacing: 8` already gaps it from the
-                // projects column. The inner `.padding(8)` is the content padding
-                // INSIDE the glass.
-                GlassMenuContainer {
-                    ChartsSideContent(state: state)
-                        // SINGLE ~7pt inner content inset from the clear-block edge
-                        // to the graph cards (was a doubled 16pt: 8 here + 8 in
-                        // DashboardScreen, now zeroed). Halved so the cards sit close
-                        // to the block edge, top and bottom — no giant inner gap.
-                        .padding(7)
-                        // Pin the cards to the TOP and let the clear glass block
-                        // STRETCH to fill the (taller) HStack height, so the block's
-                        // bottom rim reaches the footer block's bottom rim instead of
-                        // hugging the cards and leaving a bare-glass band below.
-                        .frame(maxHeight: .infinity, alignment: .top)
+                // The 8pt OUTER inset (trailing + bottom) floats the column clear
+                // of the window's rounded corners — mirroring the footer block's
+                // outer inset in RootView so the two menu blocks are symmetric vs.
+                // the window edge. The leading edge takes no inset: the HStack
+                // `spacing: 8` already gaps it from the projects column.
+                VStack(spacing: 0) {
+                    chartsTitle
+                    GlassMenuContainer {
+                        ChartsSideContent(state: state)
+                            // SINGLE ~7pt inner content inset from the clear-block
+                            // edge to the graph cards (was a doubled 16pt: 8 here +
+                            // 8 in DashboardScreen, now zeroed). Halved so the cards
+                            // sit close to the block edge — no giant inner gap.
+                            .padding(7)
+                            // Pin the cards to the TOP and let the clear glass block
+                            // STRETCH to fill the (taller) HStack height, so the
+                            // block's bottom rim reaches the footer block's bottom
+                            // rim instead of hugging the cards and leaving a
+                            // bare-glass band below.
+                            .frame(maxHeight: .infinity, alignment: .top)
+                    }
+                    .frame(maxHeight: 820)
                 }
-                .frame(maxHeight: 820)
                 .padding(.trailing, 8)
-                // Top outer inset aligns the charts block's top rim with the TOP of
-                // the left content (the "Projects" header band, whose own top inset
-                // is 14); the bottom inset (8) matches the footer block's bottom
-                // inset so the charts block bottom aligns with the footer bottom.
-                .padding(.top, 14)
                 .padding(.bottom, 8)
             }
         }
@@ -95,5 +91,23 @@ public struct MergedRootView: View {
             RoundedRectangle(cornerRadius: DesignRadius.panel, style: .continuous)
                 .strokeBorder(.white.opacity(0.10))
         )
+    }
+
+    /// The charts column's floating H1 ("Usage"), structured IDENTICALLY to
+    /// RootShell's "Projects" large title — a 44pt band, `.largeTitle.bold`, a 14pt
+    /// top inset, bottom-leading — so the two section titles share one baseline
+    /// across the merged window. Indented 7pt to sit over the cards (the glass
+    /// block's inner content inset). Unlike "Projects" it never collapses: the
+    /// charts column has no ScrollView, so it stays at its at-rest size — which is
+    /// exactly the state the "Projects" title is in whenever the list isn't
+    /// scrolled (the common case, and the only state snapshots capture).
+    private var chartsTitle: some View {
+        Text("Usage")
+            .font(.largeTitle.weight(.bold))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 44, alignment: .bottomLeading)
+            .padding(.leading, 7)
+            .padding(.top, 14)
+            .allowsHitTesting(false)
     }
 }
