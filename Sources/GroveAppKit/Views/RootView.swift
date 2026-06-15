@@ -128,7 +128,9 @@ public struct RootView: View {
                 }
             }
             .modifier(RouteFrame(route: state.route, size: size, cap: maxPanelHeight))
-            .transition(.opacity)
+            // No .transition: route swaps are INSTANT (open() dropped its withAnimation)
+            // because animating the swap recursed Apple's glass framework to a SIGSEGV
+            // inside the window's NSGlassEffectView (see AppState.open()).
         }
         .clipped()
     }

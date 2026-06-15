@@ -217,11 +217,13 @@ public final class AppState: ObservableObject {
             selectedProjectID = id
             refreshTask = Task { await self.refresh() }
         }
-        // A short ease (no spring bounce) so the cross-fade settles cleanly while the
-        // window resizes — simpler and more native than a sliding spring.
-        withAnimation(.easeInOut(duration: 0.16)) {
-            route = target
-        }
+        // INSTANT route change — no withAnimation. Animating the route swap made
+        // Apple's Liquid Glass framework (DesignLibrary / MaterialProviderBox) recurse
+        // to a stack-overflow SIGSEGV while it re-resolved the glass layers of the
+        // animated SwiftUI content INSIDE the window's NSGlassEffectView (introduced by
+        // the one-window merge). A non-animated swap renders once and never re-enters
+        // that resolution mid-interpolation.
+        route = target
     }
 
     /// Pops along Route.backRoute. Leaving createWorkspace consumes the
