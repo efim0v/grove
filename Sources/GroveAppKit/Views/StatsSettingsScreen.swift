@@ -30,10 +30,9 @@ struct StatsSettingsScreen: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             ScopeHeader(title: "Stats Settings", subtitle: project?.name,
                         onBack: { state.goBack() })
-            Divider()
             content
         }
     }

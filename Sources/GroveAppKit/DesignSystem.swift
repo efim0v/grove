@@ -22,10 +22,17 @@ enum Palette {
     /// (0…1): calm = blue (primary), mid = yellow, hot = pink (negative). Derived
     /// from the palette colors themselves (no hardcoded channels) so charts pick up
     /// any future palette change. Used by the multi-colour daily-usage bars.
+    ///
+    /// A plain sRGB blend between two saturated anchors dips through a washed-out
+    /// middle (interpolating channels desaturates the mix), so the bars read faded.
+    /// We keep the SAME gradation (low→blue, mid→yellow, high→pink) and the SAME
+    /// palette anchors, then re-saturate the blended colour in HSB (boost S ~1.35x,
+    /// nudge brightness up) so every step stays vivid instead of grey-leaning.
     static func heat(_ t: Double) -> Color {
         let u = min(max(t, 0), 1)
-        return u < 0.5 ? primary.blended(to: mid, u / 0.5)
-                       : mid.blended(to: negative, (u - 0.5) / 0.5)
+        let blended = u < 0.5 ? primary.blended(to: mid, u / 0.5)
+                              : mid.blended(to: negative, (u - 0.5) / 0.5)
+        return blended.saturated(by: 1.35, minBrightness: 0.92)
     }
 }
 
@@ -42,6 +49,19 @@ extension Color {
                      green: Double(a.greenComponent + (b.greenComponent - a.greenComponent) * u),
                      blue:  Double(a.blueComponent  + (b.blueComponent  - a.blueComponent)  * u),
                      opacity: Double(a.alphaComponent + (b.alphaComponent - a.alphaComponent) * u))
+    }
+
+    /// Push a colour toward its pure hue in HSB: multiply saturation by `factor`
+    /// (clamped to 1) and raise brightness to at least `minBrightness`. Used to
+    /// re-vivify the daily-usage heat ramp, whose sRGB blend would otherwise pass
+    /// through a desaturated middle. Hue is preserved, so the gradation is intact.
+    func saturated(by factor: CGFloat, minBrightness: CGFloat = 0) -> Color {
+        let c = NSColor(self).usingColorSpace(.sRGB) ?? NSColor(self)
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, alpha: CGFloat = 0
+        c.getHue(&h, saturation: &s, brightness: &b, alpha: &alpha)
+        let boostedS = min(max(s * factor, 0), 1)
+        let boostedB = max(b, minBrightness)
+        return Color(nsColor: NSColor(hue: h, saturation: boostedS, brightness: boostedB, alpha: alpha))
     }
 }
 

@@ -33,9 +33,8 @@ struct AccountsScreen: View {
     @State private var expandedAccounts: Set<String> = []
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 6) {
             header
-            Divider()
             cardList
         }
         .onAppear {

@@ -99,8 +99,9 @@ struct DashboardScreen: View {
 
 /// The Charts dashboard as the embedded charts section of the merged window —
 /// laid out in `MergedRootView`'s HStack to the RIGHT of the projects section,
-/// split by an internal divider (the Projects|Charts tab was removed — charts are
-/// shown alongside projects whenever `state.showCharts` is true). Fixed narrow
+/// as its OWN rounded grouped block beside the projects (no divider — the
+/// Projects|Charts tab was removed; charts are shown alongside projects whenever
+/// `state.showCharts` is true). Fixed narrow
 /// width; the merged window's glass substrate supplies the chrome (material/clip/
 /// border) in production and the snapshot backdrop supplies it offscreen, so it's
 /// NOT here.

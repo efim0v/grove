@@ -20,7 +20,8 @@ struct ProjectScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+            // macOS-26 grouped blocks: no flat hairline under the 3-row header —
+            // the header padding + the content's own cards supply the separation.
             // Fill DOWN to the shared footer (pinned by RootView below this
             // screen) so the active tab's scroll area reaches just above it —
             // no bare-glass gap, matching the project LIST.

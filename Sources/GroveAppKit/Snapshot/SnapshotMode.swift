@@ -58,9 +58,10 @@ public enum SnapshotMode {
         var size: CGSize {
             switch self {
             case .projects: return CGSize(width: 460, height: 520)
-            // The merged window: projects 460 + 1px divider + charts 290 = 751,
-            // charts-driven height.
-            case .charts: return CGSize(width: 751, height: 800)
+            // The merged window: projects 460 + 8px gap + the charts BLOCK
+            // (290 + 8px padding on each side = 306) = 774, charts-driven height.
+            // No flat divider any more — the two grouped blocks are gap-separated.
+            case .charts: return CGSize(width: 774, height: 800)
             case .rootWorkspaces, .workspacesExpanded, .graph, .stats, .sessions:
                 return CGSize(width: 600, height: 540)
             case .createSheet: return CGSize(width: 540, height: 560)

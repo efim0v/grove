@@ -95,10 +95,11 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // the search field would never get the keyboard. Plain .borderless +
         // GrovePanel.canBecomeKey + NSApp.activate gives it focus.
         // Initial rect sized for the default (showCharts == true) combined layout —
-        // projects 460 + 1px divider + charts 290 = 751 — so the first frame doesn't
-        // flash at the projects-only width before KVO corrects it. Height is the
-        // charts-driven 600; the first preferredContentSize callback corrects both.
-        let p = GrovePanel(contentRect: NSRect(x: 0, y: 0, width: 751, height: 600),
+        // projects 460 + 8px gap + charts BLOCK (290 + 8px padding ×2 = 306) = 774 —
+        // so the first frame doesn't flash at the projects-only width before KVO
+        // corrects it. Height is the charts-driven 600; the first
+        // preferredContentSize callback corrects both.
+        let p = GrovePanel(contentRect: NSRect(x: 0, y: 0, width: 774, height: 600),
                            styleMask: [.borderless],
                            backing: .buffered, defer: false)
         p.level = .floating                  // above normal windows, but NOT forced over fullscreen apps
@@ -183,7 +184,7 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // Size + place the merged panel BEFORE ordering in so it doesn't flash.
         // NSHostingController can still report 0x0 before its first layout pass, so
         // when no preferred size is known yet, anchor using the panel's CURRENT
-        // frame (the initial 751x600, or the last shown size) — the top-right corner
+        // frame (the initial 774x600, or the last shown size) — the top-right corner
         // must be pinned to the icon BEFORE makeKeyAndOrderFront, or the very first
         // open flashes at the window's default origin until the KVO repositions it.
         if let h = host, h.preferredContentSize.width > 1 {

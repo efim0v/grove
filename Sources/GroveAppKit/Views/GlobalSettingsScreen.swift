@@ -11,9 +11,8 @@ struct GlobalSettingsScreen: View {
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             header
-            Divider()
             if isSnapshotRender {
                 form
                     .padding(12)

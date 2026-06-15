@@ -3,7 +3,7 @@ import AppKit
 import GroveCore
 
 /// The Projects tab (item 4 — the primary view): one card per configured project
-/// with its name, path and, crucially, its 2 most recent Claude sessions as
+/// with its name and, crucially, its 2 most recent Claude sessions as
 /// tappable blocks for instant terminal access (items 4/7/24). Tapping the card
 /// header drills into the project's full workspace scope.
 struct ProjectsTab: View {
@@ -52,16 +52,9 @@ struct ProjectsTab: View {
 
     private func cardHeader(_ project: ProjectConfig) -> some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(project.name)
-                    .font(.callout.weight(.semibold))
-                    .lineLimit(1)
-                Text(project.path)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text(project.name)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
             Spacer(minLength: 10)
             if let snapshot = state.snapshots[project.id] {
                 Text("\(snapshot.repos.count) repos · \(snapshot.workspaces.count) ws")

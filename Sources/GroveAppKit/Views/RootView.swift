@@ -111,8 +111,14 @@ public struct RootView: View {
                 // above it — no bare-glass gap above the footer.
                 .frame(maxHeight: .infinity)
                 if showsFooter {
-                    Divider()
+                    // macOS-26 grouped block: the footer floats as its own rounded
+                    // near-black card inset from the window edges — NOT a full-width
+                    // strip under a flat hairline divider (which read as old chrome).
                     ProjectsFooter(state: state)
+                        .glassCard()
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 8)
+                        .padding(.top, 4)
                 }
             }
             .modifier(RouteFrame(route: state.route, size: size, cap: maxPanelHeight))

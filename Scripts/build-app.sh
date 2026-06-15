@@ -36,9 +36,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<string>6.0</string>
 	<!-- Keep in sync with GroveVersion.current (Sources/GroveCore/GroveVersion.swift). -->
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>0.1.0</string>
+	<string>0.2.0</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>

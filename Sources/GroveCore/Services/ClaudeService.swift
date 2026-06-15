@@ -333,22 +333,38 @@ public final class ClaudeService: @unchecked Sendable {
     /// `claude --resume <id>` is clearly running. We scan `ps` for those processes
     /// and recover the session id from the command line.
     ///
-    /// `ps` can't tell busy from idle, so status defaults to "idle" → the UI shows
-    /// "waiting" (finished its turn, ready for your next prompt) rather than
-    /// "closed". cwd is empty (callers join by sessionId); accountName is empty.
+    /// `ps` alone can't see network-bound generation, so a quiet session reads as
+    /// "idle" → the UI shows "waiting" (finished its turn, ready for your next
+    /// prompt) rather than "closed". When there IS clear CPU use anywhere in the
+    /// process group (a turn, tools, or a subagent), the aggregated subtree CPU is
+    /// ≥ busyCPUThreshold and status is "busy" → running.
+    /// cwd is empty (callers join by sessionId); accountName is empty.
     /// Deduped by sessionId. Merged AFTER `liveProcesses` so a real status record,
     /// when present, wins.
     public func liveProcessesFromTable() -> [LiveProcess] {
         let listing = Self.runProcessListing()
+        // A second `ps` snapshot (pid,ppid,%cpu) for the WHOLE table, so we can roll
+        // each claude pid's CPU up over its process GROUP. When a session delegates
+        // to SUBAGENTS the main claude process BLOCKS (near-0 %CPU) while its child
+        // processes do the work — measuring only the parent's own %CPU would misread
+        // an actively-working session as idle → "waiting". Aggregating the subtree
+        // fixes that. (LC_ALL=C is forced in runProcess so %cpu always uses a dot.)
+        let cpuTree = Self.parseProcessTree(Self.runProcessTreeListing())
         var result: [LiveProcess] = []
         var seen = Set<String>()
         for line in listing.split(separator: "\n") {
-            guard let (pid, cpu, command) = Self.parsePidCpuCommand(String(line)),
+            guard let (pid, ownCPU, command) = Self.parsePidCpuCommand(String(line)),
                   command.contains("claude") else { continue }
-            // We can't see "generating" from outside (it's network-bound, low CPU,
-            // indistinguishable from idle). But clear CPU use means the session is
-            // actively executing (tools / a turn) → "busy" → running; otherwise it's
-            // alive-but-quiet → "idle" → waiting (ready for input).
+            // Roll the parent's own %CPU up with all of its descendants' (subagents,
+            // tool subprocesses). If the tree snapshot is missing this pid, fall back
+            // to its own %CPU from the command listing.
+            let cpu = cpuTree[pid] == nil ? ownCPU : Self.subtreeCPU(of: pid, in: cpuTree)
+            // We still can't see "generating" from outside (it's network-bound, low
+            // CPU, indistinguishable from idle) — that limitation is unchanged and not
+            // fixable from outside the process. But clear CPU use ANYWHERE in the
+            // process group means the session is actively executing (a turn, tools, or
+            // a subagent) → "busy" → running; otherwise it's alive-but-quiet → "idle"
+            // → waiting (ready for input).
             let status = cpu >= Self.busyCPUThreshold ? "busy" : "idle"
             if let sessionId = Self.resumeSessionId(in: command) {
                 guard !seen.contains(sessionId) else { continue }
@@ -451,6 +467,47 @@ public final class ClaudeService: @unchecked Sendable {
         return (pid, cpu, command)
     }
 
+    /// A pid → (ppid, own %cpu) map, used to roll a claude session's CPU up over its
+    /// whole process GROUP (see `subtreeCPU`). Built from one `ps -axo pid=,ppid=,%cpu=`
+    /// snapshot. Malformed lines are skipped; a duplicate pid keeps the first.
+    static func parseProcessTree(_ listing: String) -> [Int32: (ppid: Int32, cpu: Double)] {
+        var map: [Int32: (ppid: Int32, cpu: Double)] = [:]
+        for raw in listing.split(separator: "\n") {
+            guard let (pid, ppid, cpu) = parsePidPpidCpu(String(raw)) else { continue }
+            if map[pid] == nil { map[pid] = (ppid, cpu) }
+        }
+        return map
+    }
+
+    /// Parses "  <pid> <ppid> <%cpu>" from `ps -axo pid=,ppid=,%cpu=`. nil on
+    /// malformed lines. %cpu uses a dot decimal (runProcess forces LC_ALL=C).
+    static func parsePidPpidCpu(_ raw: String) -> (pid: Int32, ppid: Int32, cpu: Double)? {
+        let fields = raw.split(whereSeparator: { $0 == " " })
+        guard fields.count >= 3,
+              let pid = Int32(fields[0]),
+              let ppid = Int32(fields[1]),
+              let cpu = Double(fields[2]) else { return nil }
+        return (pid, ppid, cpu)
+    }
+
+    /// Total %CPU of `pid`'s process GROUP: its own %cpu plus that of every descendant
+    /// (children, grandchildren — subagents and tool subprocesses), summed iteratively
+    /// over a children index derived from `tree`. Cycle-guarded by a visited set so a
+    /// malformed ppid loop can't spin. A pid absent from `tree` contributes 0. Pure.
+    static func subtreeCPU(of pid: Int32, in tree: [Int32: (ppid: Int32, cpu: Double)]) -> Double {
+        var children: [Int32: [Int32]] = [:]
+        for (child, info) in tree { children[info.ppid, default: []].append(child) }
+        var total = 0.0
+        var visited: Set<Int32> = []
+        var stack: [Int32] = [pid]
+        while let current = stack.popLast() {
+            guard visited.insert(current).inserted else { continue }   // cycle guard
+            total += tree[current]?.cpu ?? 0
+            if let kids = children[current] { stack.append(contentsOf: kids) }
+        }
+        return total
+    }
+
     /// Extracts the session id from a `claude --resume <uuid>` command line. nil for
     /// processes without `--resume` (a bare new session can't be mapped to an id)
     /// and for the cmux wrapper scripts (their path lacks the `--resume` flag).
@@ -462,6 +519,7 @@ public final class ClaudeService: @unchecked Sendable {
     }
 
     private static func runProcessListing() -> String { runProcess("/bin/ps", ["-axo", "pid=,%cpu=,command="]) }
+    private static func runProcessTreeListing() -> String { runProcess("/bin/ps", ["-axo", "pid=,ppid=,%cpu="]) }
     private static func runTtyListing() -> String { runProcess("/bin/ps", ["-axo", "tty=,command="]) }
 
     static func runProcess(_ executable: String, _ arguments: [String]) -> String {

@@ -101,7 +101,7 @@ final class SnapshotModeTests: XCTestCase {
     /// Canvas sizes mirror RootView's adaptive per-route panel frames.
     func testSceneSizesFollowTheAdaptivePanelFrames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.projects.size, CGSize(width: 460, height: 520))
-        XCTAssertEqual(SnapshotMode.SnapshotScene.charts.size, CGSize(width: 751, height: 800))
+        XCTAssertEqual(SnapshotMode.SnapshotScene.charts.size, CGSize(width: 774, height: 800))
         XCTAssertEqual(SnapshotMode.SnapshotScene.rootWorkspaces.size, CGSize(width: 600, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.workspacesExpanded.size, CGSize(width: 600, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.graph.size, CGSize(width: 600, height: 540))

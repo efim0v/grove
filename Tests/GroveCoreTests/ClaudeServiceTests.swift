@@ -361,6 +361,52 @@ final class ClaudeServiceTests: XCTestCase {
         XCTAssertNil(ClaudeService.parsePidCpuCommand("garbage"))
     }
 
+    func testSubtreeCPUSumsBusyChildrenEvenWhenParentIdle() {
+        // Parent claude (pid 100) is BLOCKED waiting on subagents → near-0 own %CPU,
+        // but its two child subagents (200, 300) and a grandchild (400) are busy.
+        // Aggregating the subtree must read the GROUP as busy.
+        let tree: [Int32: (ppid: Int32, cpu: Double)] = [
+            100: (ppid: 1, cpu: 0.2),     // the parent — idle on its own
+            200: (ppid: 100, cpu: 7.0),   // subagent
+            300: (ppid: 100, cpu: 6.0),   // subagent
+            400: (ppid: 200, cpu: 5.0),   // a grandchild of the parent
+            999: (ppid: 1, cpu: 50.0),    // an unrelated busy process — must NOT count
+        ]
+        let total = ClaudeService.subtreeCPU(of: 100, in: tree)
+        XCTAssertEqual(total, 0.2 + 7.0 + 6.0 + 5.0, accuracy: 1e-9)
+        XCTAssertGreaterThanOrEqual(total, ClaudeService.busyCPUThreshold)  // → busy → running
+        // The parent's OWN %CPU alone would be misread as idle/waiting.
+        XCTAssertLessThan(tree[100]!.cpu, ClaudeService.busyCPUThreshold)
+        // A pid absent from the tree contributes nothing.
+        XCTAssertEqual(ClaudeService.subtreeCPU(of: 42, in: tree), 0, accuracy: 1e-9)
+    }
+
+    func testSubtreeCPUIsCycleGuarded() {
+        // A malformed ppid loop (100→200→100) must not spin; each pid counts once.
+        let tree: [Int32: (ppid: Int32, cpu: Double)] = [
+            100: (ppid: 200, cpu: 3.0),
+            200: (ppid: 100, cpu: 4.0),
+        ]
+        XCTAssertEqual(ClaudeService.subtreeCPU(of: 100, in: tree), 7.0, accuracy: 1e-9)
+    }
+
+    func testParseProcessTreeBuildsPidPpidCpuMap() {
+        let listing = """
+          100     1  0.2
+          200   100  7.5
+        garbage line
+          300   100  6,0
+        """
+        let map = ClaudeService.parseProcessTree(listing)
+        XCTAssertEqual(map[100]?.ppid, 1)
+        XCTAssertEqual(map[100]?.cpu ?? -1, 0.2, accuracy: 1e-9)
+        XCTAssertEqual(map[200]?.ppid, 100)
+        XCTAssertEqual(map[200]?.cpu ?? -1, 7.5, accuracy: 1e-9)
+        // "6,0" is a comma decimal (a non-C locale) → not parseable → row skipped.
+        XCTAssertNil(map[300])
+        XCTAssertEqual(map.count, 2)
+    }
+
     func testMergeLiveFileRecordWinsAndKeepsFreshSessions() {
         let file = [LiveProcess(pid: 1, sessionId: "A", cwd: "", status: "busy", accountName: "x"),
                     LiveProcess(pid: 2, sessionId: "B", cwd: "", status: "waiting", accountName: "x")]

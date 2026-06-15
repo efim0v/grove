@@ -61,9 +61,19 @@ struct ProjectsFooter: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize()
-            Button("Quit") { NSApp.terminate(nil) }
-                .keyboardShortcut("q")
-                .fixedSize()
+            // Rounded/capsule affordance (macOS-26): a pill, not a default
+            // rectangular push button.
+            Button { NSApp.terminate(nil) } label: {
+                Text("Quit")
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
+            .background(.white.opacity(0.10), in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+            .keyboardShortcut("q")
+            .fixedSize()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

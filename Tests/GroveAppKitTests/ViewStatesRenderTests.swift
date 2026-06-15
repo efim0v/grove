@@ -61,14 +61,14 @@ final class ViewStatesRenderTests: XCTestCase {
         _ = renderer.cgImage
     }
 
-    /// Exercises the merged window root: the expanded HStack (projects | divider |
-    /// charts side by side) and the collapsed projects-only path (showCharts=false).
-    /// Forcing cgImage on each catches a crashing/blank combined body.
+    /// Exercises the merged window root: the expanded HStack (projects + the
+    /// gap-separated charts BLOCK, no divider) and the collapsed projects-only path
+    /// (showCharts=false). Forcing cgImage on each catches a crashing/blank body.
     func testMergedRootRendersExpandedAndCollapsed() {
         let shown = SnapshotMode.fixtureState()
         shown.showCharts = true
         let expanded = MergedRootView(state: shown)
-            .frame(width: 751, height: 800)
+            .frame(width: 774, height: 800)
             .environment(\.colorScheme, .dark)
             .environment(\.isSnapshotRender, true)
         let r1 = ImageRenderer(content: expanded)
