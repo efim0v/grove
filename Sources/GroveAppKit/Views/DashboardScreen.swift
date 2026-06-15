@@ -44,7 +44,10 @@ struct DashboardScreen: View {
                 switcher(scopes: cols, index: index)
                 DashboardColumnView(column: cols[index], isSnapshotRender: isSnapshotRender)
             }
-            .padding(8)
+            // No padding here: the charts block's single content inset is supplied
+            // ONCE by the GlassMenuContainer wrapper in MergedRootView. (Previously
+            // an 8pt pad here stacked with the wrapper's 8pt for a doubled ~16pt
+            // gap from the clear-block edge to the graph cards.)
             .frame(maxWidth: .infinity)
         }
     }

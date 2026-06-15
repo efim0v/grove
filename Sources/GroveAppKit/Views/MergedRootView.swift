@@ -68,11 +68,25 @@ public struct MergedRootView: View {
                 // INSIDE the glass.
                 GlassMenuContainer {
                     ChartsSideContent(state: state)
-                        .padding(8)
+                        // SINGLE ~7pt inner content inset from the clear-block edge
+                        // to the graph cards (was a doubled 16pt: 8 here + 8 in
+                        // DashboardScreen, now zeroed). Halved so the cards sit close
+                        // to the block edge, top and bottom — no giant inner gap.
+                        .padding(7)
+                        // Pin the cards to the TOP and let the clear glass block
+                        // STRETCH to fill the (taller) HStack height, so the block's
+                        // bottom rim reaches the footer block's bottom rim instead of
+                        // hugging the cards and leaving a bare-glass band below.
+                        .frame(maxHeight: .infinity, alignment: .top)
                 }
                 .frame(maxHeight: 820)
                 .padding(.trailing, 8)
-                .padding(.vertical, 8)
+                // Top outer inset aligns the charts block's top rim with the TOP of
+                // the left content (the "Projects" header band, whose own top inset
+                // is 14); the bottom inset (8) matches the footer block's bottom
+                // inset so the charts block bottom aligns with the footer bottom.
+                .padding(.top, 14)
+                .padding(.bottom, 8)
             }
         }
         // The hairline edge that used to live on each of the two separate chromes

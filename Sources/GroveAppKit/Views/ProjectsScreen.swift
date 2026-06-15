@@ -29,6 +29,16 @@ struct ProjectsTab: View {
         }
     }
 
+    /// The ONE content inset (Apple-uniform) that lines up every level of a
+    /// project section. It equals the session STATUS DOT's total leading INSIDE
+    /// the session card: sessionCard `.padding(10)` + SessionBlock's own
+    /// `.padding(.horizontal, 9)` = 19. The lifted name header and the "Open
+    /// project" footer use this same inset so the name's left edge, the dot, the
+    /// "Open project" affordance, and the card content all share one left edge —
+    /// and, symmetrically, the right edge (repos/ws counts, the open chevron, the
+    /// card content) shares one right edge.
+    static let sectionContentInset: CGFloat = 19
+
     private var cards: some View {
         VStack(alignment: .leading, spacing: 18) {
             ForEach(state.config.projects) { project in
@@ -62,7 +72,9 @@ struct ProjectsTab: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 6)
+        // Apple-uniform: the lifted name lines up with the session status dot, and
+        // the repos/ws counts line up with the card's right content edge.
+        .padding(.horizontal, Self.sectionContentInset)
     }
 
     /// The project's recent Claude sessions on their OWN gray .glassCard()
@@ -100,7 +112,9 @@ struct ProjectsTab: View {
                     .foregroundStyle(.secondary)
             }
             .contentShape(Rectangle())
-            .padding(.horizontal, 6)
+            // Same Apple-uniform inset as the name header and the card content: the
+            // open chevron's right edge lines up with the card's right content edge.
+            .padding(.horizontal, Self.sectionContentInset)
         }
         .buttonStyle(.plain)
         .help(project.path)
