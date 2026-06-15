@@ -1,47 +1,113 @@
 import AppKit
 import SwiftUI
 
-/// The ONE window substrate spanning the whole merged panel (projects | divider |
-/// charts): macOS 26's native `NSGlassEffectView` in REGULAR style — the same
-/// slightly-transparent, small-blur Liquid Glass as SwiftUI's
-/// `.glassEffect(.regular)`, but CONSTANT.
+/// Which substrate backs the merged panel (projects | charts). The two read the
+/// SAME across the whole window because there is ONE window over ONE substrate —
+/// the transparency fix two side-by-side windows could never give.
 ///
-/// Why `.regular` not `.clear`: clear glass is mostly a lens, so its look is
-/// dominated by whatever sits behind the window — over a busy fullscreen surface
-/// it suddenly reads as heavy blur, over the desktop as near-transparent. `.regular`
-/// has a fixed frost floor, so it reads the SAME regardless of backdrop. (Merging
-/// the old two side-by-side panels into ONE window over ONE substrate is what makes
-/// the projects and charts sections read identically — two windows over different
-/// backdrops never could. The panel also drops `.fullScreenAuxiliary` so it no
-/// longer floats over fullscreen apps and re-samples that blurry surface — see
-/// GroveMenuBarApp.)
-///
-/// Why AppKit, not SwiftUI `.glassEffect`: SwiftUI's glass reacts to the host
-/// window's key/active state — it dims when the window isn't key. `NSGlassEffectView`
-/// composites at the window-server layer and does NOT consult SwiftUI active state,
-/// so it reads identically and never dims. There is exactly one glass layer (the
-/// one window); the content cards are a plain gray fill (GlassCard), so no
-/// glass-on-glass muddiness.
+/// `.liquidGlass` (DEFAULT) is macOS 26's `NSGlassEffectView`; the user validated
+/// this look over the alternative. `.visualEffect` is the M1-spec mechanism: a
+/// single `NSVisualEffectView` (state = .active ALWAYS, blendingMode = .behindWindow,
+/// a very transparent material) + a fixed scrim — offered behind this flag so both
+/// substrates are available and switchable at runtime.
+enum WindowSubstrateStyle: String, CaseIterable {
+    case liquidGlass
+    case visualEffect
+
+    var label: String {
+        switch self {
+        case .liquidGlass: return "Liquid Glass"
+        case .visualEffect: return "Visual Effect"
+        }
+    }
+
+    /// Persisted selection (UserDefaults). Defaults to `.liquidGlass`.
+    static let defaultsKey = "GroveWindowSubstrateStyle"
+    static var current: WindowSubstrateStyle {
+        UserDefaults.standard.string(forKey: defaultsKey).flatMap(WindowSubstrateStyle.init) ?? .liquidGlass
+    }
+}
+
+extension Notification.Name {
+    /// Posted when the substrate style changes so the panel can live-swap its
+    /// contentView without a relaunch.
+    static let groveSubstrateStyleChanged = Notification.Name("groveSubstrateStyleChanged")
+}
+
+/// Installs the chosen window substrate as `panel.contentView`, embedding
+/// `host.view` inside it. ONE entry point ("define it once") for both substrates so
+/// the projects and charts sections always share whichever backing is active. The
+/// caller keeps `host` for its preferredContentSize KVO. The panel must already be
+/// isOpaque=false / backgroundColor=.clear (Grove's panels are). Re-callable: it
+/// re-parents `host.view` into a fresh substrate, so the same call live-swaps styles.
 @MainActor
-enum GlassWindowSubstrate {
-    /// Installs a clear-glass `NSGlassEffectView` as `panel`'s contentView and
-    /// embeds `host.view` inside it. The caller keeps `host` for its
-    /// preferredContentSize KVO (sizing is driven by setContentSize, not by the
-    /// hosting controller). The panel must already be isOpaque=false /
-    /// backgroundColor=.clear (Grove's panels are).
-    static func install(_ host: NSHostingController<AnyView>, radius: CGFloat, in panel: NSPanel) {
-        let glass = NSGlassEffectView()
-        glass.style = .regular          // fixed frost floor: constant across the whole window
-        glass.cornerRadius = radius     // the rounded window shape
-        glass.tintColor = nil           // neutral, constant
+enum WindowSubstrate {
+    static func install(_ host: NSHostingController<AnyView>, radius: CGFloat,
+                        style: WindowSubstrateStyle, in panel: NSPanel) {
         host.view.wantsLayer = true
-        host.view.layer?.backgroundColor = .clear   // let the glass show through the gaps
-        host.view.frame = CGRect(origin: .zero, size: panel.frame.size)
+        host.view.layer?.backgroundColor = .clear   // let the substrate show through the gaps
         host.view.autoresizingMask = [.width, .height]
-        glass.contentView = host.view   // the whole MergedRootView (projects|divider|charts)
-        panel.contentView = glass
+        let substrate: NSView
+        switch style {
+        case .liquidGlass:  substrate = makeGlass(host: host, radius: radius, size: panel.frame.size)
+        case .visualEffect: substrate = makeVisualEffect(host: host, radius: radius, size: panel.frame.size)
+        }
+        panel.contentView = substrate
+        panel.invalidateShadow()
         // Keep the hosting controller (and its KVO) alive for the panel's lifetime.
         objc_setAssociatedObject(panel, &hostKey, host, .OBJC_ASSOCIATION_RETAIN)
+    }
+
+    // MARK: - Liquid Glass (NSGlassEffectView) — the default
+
+    /// macOS 26's native Liquid Glass in REGULAR style: a fixed frost floor, so it
+    /// reads the SAME regardless of backdrop, and (unlike SwiftUI `.glassEffect`)
+    /// composites at the window-server layer so it never dims when the window loses
+    /// key state.
+    private static func makeGlass(host: NSHostingController<AnyView>, radius: CGFloat,
+                                  size: CGSize) -> NSView {
+        let glass = NSGlassEffectView()
+        glass.style = .regular
+        glass.cornerRadius = radius
+        glass.tintColor = nil
+        host.view.frame = CGRect(origin: .zero, size: size)
+        glass.contentView = host.view   // re-parents host.view (removes it from any prior substrate)
+        return glass
+    }
+
+    // MARK: - Visual Effect (NSVisualEffectView) — the M1-spec substrate
+
+    /// The M1-spec substrate: a single `NSVisualEffectView` configured to be CONSTANT.
+    /// `state = .active` ALWAYS so it never dims on focus/hover/click;
+    /// `blendingMode = .behindWindow` samples the desktop behind the window; the
+    /// `.hudWindow` material is very transparent. A fixed dark scrim sits over the
+    /// material (so the content cards still read), and the layer is clipped to the
+    /// panel's continuous corner radius. One substrate for the whole merged root, so
+    /// the projects and charts sections are identical by construction.
+    private static func makeVisualEffect(host: NSHostingController<AnyView>, radius: CGFloat,
+                                         size: CGSize) -> NSView {
+        let bounds = CGRect(origin: .zero, size: size)
+        let effect = NSVisualEffectView(frame: bounds)
+        effect.material = .hudWindow            // very transparent
+        effect.blendingMode = .behindWindow
+        effect.state = .active                  // ALWAYS active — constant regardless of key state
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = radius     // the rounded window shape…
+        effect.layer?.cornerCurve = .continuous // …with Apple's continuous corner, matching the panel
+        effect.layer?.masksToBounds = true
+
+        // Fixed scrim: a constant dark wash over the material so the gray content
+        // cards stay legible and the substrate reads the same over any backdrop —
+        // the "+ identical scrim" half of the M1 recipe.
+        let scrim = NSView(frame: bounds)
+        scrim.wantsLayer = true
+        scrim.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.16).cgColor
+        scrim.autoresizingMask = [.width, .height]
+        effect.addSubview(scrim)
+
+        host.view.frame = bounds
+        effect.addSubview(host.view)            // re-parents host.view, above the scrim
+        return effect
     }
 
     private static var hostKey: UInt8 = 0

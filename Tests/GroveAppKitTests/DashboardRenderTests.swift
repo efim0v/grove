@@ -66,6 +66,14 @@ final class DashboardRenderTests: XCTestCase {
         render(GlobalSettingsScreen(state: state).environment(\.isSnapshotRender, true), height: 420)
     }
 
+    /// Live branch (isSnapshotRender=false) so the real segmented substrate Picker
+    /// in the new "Window substrate" section is exercised, not just its snapshot
+    /// lookalike — guards against a crash/regression in that branch.
+    func testGlobalSettingsScreenRendersLiveBranch() {
+        let state = SnapshotMode.fixtureState()
+        render(GlobalSettingsScreen(state: state).environment(\.isSnapshotRender, false), height: 420)
+    }
+
     func testProjectsTabEmptyAndPopulatedStates() {
         let populated = SnapshotMode.fixtureState()
         render(ProjectsTab(state: populated).environment(\.isSnapshotRender, true), height: 520)

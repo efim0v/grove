@@ -56,6 +56,10 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
     /// does not do this on its own reliably.
     private var sizeObservation: NSKeyValueObservation?
 
+    /// Observes `.groveSubstrateStyleChanged` so the panel live-swaps its substrate
+    /// (Liquid Glass ⇄ Visual Effect) without a relaunch when the Settings toggle flips.
+    private var substrateObserver: (any NSObjectProtocol)?
+
     /// Global mouse monitor installed while the panel is open so a click anywhere
     /// OUTSIDE our app (desktop, another app, the menu bar) dismisses it. A global
     /// monitor never fires for clicks inside our own windows — including a child
@@ -82,6 +86,12 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         item.isVisible = true
         statusItem = item
         GroveLog.menubar.info("launched; statusItem.isVisible=\(item.isVisible, privacy: .public)")
+
+        // Live-swap the window substrate when the Settings toggle flips the style.
+        substrateObserver = NotificationCenter.default.addObserver(
+            forName: .groveSubstrateStyleChanged, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.reinstallSubstrate() }
+        }
         // Warm the heavier screens offscreen shortly after launch so the first
         // navigation is snappy (deferred so the menu-bar icon appears instantly).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { SnapshotMode.prewarm() }
@@ -159,7 +169,7 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         let chrome = AnyView(MergedRootView(state: state))
         let h = NSHostingController(rootView: chrome)
         h.sizingOptions = [.preferredContentSize]
-        GlassWindowSubstrate.install(h, radius: radius, in: p)
+        WindowSubstrate.install(h, radius: radius, style: WindowSubstrateStyle.current, in: p)
         host = h
         // Resize the panel to the SwiftUI content on every tab/route change (or a
         // charts collapse/show), then re-pin the top-right corner so it grows inward
@@ -170,6 +180,15 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         }
         panel = p
         return p
+    }
+
+    /// Rebuilds the panel's substrate from the current `WindowSubstrateStyle` (the
+    /// Settings toggle), re-parenting the SAME hosting view into the new backing so
+    /// the swap is live and lossless — no relaunch, no lost state.
+    private func reinstallSubstrate() {
+        guard let p = panel, let h = host else { return }
+        WindowSubstrate.install(h, radius: DesignRadius.panel, style: WindowSubstrateStyle.current, in: p)
+        if h.preferredContentSize.width > 1 { applyContentSize(h.preferredContentSize) }
     }
 
     /// Resizes the single merged panel to its SwiftUI content and re-pins its
