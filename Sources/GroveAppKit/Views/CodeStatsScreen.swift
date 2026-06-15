@@ -506,14 +506,13 @@ struct CodeStatsScreen: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        // A heavier frosted backdrop so it reads as a floating tooltip: a real material blur
-        // (regular = strong frost) under a dark tint, with a hairline rim + a soft drop
-        // shadow lifting it off the bars. Clipped to the field radius.
+        // A dark, near-opaque backdrop so it reads as a floating tooltip lifted off
+        // the bars. NOT .regularMaterial — SwiftUI Material recursed in
+        // MaterialProviderBox.resolveLayers (stack overflow) resolving its backdrop
+        // near the window's nested glass; a flat dark fill can't reach that path.
         .background {
             RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
-                    .fill(.black.opacity(0.45)))
+                .fill(Color(white: 0.08).opacity(0.97))
         }
         .clipShape(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)

@@ -2,38 +2,73 @@ import SwiftUI
 import AppKit
 import GroveCore
 
-/// The Projects tab (item 4 — the primary view): one card per configured project
-/// with its name and, crucially, its 2 most recent Claude sessions as
-/// tappable blocks for instant terminal access (items 4/7/24). Tapping the card
-/// header drills into the project's full workspace scope.
+/// The Projects tab (item 4 — the primary view): an Apple-26 grouped list. Each
+/// project is a section — an H4 name header (+ its repos/ws counts) LIFTED OUT
+/// onto the plain background, ABOVE a separate gray .glassCard() that carries the
+/// 2 most recent Claude sessions as tappable blocks for instant terminal access
+/// (items 4/7/24). An "Open project" chevron at the END of each section drills
+/// into the project's full workspace scope.
 struct ProjectsTab: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
+    /// When set (by RootShell), the live ScrollView mirrors its vertical offset
+    /// here so the floating "Projects" large title can collapse on scroll. nil
+    /// keeps the plain behavior (and ProjectsTab independently testable).
+    var scrollOffset: Binding<CGFloat>? = nil
 
     var body: some View {
         if state.config.projects.isEmpty {
             emptyState
         } else if isSnapshotRender {
             cards.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        } else if let scrollOffset {
+            ScrollView { cards.tracksScrollOffset(scrollOffset) }
+                .frame(maxHeight: .infinity)
         } else {
             ScrollView { cards }.frame(maxHeight: .infinity)
         }
     }
 
     private var cards: some View {
-        VStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 18) {
             ForEach(state.config.projects) { project in
-                projectCard(project)
+                projectSection(project)
             }
         }
-        .padding(8)   // consistent with the charts section's edge padding
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
-    private func projectCard(_ project: ProjectConfig) -> some View {
+    /// One grouped project: H4 name header → separate session card → open footer.
+    private func projectSection(_ project: ProjectConfig) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button { state.open(.project(project.id)) } label: { cardHeader(project) }
-                .buttonStyle(.plain)
-                .help(project.path)
+            nameHeader(project)
+            sessionCard(project)
+            openFooter(project)
+        }
+    }
+
+    /// The project NAME (H4) + its repos/ws count, LIFTED OUT of the card onto
+    /// the plain background — distinct from the gray session-list surface below.
+    private func nameHeader(_ project: ProjectConfig) -> some View {
+        HStack(spacing: 10) {
+            Text(project.name)
+                .font(.headline)
+                .lineLimit(1)
+            Spacer(minLength: 10)
+            if let snapshot = state.snapshots[project.id] {
+                Text("\(snapshot.repos.count) repos · \(snapshot.workspaces.count) ws")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 6)
+    }
+
+    /// The project's recent Claude sessions on their OWN gray .glassCard()
+    /// surface, separated from the lifted name header above.
+    private func sessionCard(_ project: ProjectConfig) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             let sessions = state.recentSessionsByProject[project.id] ?? []
             if sessions.isEmpty {
                 Text("No recent Claude sessions")
@@ -46,26 +81,29 @@ struct ProjectsTab: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .glassCard()
     }
 
-    private func cardHeader(_ project: ProjectConfig) -> some View {
-        HStack(spacing: 10) {
-            Text(project.name)
-                .font(.callout.weight(.semibold))
-                .lineLimit(1)
-            Spacer(minLength: 10)
-            if let snapshot = state.snapshots[project.id] {
-                Text("\(snapshot.repos.count) repos · \(snapshot.workspaces.count) ws")
-                    .font(.caption2)
+    /// The open-project affordance, moved to the END of the section. This is the
+    /// tap-to-open target (the name header is now non-interactive lifted copy).
+    private func openFooter(_ project: ProjectConfig) -> some View {
+        Button { state.open(.project(project.id)) } label: {
+            HStack(spacing: 6) {
+                Spacer(minLength: 0)
+                Text("Open project")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+            .padding(.horizontal, 6)
         }
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .help(project.path)
     }
 
     private var emptyState: some View {

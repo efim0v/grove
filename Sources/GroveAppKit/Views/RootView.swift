@@ -216,7 +216,10 @@ public struct RootView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(.regularMaterial,
+            // A dark translucent fill, NOT .regularMaterial — SwiftUI Material
+            // recursed in MaterialProviderBox.resolveLayers (stack overflow) when
+            // resolving its backdrop near the window's nested glass.
+            .background(Color(white: 0.14).opacity(0.92),
                         in: RoundedRectangle(cornerRadius: DesignRadius.field,
                                              style: .continuous))
             .padding(.horizontal, 10)
