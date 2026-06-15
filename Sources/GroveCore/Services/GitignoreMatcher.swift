@@ -301,10 +301,28 @@ public struct GitignoreRules: Equatable {
     public enum Decision: Equatable { case ignored, included, unmatched }
 
     /// Evaluate `relativePath` (relative to THIS file's directory) against the
-    /// ordered patterns, last-match-wins.
+    /// ordered patterns, last-match-wins — with git's parent-exclusion rule: once an
+    /// ANCESTOR directory is excluded, the path can NOT be re-included by a later
+    /// negation (git never recurses into a pruned directory, "no matter where the
+    /// pattern is defined"). So we check each ancestor directory top-down first; the
+    /// first one that resolves to `.ignored` short-circuits the whole path to
+    /// `.ignored`. A re-included intervening directory (e.g. `!build/`) resolves that
+    /// ancestor to `.included`/`.unmatched`, clearing the prune so we keep descending.
     public func decide(relativePath: String, isDirectory: Bool) -> Decision {
         let components = GitignoreRules.split(relativePath)
         guard !components.isEmpty else { return .unmatched }
+        if components.count > 1 {
+            for k in 1..<components.count
+            where directDecision(components: Array(components[0..<k]), isDirectory: true) == .ignored {
+                return .ignored
+            }
+        }
+        return directDecision(components: components, isDirectory: isDirectory)
+    }
+
+    /// Last-match-wins over this file's patterns for the EXACT path components (no
+    /// ancestor reasoning — that lives in `decide`).
+    private func directDecision(components: [Substring], isDirectory: Bool) -> Decision {
         var decision: Decision = .unmatched
         for pattern in patterns where pattern.matches(components: components, isDirectory: isDirectory) {
             decision = pattern.negated ? .included : .ignored
@@ -358,16 +376,32 @@ public struct GitignoreScope: Equatable {
     /// touch the path (`.unmatched`), we fall back to the parent scope, and so on.
     /// Each frame sees the path made relative to ITS directory.
     public func isIgnored(path: String, isDirectory: Bool) -> Bool {
+        // git's parent-exclusion rule ACROSS scopes: a path is ignored if any ANCESTOR
+        // directory is excluded by the scope, and once excluded no deeper frame's
+        // negation can re-include it. Check ancestors top-down (each resolved
+        // deepest-frame-first); the first excluded ancestor wins. A re-included
+        // directory (`!build/`) resolves to `.included`, clearing the prune.
+        let components = GitignoreRules.split(path)
+        if components.count > 1 {
+            for k in 1..<components.count {
+                let dir = components[0..<k].joined(separator: "/")
+                if scopeDecision(path: dir, isDirectory: true) == .ignored { return true }
+            }
+        }
+        return scopeDecision(path: path, isDirectory: isDirectory) == .ignored
+    }
+
+    /// Deepest-frame-first decision for one path across the scope: the nearest
+    /// enclosing frame whose rules reach a non-`.unmatched` verdict decides (a deeper
+    /// file's `!keep` overrides a shallower ignore). `.unmatched` if no frame touches it.
+    private func scopeDecision(path: String, isDirectory: Bool) -> GitignoreRules.Decision {
         for frame in frames.reversed() {
             guard let relative = GitignoreScope.relativize(path: path, under: frame.directory)
             else { continue }   // path isn't inside this frame's directory -> skip
-            switch frame.rules.decide(relativePath: relative, isDirectory: isDirectory) {
-            case .ignored:  return true
-            case .included: return false
-            case .unmatched: continue
-            }
+            let decision = frame.rules.decide(relativePath: relative, isDirectory: isDirectory)
+            if decision != .unmatched { return decision }
         }
-        return false
+        return .unmatched
     }
 
     /// Make `path` (root-relative) relative to `directory` (also root-relative).

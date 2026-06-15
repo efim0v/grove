@@ -152,14 +152,17 @@ final class GitignoreMatcherTests: XCTestCase {
     // MARK: - Last-match-wins / negation order
 
     func testNegationReincludesWhenItIsTheLastMatch() {
-        // Ignore everything in build/, but re-include keep.txt.
+        // Exclude the CONTENTS of build/ (build/*, NOT the directory itself), then
+        // re-include keep.txt. git honors the re-include only because the directory is
+        // not pruned; `build/` (dir-excluded) would forbid it — verified against real
+        // git, see testNegationCannotReincludeUnderExcludedDirectory.
         let rules = GitignoreRules(contents: """
-        build/
+        build/*
         !build/keep.txt
         """)
-        XCTAssertTrue(rules.match(relativePath: "build", isDirectory: true))
+        XCTAssertTrue(rules.match(relativePath: "build/other.txt", isDirectory: false))
         XCTAssertFalse(rules.match(relativePath: "build/keep.txt", isDirectory: false),
-                       "later !pattern re-includes")
+                       "later !pattern re-includes when only the contents are excluded")
     }
 
     func testNegationOrderMatters_lastWins() {
@@ -245,6 +248,48 @@ final class GitignoreMatcherTests: XCTestCase {
         """)
         XCTAssertTrue(rules.match(relativePath: "api/service.pb.go", isDirectory: false))
         XCTAssertTrue(rules.match(relativePath: "vendor", isDirectory: true))
-        XCTAssertFalse(rules.match(relativePath: "vendor/keepme.go", isDirectory: false))
+        // git: `!vendor/keepme.go` CANNOT re-include a file once `vendor/` excludes the
+        // directory itself — verified against real `git check-ignore`. So it stays
+        // ignored (NOT re-included). The contrast (`vendor/*` form) is below.
+        XCTAssertTrue(rules.match(relativePath: "vendor/keepme.go", isDirectory: false))
+    }
+
+    // MARK: - Parent-exclusion rule (a negation can't re-include under an excluded dir)
+
+    func testNegationCannotReincludeUnderExcludedDirectory() {
+        // `dir/` excludes the DIRECTORY → no later `!dir/keep` re-includes a file in it
+        // (git never recurses into a pruned dir). Verified against real git.
+        let excludedDir = GitignoreRules(contents: "build/\n!build/keep.txt\n")
+        XCTAssertTrue(excludedDir.match(relativePath: "build/keep.txt", isDirectory: false))
+        XCTAssertTrue(excludedDir.match(relativePath: "build/other.txt", isDirectory: false))
+
+        // `dir/*` excludes only the CONTENTS, leaving the directory itself includable,
+        // so `!dir/keep` DOES re-include — the git-documented working idiom.
+        let excludedContents = GitignoreRules(contents: "build/*\n!build/keep.txt\n")
+        XCTAssertFalse(excludedContents.match(relativePath: "build/keep.txt", isDirectory: false))
+        XCTAssertTrue(excludedContents.match(relativePath: "build/other.txt", isDirectory: false))
+
+        // A re-included intervening directory (`!build/`) clears the prune so a deeper
+        // file is reachable again.
+        let reincludedDir = GitignoreRules(contents: "build/\n!build/\nbuild/*.tmp\n")
+        XCTAssertFalse(reincludedDir.match(relativePath: "build/app.js", isDirectory: false))
+        XCTAssertTrue(reincludedDir.match(relativePath: "build/app.tmp", isDirectory: false))
+    }
+
+    func testCrossScopeNegationCannotReincludeUnderShallowerExcludedDir() {
+        // A shallow scope excludes the DIRECTORY `gen/`; a deeper scope inside it tries
+        // to re-include a file. git forbids that (parent dir pruned), so it stays
+        // ignored — even though the deeper frame's own decision is `.included`.
+        var scope = GitignoreScope()
+        scope.push(.init(directory: "", rules: GitignoreRules(contents: "gen/")))
+        scope.push(.init(directory: "gen", rules: GitignoreRules(contents: "!keep.swift")))
+        XCTAssertTrue(scope.isIgnored(path: "gen/keep.swift", isDirectory: false))
+
+        // Contrast: shallow scope excludes only the CONTENTS (`gen/*`), so the deeper
+        // re-include is honored.
+        var scope2 = GitignoreScope()
+        scope2.push(.init(directory: "", rules: GitignoreRules(contents: "gen/*")))
+        scope2.push(.init(directory: "gen", rules: GitignoreRules(contents: "!keep.swift")))
+        XCTAssertFalse(scope2.isIgnored(path: "gen/keep.swift", isDirectory: false))
     }
 }
