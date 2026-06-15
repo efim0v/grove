@@ -10,8 +10,6 @@ struct DashboardScreen: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
 
-    static let columnWidth: CGFloat = 320
-
     /// Every scope: "Overall" first when there is more than one account (otherwise
     /// it would just duplicate the sole account), then one per account.
     private func scopes() -> [DashboardColumn] {
