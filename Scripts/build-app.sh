@@ -18,10 +18,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Bundle id intentionally NOT the old dev.artem.grove: that identity's
-	     menu-bar layout cache was corrupted by a MenuBarExtra crash-loop on
-	     macOS 26.4 (status item pinned off-screen behind Control Center, only
-	     clears on reboot). A fresh id gets a clean, visible slot. -->
+	<!-- macOS 26.4 quirk: if this identity's menu-bar layout cache gets corrupted
+	     (status item pinned off-screen behind Control Center — hides the icon AND
+	     any text title), it clears on a logout/reboot. A fresh bundle id ALSO gets
+	     a clean slot, but it re-prompts for the Claude keychain ACL (a new identity
+	     isn't trusted) — so we keep the SAME id and clear corruption by relogin,
+	     never by bumping the id. -->
 	<key>CFBundleIdentifier</key>
 	<string>dev.artemefimov.grove</string>
 	<key>CFBundleName</key>

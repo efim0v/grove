@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 /// Menu-bar entry point. A plain AppKit `NSStatusItem` + a borderless `NSPanel`
 /// hosting the SwiftUI `RootView` — NOT SwiftUI's `MenuBarExtra` and NOT an
@@ -60,6 +61,11 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
     /// (Liquid Glass ⇄ Visual Effect) without a relaunch when the Settings toggle flips.
     private var substrateObserver: (any NSObjectProtocol)?
 
+    /// Keeps the menu-bar % readout in sync with usage changes + a background refresh
+    /// so it stays current while the panel is closed.
+    private var usageCancellable: AnyCancellable?
+    private var menuReadoutTimer: Timer?
+
     /// Global mouse monitor installed while the panel is open so a click anywhere
     /// OUTSIDE our app (desktop, another app, the menu bar) dismisses it. A global
     /// monitor never fires for clicks inside our own windows — including a child
@@ -76,16 +82,25 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            // Icon only — no text label beside the tree.
-            let image = NSImage(systemSymbolName: "tree", accessibilityDescription: "Grove")
-            image?.isTemplate = true
-            button.image = image
             button.action = #selector(togglePanel)
             button.target = self
         }
         item.isVisible = true
         statusItem = item
+        updateMenuBarReadout()
         GroveLog.menubar.info("launched; statusItem.isVisible=\(item.isVisible, privacy: .public)")
+
+        // Keep the menu-bar weekly-% readout live: update it whenever usage changes,
+        // and refresh usage on a background cadence so it's current with the panel
+        // closed (the in-panel 15s loop only runs while the panel is open).
+        usageCancellable = state.$usageByAccount
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in Task { @MainActor in self?.updateMenuBarReadout() } }
+        Task { @MainActor in await state.refreshUsage(now: Date()) }
+        menuReadoutTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in await self.state.refreshUsage(now: Date()) }
+        }
 
         // Live-swap the window substrate when the Settings toggle flips the style.
         substrateObserver = NotificationCenter.default.addObserver(
@@ -122,6 +137,47 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
                 smoke("SURVIVED — quitting")
                 NSApp.terminate(nil)
             }
+        }
+
+        // Recovery seam: if the menu-bar slot is corrupted (icon hidden behind
+        // Control Center — clears only on relogin), there's no icon to click, so the
+        // app is unreachable. GroveShowOnLaunch pops the panel ~1s after launch so it
+        // stays usable until a relogin restores the icon.
+        if UserDefaults.standard.bool(forKey: "GroveShowOnLaunch") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.showPanel() }
+        }
+    }
+
+    /// Re-opening Grove (Finder / Spotlight / Dock, or `open -a Grove`) reopens the
+    /// panel instead of being a no-op — a reliable way back in when the menu-bar icon
+    /// is hidden by the macOS 26.4 layout-cache bug and there's nothing to click.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if panel?.isVisible != true { showPanel() }
+        return true
+    }
+
+    /// Renders the menu-bar item as the OVERALL WEEKLY limit: the used % coloured by
+    /// severity — adaptive (white on a dark bar) when there's plenty, yellow as it
+    /// approaches the cap, red when nearly there. A plain text readout instead of an
+    /// icon (the SF-symbol icon failed to render reliably in the menu bar; text is
+    /// both robust and more useful at a glance). Shows "–" until the first usage load.
+    private func updateMenuBarReadout() {
+        guard let button = statusItem?.button else { return }
+        button.image = nil
+        let font = NSFont.menuBarFont(ofSize: 0)
+        if let u = state.menuBarWeeklyUsage() {
+            let color: NSColor
+            switch u.level {
+            case .critical: color = .systemRed
+            case .tight:    color = .systemYellow
+            case .plenty:   color = .labelColor
+            case .noData:   color = .secondaryLabelColor
+            }
+            button.attributedTitle = NSAttributedString(
+                string: "\(u.percent)%", attributes: [.foregroundColor: color, .font: font])
+        } else {
+            button.attributedTitle = NSAttributedString(
+                string: "–", attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: font])
         }
     }
 
@@ -207,11 +263,24 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         let h = min(size.height, visible.height - 8)
         let capped = NSSize(width: size.width, height: h)
         if p.frame.size != capped { p.setContentSize(capped) }
-        // Top-RIGHT corner pinned to the icon; grow LEFT + DOWN, then clamp on-screen.
-        var x = anchorRightX - capped.width
-        x = max(visible.minX + 4, min(x, visible.maxX - capped.width - 4))
-        var y = anchorTopY - capped.height
-        y = max(visible.minY + 4, min(y, visible.maxY - capped.height - 4))
+        repinTopRight()
+    }
+
+    /// Re-pins the panel's TOP-RIGHT corner to the status icon (grow LEFT + DOWN),
+    /// clamped on-screen — WITHOUT resizing. windowDidResize calls THIS, never
+    /// applyContentSize: calling setContentSize from inside a resize callback is a
+    /// resize-within-a-resize that AppKit runs in an animation group, which recurses
+    /// the Liquid-Glass material resolver (DesignLibrary / MaterialProviderBox) to a
+    /// stack-overflow SIGSEGV — the "crash when opening a project" (the open resizes
+    /// the window). Origin-only repinning can't enter that path.
+    private func repinTopRight() {
+        guard let p = panel else { return }
+        let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        var x = anchorRightX - p.frame.width
+        x = max(visible.minX + 4, min(x, visible.maxX - p.frame.width - 4))
+        var y = anchorTopY - p.frame.height
+        y = max(visible.minY + 4, min(y, visible.maxY - p.frame.height - 4))
         p.setFrameOrigin(NSPoint(x: x, y: y))
         p.invalidateShadow()
     }
@@ -224,9 +293,21 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         guard let button = statusItem?.button, let buttonWindow = button.window else { return }
         let p = makePanel()
         let iconRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
-        anchorRightX = iconRect.maxX
-        anchorTopY = iconRect.minY - 6            // small gap below the menu bar
-        anchorScreen = buttonWindow.screen
+        let screen = buttonWindow.screen ?? NSScreen.main
+        let vis = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        anchorScreen = screen
+        // A correctly-placed menu-bar icon sits in the menu-bar band at the TOP of its
+        // screen. If the slot is corrupted (macOS 26.4 menu-bar-cache bug parks the
+        // item at the origin / off-screen), iconRect lands at the BOTTOM-LEFT and the
+        // panel would open down there. Detect that and anchor to the screen's TOP-RIGHT
+        // instead, so the panel is always reachable in a sane place.
+        if iconRect.maxY >= vis.maxY - 6 {
+            anchorRightX = iconRect.maxX
+            anchorTopY = iconRect.minY - 6            // small gap below the menu bar
+        } else {
+            anchorRightX = vis.maxX - 8               // fallback: top-right of the screen
+            anchorTopY = vis.maxY - 4
+        }
         state.isPanelOpen = true                  // starts RootView's refresh loop
         // Size + place the merged panel BEFORE ordering in so it doesn't flash.
         // NSHostingController can still report 0x0 before its first layout pass, so
@@ -257,7 +338,21 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // A resize delivered while the window is hidden (a SwiftUI layout pass during
         // orderOut) must not reposition with stale anchors — showPanel re-anchors.
         guard resized === panel, resized?.isVisible == true else { return }
-        applyContentSize(panel?.frame.size ?? .zero)
+        // Re-pin now (origin-only — resizing synchronously here recurses Apple's
+        // Liquid Glass to a SIGSEGV; see repinTopRight).
+        repinTopRight()
+        // Enforce the on-screen height cap: a project with many sessions/worktrees can
+        // grow the content past the screen height. We must NOT setContentSize from
+        // inside this resize callback (re-entrant → glass-recursion crash), so cap it
+        // on the NEXT run-loop tick (the same safe path the preferredContentSize KVO
+        // uses). Converges: once capped, the window is within bounds and this no-ops.
+        if let p = panel {
+            let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            if p.frame.height > visible.height - 8 {
+                DispatchQueue.main.async { [weak self] in self?.applyContentSize(p.frame.size) }
+            }
+        }
     }
 
     // MARK: - Outside-click dismissal

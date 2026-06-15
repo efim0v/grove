@@ -963,6 +963,18 @@ extension AppState {
             ? NSHomeDirectory() + "/.claude.json" : dir + "/.claude.json"
     }
 
+    /// Overall WEEKLY limit for the menu-bar readout: the tier-weighted USED
+    /// percentage across all accounts and its capacity level (drives the colour).
+    /// nil until there's data to show. Same thresholds as the Weekly limit card.
+    public func menuBarWeeklyUsage(now: Date = Date()) -> (percent: Int, level: CapacityLevel)? {
+        let agg = aggregateRemaining(window: .sevenDay, now: now)
+        guard agg.total > 0 else { return nil }
+        let used = (1 - agg.fraction) * 100
+        let remaining = max(0, 1 - used / 100)
+        let level: CapacityLevel = remaining > 0.5 ? .plenty : (remaining > 0.1 ? .tight : .critical)
+        return (Int(used.rounded()), level)
+    }
+
     /// Aggregate remaining capacity for a window across accounts (spec §C.3): each
     /// account weighted by tier, combined with its most-recent capture's used%.
     public func aggregateRemaining(window: LimitWindow, now: Date) -> RateLimitModel.Aggregate {
