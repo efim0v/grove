@@ -29,6 +29,47 @@ final class ClaudeCredentialsTests: XCTestCase {
             K.serviceName(configDir: "/Users/demo/.claude-accounts/work-account"))
     }
 
+    // MARK: - CachingCredentialsReader (Keychain prompt minimization)
+
+    /// A base reader that counts how many times the underlying (Keychain) read runs.
+    private final class CountingReader: CredentialsReading, @unchecked Sendable {
+        var calls: [String: Int] = [:]
+        var token: String? = "tok"
+        func accessToken(configDir: String) -> String? {
+            calls[configDir, default: 0] += 1
+            return token
+        }
+    }
+
+    func testCachingReaderReadsBaseOncePerConfigDir() {
+        let base = CountingReader()
+        let caching = CachingCredentialsReader(base: base)
+        // Repeated reads of the same account hit the base exactly once (one prompt).
+        for _ in 0..<5 { XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "tok") }
+        XCTAssertEqual(base.calls["~/.claude"], 1)
+        _ = caching.accessToken(configDir: "~/.claude-accounts/a")
+        XCTAssertEqual(base.calls["~/.claude-accounts/a"], 1)
+    }
+
+    func testCachingReaderInvalidateForcesReread() {
+        let base = CountingReader()
+        let caching = CachingCredentialsReader(base: base)
+        _ = caching.accessToken(configDir: "~/.claude")
+        caching.invalidate(configDir: "~/.claude")
+        _ = caching.accessToken(configDir: "~/.claude")
+        XCTAssertEqual(base.calls["~/.claude"], 2, "invalidate re-reads (e.g. after a refreshed token)")
+    }
+
+    func testCachingReaderDoesNotCacheNil() {
+        let base = CountingReader()
+        base.token = nil   // first read fails (e.g. the user dismissed the prompt)
+        let caching = CachingCredentialsReader(base: base)
+        XCTAssertNil(caching.accessToken(configDir: "~/.claude"))
+        base.token = "tok"
+        XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "tok", "a failed read is retried, not cached as nil")
+        XCTAssertEqual(base.calls["~/.claude"], 2)
+    }
+
     func testSuffixedServiceShapeForAnArbitraryDir() {
         let name = K.serviceName(configDir: "/tmp/some-account")
         XCTAssertTrue(name.hasPrefix("Claude Code-credentials-"))

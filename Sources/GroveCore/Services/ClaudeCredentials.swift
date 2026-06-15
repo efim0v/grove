@@ -86,3 +86,37 @@ public struct KeychainCredentialsReader: CredentialsReading {
         return data
     }
 }
+
+/// Caches each account's OAuth token in memory for the process lifetime so the
+/// macOS Keychain — which prompts the user when Grove reads Claude Code's item — is
+/// hit AT MOST ONCE per account per launch. The OAuth client otherwise re-read the
+/// token on every poll (its result cache is only ~3 min), which re-prompted the user
+/// repeatedly while the panel was open. Claude Code's token is long-lived (it
+/// refreshes on its own cadence); a token that goes stale surfaces as an OAuth auth
+/// failure, after which `invalidate(configDir:)` forces a fresh read. Only SUCCESSFUL
+/// reads are cached, so a transient nil (e.g. the user dismissing the first prompt)
+/// is retried on the next poll. Thread-safe via a lock.
+public final class CachingCredentialsReader: CredentialsReading, @unchecked Sendable {
+    private let base: CredentialsReading
+    private let lock = NSLock()
+    private var cache: [String: String] = [:]   // configDir → token (successful reads only)
+
+    public init(base: CredentialsReading = KeychainCredentialsReader()) {
+        self.base = base
+    }
+
+    public func accessToken(configDir: String) -> String? {
+        lock.lock()
+        if let cached = cache[configDir] { lock.unlock(); return cached }
+        lock.unlock()
+        guard let token = base.accessToken(configDir: configDir) else { return nil }
+        lock.lock(); cache[configDir] = token; lock.unlock()
+        return token
+    }
+
+    /// Drop a cached token so the next read re-fetches from the Keychain — call this
+    /// when an OAuth request fails auth (the token may have been refreshed).
+    public func invalidate(configDir: String) {
+        lock.lock(); cache.removeValue(forKey: configDir); lock.unlock()
+    }
+}

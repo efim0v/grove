@@ -179,7 +179,10 @@ public final class AppState: ObservableObject {
     /// statusline) — we read them straight from the source, authenticated with the
     /// account's own Keychain token.
     private let oauthClient = OAuthUsageClient(
-        fetcher: URLSessionUsageFetcher(), appVersion: GroveVersion.current)
+        fetcher: URLSessionUsageFetcher(), appVersion: GroveVersion.current,
+        // Cache the Keychain token per launch so reading Claude Code's credentials
+        // prompts the user at most once per account per launch (not every ~3-min poll).
+        credentials: CachingCredentialsReader())
 
     /// Test seam: supplies OAuth limits for an account's configDir. nil = use the
     /// real client (network + Keychain). TESTS inject canned values so refresh is
