@@ -35,6 +35,15 @@ public final class AppState: ObservableObject {
     /// refreshUsage on the scan tick. Empty until the first refresh.
     @Published public var usageByAccount: [String: AccountUsageAnalytics] = [:]
     @Published public var snapshotsByAccount: [String: [UsageSnapshot]] = [:]
+    /// Per-account `organizationRateLimitTier`, resolved OFF the main actor in
+    /// refreshUsage. aggregateRemaining (and thus several view bodies, incl. the
+    /// always-visible charts pane) reads this via tier(for:) — it must never hit disk.
+    var tierCache: [String: String] = [:]
+    /// Per-account identity (email/org/tier), resolved OFF the main actor in
+    /// refreshUsage. AccountsScreen reads this instead of a synchronous .claude.json
+    /// read per card per render. Empty until the first refresh (the screen falls back
+    /// to its injected provider then — which is also the snapshot seam).
+    var identityByAccount: [String: AccountIdentity] = [:]
     /// Per-project recent Claude sessions (item 4): the Projects tab's previews.
     /// Filled by refreshSessionIndex (cheap, off-main — no git scan).
     @Published public var recentSessionsByProject: [UUID: [ProjectSessionRow]] = [:]
@@ -899,34 +908,52 @@ extension AppState {
             (name: $0.name, dir: expandTilde($0.configDir), claudeJSON: claudeJSONPath(for: $0))
         }
         let started = Date()
+        let wantsOAuth = isPanelOpen || oauthLimitsOverride != nil
         let result = await Task.detached(priority: .utility) {
-            () -> (snaps: [String: [UsageSnapshot]], byAcc: [String: AccountUsageAnalytics]) in
+            () -> (snaps: [String: [UsageSnapshot]], byAcc: [String: AccountUsageAnalytics],
+                   tiers: [String: String], ids: [String: AccountIdentity]) in
             let reader = UsageReader()
             var snaps: [String: [UsageSnapshot]] = [:]
             var byAcc: [String: AccountUsageAnalytics] = [:]
+            var tiers: [String: String] = [:]
+            var ids: [String: AccountIdentity] = [:]
             for job in jobs {
                 snaps[job.name] = reader.read(configDir: job.dir, accountName: job.name)
                 byAcc[job.name] = analytics.account(configDir: job.dir, accountName: job.name,
                                                     claudeJSONPath: job.claudeJSON, now: now)
+                // .claude.json read off-main here (was a per-render main-thread read via
+                // tier(for:) and AccountsScreen's identity provider).
+                if let t = ClaudeService.organizationRateLimitTier(claudeJSONPath: job.claudeJSON) {
+                    tiers[job.name] = t
+                }
+                if let id = ClaudeService.identity(claudeJSONPath: job.claudeJSON) {
+                    ids[job.name] = id
+                }
             }
-            return (snaps, byAcc)
+            return (snaps, byAcc, tiers, ids)
         }.value
         var snaps = result.snaps
-        // OAuth limits from Anthropic's usage API, folded in as the latest capture
-        // for EVERY account. This is the authoritative source AND the only one that
-        // carries the 7-day Sonnet window (the statusline emits only five_hour /
-        // seven_day). Cached ≥3min in the client, so this is at most one request
-        // per account per few minutes; failures fall back to the statusline captures.
-        let provider: @Sendable (String, Date) async -> OAuthUsage? =
-            oauthLimitsOverride ?? { [oauthClient] dir, now in try? await oauthClient.usage(configDir: dir, now: now) }
-        for job in jobs {
-            guard let usage = await provider(job.dir, now),
-                  let snap = Self.oauthSnapshot(accountName: job.name, usage: usage, now: now) else { continue }
-            snaps[job.name, default: []].append(snap)
+        // OAuth limits from Anthropic's usage API, folded in as the latest capture for
+        // EVERY account — the authoritative source and the only one carrying the 7-day
+        // Sonnet window. It requires a KEYCHAIN read, so we only fetch it when the panel
+        // is OPEN (a user gesture): the launch one-shot and the background menu-bar
+        // timer (panel closed) must NOT prompt for / block on the keychain before any
+        // gesture. The menu-bar readout needs only the statusline weekly window, which
+        // is already captured above without any keychain access.
+        if wantsOAuth {
+            let provider: @Sendable (String, Date) async -> OAuthUsage? =
+                oauthLimitsOverride ?? { [oauthClient] dir, now in try? await oauthClient.usage(configDir: dir, now: now) }
+            for job in jobs {
+                guard let usage = await provider(job.dir, now),
+                      let snap = Self.oauthSnapshot(accountName: job.name, usage: usage, now: now) else { continue }
+                snaps[job.name, default: []].append(snap)
+            }
         }
         snapshotsByAccount = snaps
         usageByAccount = result.byAcc
-        GroveLog.perf.info("usage refresh (\(jobs.count) accts): \(Int(Date().timeIntervalSince(started) * 1000))ms")
+        tierCache = result.tiers
+        identityByAccount = result.ids
+        GroveLog.perf.info("usage refresh (\(jobs.count) accts, oauth=\(wantsOAuth)): \(Int(Date().timeIntervalSince(started) * 1000))ms")
     }
 
     /// Builds a synthetic capture from OAuth usage so the dashboard, aggregate, and
@@ -951,10 +978,10 @@ extension AppState {
 
     private func tier(for account: AccountConfig) -> String? {
         if let t = tierOverride?[account.name] { return t }
-        // Production: the weight table keys on organizationRateLimitTier (e.g.
-        // "default_claude_max_20x"), NOT identity().tier (which is the often-nil
-        // userRateLimitTier). Read the canonical field directly.
-        return ClaudeService().organizationRateLimitTier(account: account)
+        // In-memory only: the canonical organizationRateLimitTier is read from
+        // .claude.json off-main during refreshUsage and cached in tierCache. NEVER
+        // read the file here — tier(for:) runs inside view bodies via aggregateRemaining.
+        return tierCache[account.name]
     }
 
     private func claudeJSONPath(for account: AccountConfig) -> String {

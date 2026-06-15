@@ -122,8 +122,14 @@ public final class ClaudeService: @unchecked Sendable {
         let home = NSHomeDirectory()
         let jsonPath = (dir == home + "/.claude") ? home + "/.claude.json"
                                                   : dir + "/.claude.json"
+        return Self.identity(claudeJSONPath: jsonPath)
+    }
+
+    /// Path-based variant so the `.claude.json` read can run OFF the main actor and be
+    /// cached (the account-based version must not be called from a view body).
+    public static func identity(claudeJSONPath: String) -> AccountIdentity? {
         guard
-            let data = FileManager.default.contents(atPath: jsonPath),
+            let data = FileManager.default.contents(atPath: claudeJSONPath),
             let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
             let oauth = object["oauthAccount"] as? [String: Any]
         else { return nil }
@@ -145,8 +151,16 @@ public final class ClaudeService: @unchecked Sendable {
         let home = NSHomeDirectory()
         let jsonPath = (dir == home + "/.claude") ? home + "/.claude.json"
                                                   : dir + "/.claude.json"
+        return Self.organizationRateLimitTier(claudeJSONPath: jsonPath)
+    }
+
+    /// Path-based variant so the (synchronous) `.claude.json` read can run OFF the
+    /// main actor — view bodies must never call the account-based version (it would
+    /// read+parse the file on the main thread on every render). Resolve once in the
+    /// off-main refresh and cache the result.
+    public static func organizationRateLimitTier(claudeJSONPath: String) -> String? {
         guard
-            let data = FileManager.default.contents(atPath: jsonPath),
+            let data = FileManager.default.contents(atPath: claudeJSONPath),
             let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
             let oauth = object["oauthAccount"] as? [String: Any]
         else { return nil }

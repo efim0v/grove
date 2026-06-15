@@ -98,7 +98,10 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
             .sink { [weak self] _ in Task { @MainActor in self?.updateMenuBarReadout() } }
         Task { @MainActor in await state.refreshUsage(now: Date()) }
         menuReadoutTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
-            guard let self else { return }
+            // Skip while the panel is open — RootView's 15s loop already refreshes, so
+            // the two cadences never overlap (which could land out-of-order and
+            // overwrite newer data).
+            guard let self, !self.state.isPanelOpen else { return }
             Task { @MainActor in await self.state.refreshUsage(now: Date()) }
         }
 

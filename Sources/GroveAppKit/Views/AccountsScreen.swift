@@ -164,7 +164,12 @@ struct AccountsScreen: View {
 
     private func identityLine(_ account: AccountConfig) -> some View {
         Group {
-            if let identity = identityProvider(account) {
+            // Prefer the OFF-MAIN cache (state.identityByAccount, populated by
+            // refreshUsage) so the body never reads .claude.json on the main thread.
+            // Fall back to the injected provider only before the first refresh — which
+            // is also the snapshot seam (SnapshotMode injects fixtureIdentity; offscreen
+            // renders never populate the cache, so they always use the fixture).
+            if let identity = state.identityByAccount[account.name] ?? identityProvider(account) {
                 // FIX I2: prefer the CANONICAL organizationRateLimitTier (the namespace
                 // RateLimitModel.tierWeights keys on) so the card's tier matches the
                 // weight table; fall back to the legacy `tier` (userRateLimitTier).
