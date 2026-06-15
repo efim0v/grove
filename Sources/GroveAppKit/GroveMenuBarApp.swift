@@ -142,11 +142,13 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
             }
         }
 
-        // Recovery seam: if the menu-bar slot is corrupted (icon hidden behind
-        // Control Center — clears only on relogin), there's no icon to click, so the
-        // app is unreachable. GroveShowOnLaunch pops the panel ~1s after launch so it
-        // stays usable until a relogin restores the icon.
+        // Recovery seam: if the menu-bar slot is corrupted (icon hidden behind Control
+        // Center — clears only on relogin), there's no icon to click. GroveShowOnLaunch
+        // (a) shows a DOCK icon so the panel is reachable — clicking it reopens via
+        // applicationShouldHandleReopen — and (b) pops the panel on launch. Cleared once
+        // the menu-bar icon is restored (relogin).
         if UserDefaults.standard.bool(forKey: "GroveShowOnLaunch") {
+            NSApp.setActivationPolicy(.regular)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.showPanel() }
         }
     }
@@ -212,6 +214,11 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // complaint). `.moveToActiveSpace` brings the panel to the active Space on
         // demand without persisting across Spaces.
         p.collectionBehavior = [.moveToActiveSpace]
+        // AppKit-level height cap from the start (refined per-screen in applyContentSize)
+        // so the panel can never grow off-screen even before the first sizing pass.
+        if let vis = NSScreen.main?.visibleFrame {
+            p.contentMaxSize = NSSize(width: .greatestFiniteMagnitude, height: max(200, vis.height - 8))
+        }
         p.delegate = self
 
         // The panel supplies the chrome the popover used to: a glass material under
@@ -261,9 +268,15 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         // Cap the height to the visible screen so the window can always be fully
-        // on-screen (the dashboard has no scroll view; a too-tall charts column
-        // would otherwise push the top above the menu bar on short displays).
-        let h = min(size.height, visible.height - 8)
+        // on-screen. AppKit-level cap (contentMaxSize): the window can NEVER exceed
+        // this regardless of HOW it's resized — setContentSize, a SwiftUI auto-grow
+        // from a tall project (many sessions/worktrees), anything. This REPLACES the
+        // synchronous cap windowDidResize used to do (removed because re-entrant
+        // setContentSize recursed Apple's Liquid Glass to a SIGSEGV): contentMaxSize is
+        // a passive constraint, so it needs no setContentSize and can't enter that path.
+        let maxH = max(200, visible.height - 8)
+        p.contentMaxSize = NSSize(width: .greatestFiniteMagnitude, height: maxH)
+        let h = min(size.height, maxH)
         let capped = NSSize(width: size.width, height: h)
         if p.frame.size != capped { p.setContentSize(capped) }
         repinTopRight()
@@ -341,21 +354,11 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // A resize delivered while the window is hidden (a SwiftUI layout pass during
         // orderOut) must not reposition with stale anchors — showPanel re-anchors.
         guard resized === panel, resized?.isVisible == true else { return }
-        // Re-pin now (origin-only — resizing synchronously here recurses Apple's
-        // Liquid Glass to a SIGSEGV; see repinTopRight).
+        // Origin-only re-pin. The height cap is enforced PASSIVELY by the panel's
+        // contentMaxSize (set in makePanel + applyContentSize), so we don't resize here
+        // — calling setContentSize from inside a resize callback recurses Apple's Liquid
+        // Glass to a SIGSEGV (see repinTopRight).
         repinTopRight()
-        // Enforce the on-screen height cap: a project with many sessions/worktrees can
-        // grow the content past the screen height. We must NOT setContentSize from
-        // inside this resize callback (re-entrant → glass-recursion crash), so cap it
-        // on the NEXT run-loop tick (the same safe path the preferredContentSize KVO
-        // uses). Converges: once capped, the window is within bounds and this no-ops.
-        if let p = panel {
-            let visible = (anchorScreen ?? NSScreen.main)?.visibleFrame
-                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-            if p.frame.height > visible.height - 8 {
-                DispatchQueue.main.async { [weak self] in self?.applyContentSize(p.frame.size) }
-            }
-        }
     }
 
     // MARK: - Outside-click dismissal

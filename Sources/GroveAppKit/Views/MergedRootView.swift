@@ -16,6 +16,10 @@ import SwiftUI
 /// `state.showCharts` and is snapshot-testable.
 public struct MergedRootView: View {
     @ObservedObject private var state: AppState
+    /// Measured natural height of the usage (charts) column. The window is capped to
+    /// THIS when the charts are shown, so a tall project scrolls instead of growing
+    /// the window past the usage panel (the user's request). 0 until first measured.
+    @State private var chartsHeight: CGFloat = 0
 
     public init(state: AppState) {
         _state = ObservedObject(wrappedValue: state)
@@ -43,46 +47,16 @@ public struct MergedRootView: View {
             // of floating above a bare-glass band. The projects route reports a
             // *minimum* height (not a hard one) so it grows into this stretch when
             // embedded, yet still resolves to its natural size standalone/collapsed.
+            // Projects section. Capped to the usage panel's height when the charts are
+            // shown, so a tall project (long sessions/worktrees list) SCROLLS inside the
+            // per-tab ScrollViews instead of growing the window past the usage panel
+            // (the NSHostingController otherwise auto-grows the WINDOW to fit this view's
+            // ideal height, bypassing the AppKit-side caps). Falls back to the screen
+            // height when the charts are hidden.
             RootView(state: state)
-                .frame(maxHeight: .infinity, alignment: .top)
+                .frame(maxHeight: projectsCap, alignment: .top)
             if state.showCharts {
-                // Charts section: its own floating "Usage" H1 (mirroring the left
-                // "Projects" large title) above a CLEAR Liquid-Glass "menu block"
-                // (GlassMenuContainer) holding the cards. The title floats on the
-                // bare window glass — exactly like "Projects" floats above the
-                // project list — so the two section titles share ONE baseline
-                // across the window (both columns top-align to the HStack top, both
-                // bands are 44pt with a 14pt top inset → aligned by construction).
-                // The glass block reads as a distinct floating layer so the inner
-                // gray content cards (DashboardScreen's GlassCards) stand out
-                // against it; separation from the projects column is the HStack
-                // `spacing` gap, not a hairline divider.
-                //
-                // The 8pt OUTER inset (trailing + bottom) floats the column clear
-                // of the window's rounded corners — mirroring the footer block's
-                // outer inset in RootView so the two menu blocks are symmetric vs.
-                // the window edge. The leading edge takes no inset: the HStack
-                // `spacing: 8` already gaps it from the projects column.
-                VStack(spacing: 0) {
-                    chartsTitle
-                    GlassMenuContainer {
-                        ChartsSideContent(state: state)
-                            // SINGLE ~7pt inner content inset from the clear-block
-                            // edge to the graph cards (was a doubled 16pt: 8 here +
-                            // 8 in DashboardScreen, now zeroed). Halved so the cards
-                            // sit close to the block edge — no giant inner gap.
-                            .padding(7)
-                            // Pin the cards to the TOP and let the clear glass block
-                            // STRETCH to fill the (taller) HStack height, so the
-                            // block's bottom rim reaches the footer block's bottom
-                            // rim instead of hugging the cards and leaving a
-                            // bare-glass band below.
-                            .frame(maxHeight: .infinity, alignment: .top)
-                    }
-                    .frame(maxHeight: 820)
-                }
-                .padding(.trailing, 8)
-                .padding(.bottom, 8)
+                chartsColumn
             }
         }
         // The hairline edge that used to live on each of the two separate chromes
@@ -91,23 +65,50 @@ public struct MergedRootView: View {
             RoundedRectangle(cornerRadius: DesignRadius.panel, style: .continuous)
                 .strokeBorder(.white.opacity(0.10))
         )
+        // Safety net: never exceed the screen even if the measured charts height is
+        // stale/huge for a frame.
+        .frame(maxHeight: Self.maxRootHeight, alignment: .top)
+        .onPreferenceChange(ChartsHeightKey.self) { h in
+            if h > 1, abs(h - chartsHeight) > 0.5 { chartsHeight = h }
+        }
     }
 
-    /// The charts column's floating H1 ("Usage"), structured IDENTICALLY to
-    /// RootShell's "Projects" large title — a 44pt band, `.largeTitle.bold`, a 14pt
-    /// top inset, bottom-leading — so the two section titles share one baseline
-    /// across the merged window. Indented 7pt to sit over the cards (the glass
-    /// block's inner content inset). Unlike "Projects" it never collapses: the
-    /// charts column has no ScrollView, so it stays at its at-rest size — which is
-    /// exactly the state the "Projects" title is in whenever the list isn't
-    /// scrolled (the common case, and the only state snapshots capture).
-    private var chartsTitle: some View {
-        Text("Usage")
-            .font(.largeTitle.weight(.bold))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 44, alignment: .bottomLeading)
-            .padding(.leading, 7)
-            .padding(.top, 14)
-            .allowsHitTesting(false)
+    /// The usage (charts) column — a CLEAR Liquid-Glass block holding the cards. NO
+    /// "Usage" header (the cards are self-evidently usage). Its NATURAL height (not
+    /// stretched) defines the window height; a GeometryReader reports it so the
+    /// projects column can match it.
+    private var chartsColumn: some View {
+        GlassMenuContainer {
+            ChartsSideContent(state: state).padding(7)
+        }
+        .frame(maxHeight: 820)
+        .padding(.trailing, 8)
+        .padding(.top, 14)
+        .padding(.bottom, 8)
+        .background(GeometryReader { g in
+            Color.clear.preference(key: ChartsHeightKey.self, value: g.size.height)
+        })
+    }
+
+    /// Height cap for the projects column: the usage panel's height when shown (so the
+    /// window never exceeds it), else the screen height.
+    private var projectsCap: CGFloat {
+        state.showCharts && chartsHeight > 1 ? chartsHeight : Self.maxRootHeight
+    }
+
+    /// The tallest the merged root may be: the main screen's visible height (minus a
+    /// small margin), so the window can't grow off-screen. Read at render time; a
+    /// stale value after a display change self-corrects on the next render.
+    static var maxRootHeight: CGFloat {
+        max(320, (NSScreen.main?.visibleFrame.height ?? 1200) - 8)
+    }
+}
+
+/// Reports the usage (charts) column's natural height up to MergedRootView so the
+/// projects column can be capped to it.
+private struct ChartsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
