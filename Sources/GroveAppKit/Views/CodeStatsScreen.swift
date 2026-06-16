@@ -32,6 +32,8 @@ struct CodeStatsScreen: View {
     /// Which `LanguageStats` field drives the Languages card's bars + sort order, picked
     /// from the in-card metric selector. Default `.code` (the historical behavior).
     @State private var languageMetric: LanguageMetric = .code
+    /// Which cumulative quantity the "over time" chart plots (Lines/Code/Data).
+    @State private var growthMetric: GrowthMetric = .lines
 
     /// The repository the shared controls strip scopes ALL stats blocks to, or nil for
     /// "All repos" (the project aggregate). A repo name filters the Totals, Languages,
@@ -633,6 +635,38 @@ struct CodeStatsScreen: View {
 
     // MARK: - Stacked cumulative chart ("Lines over time")
 
+    /// Lines/Code/Data toggle for the "over time" chart — same segmented style as the
+    /// languages metric control. Pure SwiftUI so it renders identically live and offscreen.
+    private var growthMetricControl: some View {
+        HStack(spacing: 0) {
+            ForEach(GrowthMetric.allCases) { m in
+                let selected = m == growthMetric
+                Button {
+                    growthMetric = m
+                } label: {
+                    Text(m.rawValue)
+                        .font(.caption2.weight(selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Color.white : Color.secondary)
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: DesignRadius.field - 2,
+                                                 style: .continuous)
+                                    .fill(Palette.primary.opacity(0.85))
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(.white.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+            .strokeBorder(.white.opacity(0.10)))
+    }
+
     private let growthChartHeight: CGFloat = 120
     /// Each calendar-day bar's slot width (bar + 1px gap). 4pt at ~180 visible days
     /// fills a ~720pt plot — the dense reference look — while the ScrollView lets older
@@ -669,7 +703,7 @@ struct CodeStatsScreen: View {
     private let monthLabelStripHeight: CGFloat = 14
 
     private func growthCard(repos: [RepoStats]) -> some View {
-        let bars = stackedRepoSeries(repos, daysBack: stackedBarMaxDaysBack, now: .now)
+        let bars = stackedRepoSeries(repos, daysBack: stackedBarMaxDaysBack, metric: growthMetric, now: .now)
         let colors = repoColorMap(repos)
         let hasCode = bars.contains { $0.total > 0 }
         // "Nice" Y-axis ticks; the TOP tick (≥ peak) is the shared denominator both the
@@ -678,7 +712,11 @@ struct CodeStatsScreen: View {
         let ticks = niceTicks(peak: stackedPeak(bars))
         let topTick = max(ticks.last ?? 1, 1)
         return VStack(alignment: .leading, spacing: 8) {
-            CardLabel(title: "Lines over time", systemImage: "chart.bar.fill")
+            HStack(spacing: 6) {
+                CardLabel(title: "\(growthMetric.rawValue) over time", systemImage: "chart.bar.fill")
+                Spacer(minLength: 8)
+                growthMetricControl
+            }
             stackedReadout(bars, repoCount: repos.count, colors: colors)
             if !hasCode {
                 Text("No code history in this window yet.")

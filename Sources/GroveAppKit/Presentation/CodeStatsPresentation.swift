@@ -31,6 +31,18 @@ public enum LanguageMetric: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Which cumulative quantity the "over time" growth chart plots. Only these three are
+/// derivable from git history (line counts grouped by file LANGUAGE): `lines` = every
+/// line (netLines), `code`/`data` = lines in code-language / data-language files.
+/// Comment/Blank/Files can't be reconstructed over time (they need file CONTENT at each
+/// historical commit) — they live only in the current Totals/Languages snapshot.
+public enum GrowthMetric: String, CaseIterable, Identifiable, Sendable {
+    case lines = "Lines"
+    case code = "Code"
+    case data = "Data"
+    public var id: String { rawValue }
+}
+
 /// One language's row in the breakdown. `fraction` is this language's metric
 /// value relative to the BUSIEST language's metric value (0…1), so the view draws
 /// bars on a shared axis. `share` is this language's metric value over the SUM of
@@ -589,16 +601,31 @@ public let stackedDefaultVisibleDays = 180
 ///
 /// This is the "how many lines REALLY existed on a given day" chart — cumulative codebase
 /// size stacked by repo, which grows over time — NOT per-day churn.
-public func stackedRepoSeries(_ repos: [RepoStats], daysBack: Int, now: Date) -> [StackedDayBar] {
+public func stackedRepoSeries(_ repos: [RepoStats], daysBack: Int,
+                              metric: GrowthMetric = .lines, now: Date) -> [StackedDayBar] {
     let cal = GitStatsService.gmtCalendar
     let capped = min(max(daysBack, 0), stackedBarMaxDaysBack)
     let windowStart = cal.date(byAdding: .day, value: -capped, to: now) ?? .distantPast
 
     // Pre-sort each repo's history oldest-first once so the per-day carry-forward is a
-    // single forward walk (a moving pointer) rather than an O(history) scan per day.
-    struct RepoSeries { let name: String; let points: [RepoHistoryPoint] }
+    // single forward walk (a moving pointer) rather than an O(history) scan per day. The
+    // per-point cumulative value for the chosen metric is precomputed here: `lines` is
+    // already cumulative (netLines); `code`/`data` are prefix sums of the per-day classified
+    // deltas (codeAdded-codeRemoved / dataAdded-dataRemoved), so lines == code + data.
+    struct RepoSeries { let name: String; let dates: [Date]; let cum: [Int] }
     let prepared: [RepoSeries] = repos.map { repo in
-        RepoSeries(name: repo.repoName, points: repo.history.sorted { $0.date < $1.date })
+        let pts = repo.history.sorted { $0.date < $1.date }
+        var cum = [Int](); cum.reserveCapacity(pts.count)
+        var running = 0
+        for p in pts {
+            switch metric {
+            case .lines: running = p.netLines
+            case .code:  running += p.codeAdded - p.codeRemoved
+            case .data:  running += p.dataAdded - p.dataRemoved
+            }
+            cum.append(running)
+        }
+        return RepoSeries(name: repo.repoName, dates: pts.map(\.date), cum: cum)
     }
 
     var bars: [StackedDayBar] = []
@@ -614,11 +641,11 @@ public func stackedRepoSeries(_ repos: [RepoStats], daysBack: Int, now: Date) ->
         for (i, series) in prepared.enumerated() {
             // Advance this repo's cursor to the last point whose date ≤ current.
             var idx = cursors[i]
-            while idx + 1 < series.points.count && series.points[idx + 1].date <= current {
+            while idx + 1 < series.dates.count && series.dates[idx + 1] <= current {
                 idx += 1
             }
             cursors[i] = idx
-            let lines = idx >= 0 ? max(series.points[idx].netLines, 0) : 0
+            let lines = idx >= 0 ? max(series.cum[idx], 0) : 0
             if lines > 0 {
                 segments.append(StackedSegment(repoName: series.name, lines: lines))
             }
