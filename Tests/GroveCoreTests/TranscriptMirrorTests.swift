@@ -86,6 +86,61 @@ final class TranscriptMirrorTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: mp, encoding: .utf8), "v2\n")
     }
 
+    private func setMtime(_ path: String, daysAgo: Int, now: Date) throws {
+        let d = now.addingTimeInterval(-Double(daysAgo) * 86400)
+        try fm.setAttributes([.modificationDate: d], ofItemAtPath: path)
+    }
+
+    func testAgeOutDropsMirrorOnlyEntryAndDoesNotRestore() throws {
+        let cwd = "-Users-x-proj", id = "dddd"
+        let live = try writeTranscript(configDir: canonical, cwd: cwd, id: id, "old\n")
+        let now = Date()
+        _ = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy(), now: now)
+        let mp = mirrorPath(cwd, id, account: canonical)
+        // become mirror-only + ancient
+        try fm.removeItem(atPath: live)
+        try setMtime(mp, daysAgo: 200, now: now)
+        let report = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path,
+                                      policy: RetentionPolicy(maxDays: 90, maxBytes: 0), now: now)
+        XCTAssertFalse(fm.fileExists(atPath: mp), "aged-out mirror should be evicted")
+        XCTAssertFalse(fm.fileExists(atPath: live), "must NOT restore an aged-out entry")
+        XCTAssertEqual(report.evicted.count, 1)
+        XCTAssertEqual(report.restored.count, 0)
+    }
+
+    func testFreshMirrorOnlyEntryIsRestoredNotEvicted() throws {
+        let cwd = "-Users-x-proj", id = "eeee"
+        let live = try writeTranscript(configDir: canonical, cwd: cwd, id: id, "fresh\n")
+        let now = Date()
+        _ = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy(), now: now)
+        try fm.removeItem(atPath: live)                       // mirror-only, but recent mtime
+        let report = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path,
+                                      policy: RetentionPolicy(maxDays: 90, maxBytes: 0), now: now)
+        XCTAssertTrue(fm.fileExists(atPath: live), "fresh entry should be restored")
+        XCTAssertEqual(report.evicted.count, 0)
+    }
+
+    func testSizeCapEvictsOldestMirrorOnlyAndExemptsLiveShared() throws {
+        let now = Date()
+        // A: live-shared (nlink 2) — must never be counted/evicted for size
+        let liveA = try writeTranscript(configDir: canonical, cwd: "-a", id: "aaaa", String(repeating: "x", count: 400))
+        // B, C: mirror-only, C older than B
+        let liveB = try writeTranscript(configDir: canonical, cwd: "-b", id: "bbbb", String(repeating: "y", count: 400))
+        let liveC = try writeTranscript(configDir: canonical, cwd: "-c", id: "cccc", String(repeating: "z", count: 400))
+        _ = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy(), now: now)
+        let mpB = mirrorPath("-b", "bbbb", account: canonical), mpC = mirrorPath("-c", "cccc", account: canonical)
+        try fm.removeItem(atPath: liveB); try fm.removeItem(atPath: liveC)
+        try setMtime(mpC, daysAgo: 10, now: now); try setMtime(mpB, daysAgo: 1, now: now)
+        _ = liveA
+        // cap = 500 bytes: total mirror-only = 800 → evict oldest (C) → 400 ≤ 500, keep B
+        let report = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path,
+                                      policy: RetentionPolicy(maxDays: 0, maxBytes: 500), now: now)
+        XCTAssertFalse(fm.fileExists(atPath: mpC), "oldest mirror-only evicted")
+        XCTAssertTrue(fm.fileExists(atPath: mpB), "newer mirror-only kept")
+        XCTAssertTrue(fm.fileExists(atPath: mirrorPath("-a", "aaaa", account: canonical)), "live-shared exempt from size cap")
+        XCTAssertTrue(report.evicted.contains(mpC))
+    }
+
     // test-local stat helper
     private func inode(_ path: String) -> Int? {
         (try? fm.attributesOfItem(atPath: path))?[.systemFileNumber] as? Int

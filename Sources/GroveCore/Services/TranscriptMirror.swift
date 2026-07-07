@@ -81,18 +81,48 @@ public struct TranscriptMirror: Sendable {
 
         let configDirByKey = Dictionary(accounts.map { ($0.key, $0.configDir) }, uniquingKeysWith: { a, _ in a })
 
+        // size cap: scan mirror-only inodes (nlink == 1) BEFORE the reconcile loop so
+        // that we measure the true cost before any restoration inflates the link count.
+        var sizeEvicted: Set<String> = []
+        if policy.maxBytes > 0 {
+            var mirrorOnly: [(path: String, mtime: Date, size: Int64)] = []
+            for key in (try? fm.contentsOfDirectory(atPath: mirrorRoot)) ?? [] {
+                let keyDir = mirrorRoot + "/" + key
+                for cwd in (try? fm.contentsOfDirectory(atPath: keyDir)) ?? [] {
+                    let cwdDir = keyDir + "/" + cwd
+                    for name in (try? fm.contentsOfDirectory(atPath: cwdDir)) ?? [] where name.hasSuffix(".jsonl") {
+                        let p = cwdDir + "/" + name
+                        if (nlink(p) ?? 2) == 1, let m = mtime(p) { mirrorOnly.append((p, m, size(p))) }
+                    }
+                }
+            }
+            var total = mirrorOnly.reduce(Int64(0)) { $0 + $1.size }
+            for e in mirrorOnly.sorted(by: { $0.mtime < $1.mtime }) where total > policy.maxBytes {
+                try? fm.removeItem(atPath: e.path); report.evicted.append(e.path); total -= e.size
+                sizeEvicted.insert(e.path)
+            }
+        }
+
         for (ref, st) in entries {
             let mp = st.mirrorPath ?? (mirrorRoot + "/\(ref.accountKey)/\(ref.encodedCwd)/\(ref.file)")
+            // skip entries whose mirror was just size-evicted
+            if let existing = st.mirrorPath, sizeEvicted.contains(existing) { continue }
+            let refMtime = st.livePath.flatMap(mtime) ?? st.mirrorPath.flatMap(mtime)
+            let ageDays = refMtime.map { now.timeIntervalSince($0) / 86400 } ?? 0
+            let withinAge = policy.maxDays == 0 || ageDays <= Double(policy.maxDays)
+
+            guard withinAge else {
+                if let existing = st.mirrorPath { try? fm.removeItem(atPath: existing); report.evicted.append(existing) }
+                continue
+            }
+
             if let live = st.livePath {
-                // live present → ensure the mirror tracks its current inode
                 if st.mirrorPath == nil {
                     placeMirror(src: live, dst: mp, report: &report)
                 } else if inode(live) != inode(mp) {
-                    try? fm.removeItem(atPath: mp)          // stale inode → re-link
-                    placeMirror(src: live, dst: mp, report: &report)
+                    try? fm.removeItem(atPath: mp); placeMirror(src: live, dst: mp, report: &report)
                 }
             } else if st.mirrorPath != nil {
-                // live gone, mirror intact → restore to the reconstructed live path
                 guard let cfg = configDirByKey[ref.accountKey] else {
                     report.issues.append("mirror \(ref.file): account \(ref.accountKey) unknown"); continue
                 }
