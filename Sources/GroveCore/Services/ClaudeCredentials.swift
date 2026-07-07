@@ -61,10 +61,6 @@ public struct KeychainCredentialsReader: CredentialsReading {
         return nil
     }
 
-    static func sha256Hex(_ s: String) -> String {
-        SHA256.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined()
-    }
-
     private static func expandedDir(_ configDir: String) -> String {
         // Drop a single trailing slash so the hash matches Claude Code's keying.
         var dir = (configDir as NSString).expandingTildeInPath
