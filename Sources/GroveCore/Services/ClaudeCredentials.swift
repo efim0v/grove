@@ -27,8 +27,7 @@ public struct KeychainCredentialsReader: CredentialsReading {
     public static func serviceName(configDir: String) -> String {
         let dir = expandedDir(configDir)
         if dir == NSHomeDirectory() + "/.claude" { return "Claude Code-credentials" }
-        let hash = sha256Hex(dir).prefix(8)
-        return "Claude Code-credentials-\(hash)"
+        return "Claude Code-credentials-\(accountKey(dir))"
     }
 
     public func accessToken(configDir: String) -> String? {
