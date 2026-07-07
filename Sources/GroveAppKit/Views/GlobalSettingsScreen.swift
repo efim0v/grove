@@ -47,6 +47,9 @@ struct GlobalSettingsScreen: View {
             SettingsSection(title: "Projects") {
                 projectsList
             }
+            SettingsSection(title: "Transcript safety-net") {
+                transcriptMirrorSection
+            }
             SettingsSection(title: "Window substrate") {
                 if isSnapshotRender {
                     SnapshotPickerLookalike(text: currentSubstrate.label, monospaced: false)
@@ -62,6 +65,65 @@ struct GlobalSettingsScreen: View {
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
+    }
+
+    // MARK: - Transcript safety-net section
+
+    private var transcriptMirrorSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            LabeledRow(label: "Enabled") {
+                if isSnapshotRender {
+                    Text(state.config.transcriptMirror.enabled ? "on" : "off")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Toggle("Keep a backup of every session",
+                           isOn: transcriptMirrorEnabledBinding)
+                        .toggleStyle(.checkbox)
+                        .controlSize(.small)
+                }
+            }
+            LabeledRow(label: "Keep for (days)") {
+                SnapshotSafeStepper(label: "", value: transcriptMirrorMaxDaysBinding, range: 1...365)
+            }
+            LabeledRow(label: "Max mirror size (MB)") {
+                SnapshotSafeStepper(label: "", value: transcriptMirrorMaxMBBinding, range: 10...10000)
+            }
+            Text("Grove hardlink-mirrors every session transcript and auto-restores deleted files.")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    private var transcriptMirrorEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { state.config.transcriptMirror.enabled },
+            set: { value in
+                var settings = state.config.transcriptMirror
+                settings.enabled = value
+                state.setTranscriptMirror(settings)
+            }
+        )
+    }
+
+    private var transcriptMirrorMaxDaysBinding: Binding<Int> {
+        Binding(
+            get: { state.config.transcriptMirror.maxDays },
+            set: { value in
+                var settings = state.config.transcriptMirror
+                settings.maxDays = value
+                state.setTranscriptMirror(settings)
+            }
+        )
+    }
+
+    private var transcriptMirrorMaxMBBinding: Binding<Int> {
+        Binding(
+            get: { state.config.transcriptMirror.maxMB },
+            set: { value in
+                var settings = state.config.transcriptMirror
+                settings.maxMB = value
+                state.setTranscriptMirror(settings)
+            }
+        )
     }
 
     // MARK: - Window substrate toggle

@@ -10,16 +10,35 @@ import GroveCore
 struct SessionsScreen: View {
     @ObservedObject var state: AppState
     @Environment(\.isSnapshotRender) private var isSnapshotRender
+    /// Session id pending a destructive purge confirmation (nil = no dialog showing).
+    @State private var purgeTarget: String? = nil
 
     init(state: AppState) {
         _state = ObservedObject(wrappedValue: state)
     }
 
     var body: some View {
-        if let snapshot = state.selectedSnapshot {
-            content(snapshot: snapshot)
-        } else {
-            emptyState(text: "Refresh (⌘R) to scan this project's Claude sessions.")
+        Group {
+            if let snapshot = state.selectedSnapshot {
+                content(snapshot: snapshot)
+            } else {
+                emptyState(text: "Refresh (⌘R) to scan this project's Claude sessions.")
+            }
+        }
+        .confirmationDialog("Purge transcript?",
+                            isPresented: Binding(
+                                get: { purgeTarget != nil },
+                                set: { if !$0 { purgeTarget = nil } }),
+                            titleVisibility: .visible) {
+            Button("Purge", role: .destructive) {
+                if let id = purgeTarget {
+                    state.purgeTranscript(id: id)
+                }
+                purgeTarget = nil
+            }
+            Button("Cancel", role: .cancel) { purgeTarget = nil }
+        } message: {
+            Text("This permanently deletes the transcript from both the live and mirror locations. This cannot be undone.")
         }
     }
 
@@ -114,6 +133,13 @@ struct SessionsScreen: View {
         .contentShape(Rectangle())
         .onTapGesture { performPrimary(row) }
         .help(row.cwd)
+        .contextMenu {
+            if !isSnapshotRender {
+                Button("Purge transcript\u{2026}", role: .destructive) {
+                    purgeTarget = row.sessionId
+                }
+            }
+        }
     }
 
     // MARK: - Status cell

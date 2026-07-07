@@ -320,6 +320,12 @@ public final class AppState: ObservableObject {
         persist()
     }
 
+    /// Transcript safety-net settings edit (GlobalSettingsScreen); persists immediately.
+    public func setTranscriptMirror(_ settings: TranscriptMirrorSettings) {
+        config.transcriptMirror = settings
+        persist()
+    }
+
     /// New account convention (spec §6.3): configDir = ~/.claude-accounts/<name>.
     public func addAccount(name: String) {
         guard !config.accounts.contains(where: { $0.name == name }) else {
