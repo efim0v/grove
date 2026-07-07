@@ -102,7 +102,10 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
             // the two cadences never overlap (which could land out-of-order and
             // overwrite newer data).
             guard let self, !self.state.isPanelOpen else { return }
-            Task { @MainActor in await self.state.refreshUsage(now: Date()) }
+            Task { @MainActor in
+                await self.state.refreshUsage(now: Date())
+                await self.state.reconcileTranscripts()
+            }
         }
 
         // Live-swap the window substrate when the Settings toggle flips the style.

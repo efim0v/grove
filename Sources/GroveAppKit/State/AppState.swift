@@ -376,6 +376,7 @@ extension AppState {
         }
         await usage
         await sessions
+        await reconcileTranscripts()
     }
 
     /// Cheap per-project recent-session previews for the Projects tab (item 4).
@@ -723,6 +724,40 @@ extension AppState {
             config.accounts[index].sharedStore = true
             persist()
         }
+    }
+
+    // MARK: - Transcript mirror
+
+    /// Hardlink-mirror + auto-restore every account's transcripts, off the main
+    /// actor. No-op when disabled or when there is no canonical account.
+    public func reconcileTranscripts() async {
+        guard config.transcriptMirror.enabled, canonicalAccount != nil else { return }
+        let canonical = canonicalDir
+        let accts = config.accounts.map {
+            MirrorAccount(key: accountKey($0.configDir), configDir: expandTilde($0.configDir))
+        }
+        let policy = RetentionPolicy(
+            maxDays: config.transcriptMirror.maxDays,
+            maxBytes: Int64(config.transcriptMirror.maxMB) * 1_000_000)
+        let report = await Task.detached(priority: .utility) {
+            TranscriptMirror().reconcile(accounts: accts, canonicalDir: canonical, policy: policy)
+        }.value
+        if let first = report.issues.first { actionError = "Transcript mirror: \(first)" }
+    }
+
+    /// Permanent delete of a session's transcript (mirror + live sides), then
+    /// refreshes the session index. Failures land in actionError.
+    public func purgeTranscript(id: String) {
+        guard canonicalAccount != nil else { return }
+        let accts = config.accounts.map {
+            MirrorAccount(key: accountKey($0.configDir), configDir: expandTilde($0.configDir))
+        }
+        do {
+            try TranscriptMirror().purge(sessionId: id, accounts: accts, canonicalDir: canonicalDir)
+        } catch {
+            actionError = "Couldn't purge transcript: \(error.localizedDescription)"
+        }
+        Task { await refreshSessionIndex() }
     }
 
     /// Runs SharedSessionStore.verify across accounts MARKED sharedStore and
