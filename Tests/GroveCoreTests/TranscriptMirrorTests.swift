@@ -48,6 +48,44 @@ final class TranscriptMirrorTests: XCTestCase {
         XCTAssertEqual(second.linked.count, 0, "second pass should be a no-op")
     }
 
+    func testUnlinkWhileOpenThenRestore() throws {
+        // 1. live transcript exists; mirror it.
+        let cwd = "-Users-x-proj", id = "bbbb"
+        let live = try writeTranscript(configDir: canonical, cwd: cwd, id: id, "line1\n")
+        _ = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy())
+        let mp = mirrorPath(cwd, id, account: canonical)
+
+        // 2. simulate Claude appending AFTER an out-of-band unlink of its own path.
+        let fh = FileHandle(forWritingAtPath: live)!
+        fh.seekToEndOfFile()
+        try fm.removeItem(atPath: live)                 // unlink while the fd is open
+        fh.write(Data("line2\n".utf8))                  // process keeps appending to the dead inode
+        try fh.close()
+
+        // mirror (same inode) must now hold the FULL transcript incl. post-unlink line
+        XCTAssertEqual(try String(contentsOfFile: mp, encoding: .utf8), "line1\nline2\n")
+        XCTAssertFalse(fm.fileExists(atPath: live), "live path is gone")
+
+        // 3. next reconcile restores the live path from the mirror
+        let report = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy())
+        XCTAssertTrue(fm.fileExists(atPath: live), "live not restored")
+        XCTAssertEqual(try String(contentsOfFile: live, encoding: .utf8), "line1\nline2\n")
+        XCTAssertEqual(report.restored.count, 1)
+    }
+
+    func testInodeDriftRelinks() throws {
+        let cwd = "-Users-x-proj", id = "cccc"
+        let live = try writeTranscript(configDir: canonical, cwd: cwd, id: id, "v1\n")
+        _ = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy())
+        let mp = mirrorPath(cwd, id, account: canonical)
+        // replace the live file with a brand-new inode (atomic write)
+        try "v2\n".write(toFile: live, atomically: true, encoding: .utf8)
+        XCTAssertNotEqual(inode(live), inode(mp))
+        _ = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy())
+        XCTAssertEqual(inode(live), inode(mp), "mirror should re-link to the new inode")
+        XCTAssertEqual(try String(contentsOfFile: mp, encoding: .utf8), "v2\n")
+    }
+
     // test-local stat helper
     private func inode(_ path: String) -> Int? {
         (try? fm.attributesOfItem(atPath: path))?[.systemFileNumber] as? Int

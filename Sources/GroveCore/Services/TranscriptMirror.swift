@@ -79,11 +79,29 @@ public struct TranscriptMirror: Sendable {
             }
         }
 
+        let configDirByKey = Dictionary(accounts.map { ($0.key, $0.configDir) }, uniquingKeysWith: { a, _ in a })
+
         for (ref, st) in entries {
             let mp = st.mirrorPath ?? (mirrorRoot + "/\(ref.accountKey)/\(ref.encodedCwd)/\(ref.file)")
-            // within-age protect: for now, only the link step (live present, mirror missing)
-            if let live = st.livePath, st.mirrorPath == nil {
-                placeMirror(src: live, dst: mp, report: &report)
+            if let live = st.livePath {
+                // live present → ensure the mirror tracks its current inode
+                if st.mirrorPath == nil {
+                    placeMirror(src: live, dst: mp, report: &report)
+                } else if inode(live) != inode(mp) {
+                    try? fm.removeItem(atPath: mp)          // stale inode → re-link
+                    placeMirror(src: live, dst: mp, report: &report)
+                }
+            } else if st.mirrorPath != nil {
+                // live gone, mirror intact → restore to the reconstructed live path
+                guard let cfg = configDirByKey[ref.accountKey] else {
+                    report.issues.append("mirror \(ref.file): account \(ref.accountKey) unknown"); continue
+                }
+                let live = cfg + "/projects/\(ref.encodedCwd)/\(ref.file)"
+                do {
+                    try fm.createDirectory(atPath: (live as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+                    try ops.hardlink(mp, live)
+                    report.restored.append(live)
+                } catch { report.issues.append("restore \(ref.file): \(error.localizedDescription)") }
             }
         }
         return report
