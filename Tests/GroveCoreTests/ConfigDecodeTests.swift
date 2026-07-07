@@ -51,4 +51,21 @@ final class ConfigDecodeTests: XCTestCase {
         XCTAssertEqual(back, cfg)
         XCTAssertEqual(GroveConfig.defaultConfig.accounts.first?.name, "default")
     }
+
+    func testTranscriptMirrorDefaultsWhenAbsentFromOldJSON() throws {
+        let json = #"{"version":1,"workspacesRootTemplate":"~/w","projects":[],"accounts":[]}"#
+        let cfg = try JSONDecoder().decode(GroveConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(cfg.transcriptMirror, TranscriptMirrorSettings())   // enabled, 90, 500
+        XCTAssertTrue(cfg.transcriptMirror.enabled)
+        XCTAssertEqual(cfg.transcriptMirror.maxDays, 90)
+        XCTAssertEqual(cfg.transcriptMirror.maxMB, 500)
+    }
+
+    func testTranscriptMirrorRoundTrips() throws {
+        var cfg = GroveConfig(version: 1, workspacesRootTemplate: "~/w", projects: [], accounts: [])
+        cfg.transcriptMirror = TranscriptMirrorSettings(enabled: false, maxDays: 30, maxMB: 100)
+        let data = try JSONEncoder().encode(cfg)
+        let back = try JSONDecoder().decode(GroveConfig.self, from: data)
+        XCTAssertEqual(back.transcriptMirror, TranscriptMirrorSettings(enabled: false, maxDays: 30, maxMB: 100))
+    }
 }
