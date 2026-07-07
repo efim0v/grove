@@ -141,6 +141,39 @@ final class TranscriptMirrorTests: XCTestCase {
         XCTAssertTrue(report.evicted.contains(mpC))
     }
 
+    func testPurgeRemovesMirrorAndLiveAndDoesNotResurrect() throws {
+        let cwd = "-Users-x-proj", id = "ffff"
+        let live = try writeTranscript(configDir: canonical, cwd: cwd, id: id, "secret\n")
+        _ = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy())
+        let mp = mirrorPath(cwd, id, account: canonical)
+        try mirror.purge(sessionId: id, accounts: [acct(canonical)], canonicalDir: canonical.path)
+        XCTAssertFalse(fm.fileExists(atPath: mp)); XCTAssertFalse(fm.fileExists(atPath: live))
+        let report = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy())
+        XCTAssertFalse(fm.fileExists(atPath: mp), "purge must not resurrect")
+        XCTAssertEqual(report.restored.count, 0)
+    }
+
+    func testCrossVolumeFallsBackToCopyWithIssue() throws {
+        let failingLink = FileOps(hardlink: { _, _ in throw NSError(domain: "EXDEV", code: 18) },
+                                  copyFallback: { try FileManager.default.copyItem(atPath: $0, toPath: $1) })
+        let m = TranscriptMirror(fileOps: failingLink)
+        try writeTranscript(configDir: canonical, cwd: "-p", id: "gggg", "x\n")
+        let report = m.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy())
+        let mp = mirrorPath("-p", "gggg", account: canonical)
+        XCTAssertTrue(fm.fileExists(atPath: mp), "copy fallback should still place a mirror")
+        XCTAssertTrue(report.issues.contains { $0.contains("cross-volume") })
+    }
+
+    func testMultiAccountRestoreTargetsRightConfigDir() throws {
+        let work = root.appendingPathComponent("acc-work")
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        let liveW = try writeTranscript(configDir: work, cwd: "-shared", id: "hhhh", "work\n")
+        _ = mirror.reconcile(accounts: [acct(canonical), acct(work)], canonicalDir: canonical.path, policy: policy())
+        try fm.removeItem(atPath: liveW)
+        _ = mirror.reconcile(accounts: [acct(canonical), acct(work)], canonicalDir: canonical.path, policy: policy())
+        XCTAssertTrue(fm.fileExists(atPath: liveW), "restored to the WORK account's projects, not canonical")
+    }
+
     // test-local stat helper
     private func inode(_ path: String) -> Int? {
         (try? fm.attributesOfItem(atPath: path))?[.systemFileNumber] as? Int

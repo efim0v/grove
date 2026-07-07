@@ -147,6 +147,31 @@ public struct TranscriptMirror: Sendable {
         }
     }
 
+    /// Permanent delete: unlink the mirror(s) for `sessionId` AND every live
+    /// transcript path across `accounts`. After this, `reconcile` finds no mirror
+    /// and will not restore it.
+    public func purge(sessionId: String, accounts: [MirrorAccount], canonicalDir: String) throws {
+        let fm = FileManager.default
+        let mirrorRoot = Self.mirrorRoot(canonicalDir: canonicalDir)
+        let file = sessionId + ".jsonl"
+        // mirror side
+        for key in (try? fm.contentsOfDirectory(atPath: mirrorRoot)) ?? [] {
+            let keyDir = mirrorRoot + "/" + key
+            for cwd in (try? fm.contentsOfDirectory(atPath: keyDir)) ?? [] {
+                let p = keyDir + "/\(cwd)/\(file)"
+                if fm.fileExists(atPath: p) { try fm.removeItem(atPath: p) }
+            }
+        }
+        // live side
+        for acc in accounts {
+            let projects = acc.configDir + "/projects"
+            for cwd in (try? fm.contentsOfDirectory(atPath: projects)) ?? [] {
+                let p = projects + "/\(cwd)/\(file)"
+                if fm.fileExists(atPath: p) { try fm.removeItem(atPath: p) }
+            }
+        }
+    }
+
     func inode(_ path: String) -> Int? { (try? FileManager.default.attributesOfItem(atPath: path))?[.systemFileNumber] as? Int }
     func nlink(_ path: String) -> Int? { (try? FileManager.default.attributesOfItem(atPath: path))?[.referenceCount] as? Int }
     func size(_ path: String) -> Int64 { ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.int64Value ?? 0 }
