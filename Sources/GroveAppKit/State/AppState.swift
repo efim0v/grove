@@ -735,7 +735,10 @@ extension AppState {
     // MARK: - Transcript mirror
 
     /// Hardlink-mirror + auto-restore every account's transcripts, off the main
-    /// actor. No-op when disabled or when there is no canonical account.
+    /// actor. No-ops when the feature is disabled or when no canonical account is
+    /// configured. Snapshot-render safety comes from the caller not invoking this
+    /// during `ImageRenderer` passes — the same structural guarantee `verifySharedStore`
+    /// relies on.
     public func reconcileTranscripts() async {
         guard config.transcriptMirror.enabled, canonicalAccount != nil else { return }
         let canonical = canonicalDir

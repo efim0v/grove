@@ -130,6 +130,7 @@ final class TranscriptMirrorTests: XCTestCase {
         _ = mirror.reconcile(accounts: [acct(canonical)], canonicalDir: canonical.path, policy: policy(), now: now)
         let mpB = mirrorPath("-b", "bbbb", account: canonical), mpC = mirrorPath("-c", "cccc", account: canonical)
         try fm.removeItem(atPath: liveB); try fm.removeItem(atPath: liveC)
+        try setMtime(mirrorPath("-a", "aaaa", account: canonical), daysAgo: 30, now: now)
         try setMtime(mpC, daysAgo: 10, now: now); try setMtime(mpB, daysAgo: 1, now: now)
         _ = liveA
         // cap = 500 bytes: total mirror-only = 800 → evict oldest (C) → 400 ≤ 500, keep B
@@ -139,6 +140,37 @@ final class TranscriptMirrorTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: mpB), "newer mirror-only kept")
         XCTAssertTrue(fm.fileExists(atPath: mirrorPath("-a", "aaaa", account: canonical)), "live-shared exempt from size cap")
         XCTAssertTrue(report.evicted.contains(mpC))
+    }
+
+    func testSharedStoreSymlinkedCwdIsNotDoubleMirrored() throws {
+        // Arrange: canonical has a live transcript under projects/-cwd/xxxx.jsonl
+        let cwd = "-cwd", id = "xxxx"
+        try writeTranscript(configDir: canonical, cwd: cwd, id: id, "data\n")
+
+        // A second account dir whose projects/-cwd is a symlink back to canonical's
+        let work = root.appendingPathComponent("work")
+        try fm.createDirectory(at: work.appendingPathComponent("projects"), withIntermediateDirectories: true)
+        let workCwdLink = work.appendingPathComponent("projects/\(cwd)").path
+        let canonCwdDir = canonical.appendingPathComponent("projects/\(cwd)").path
+        try fm.createSymbolicLink(atPath: workCwdLink, withDestinationPath: canonCwdDir)
+
+        let canonAcct = acct(canonical)
+        let workAcct  = acct(work)
+
+        // Act: reconcile with both accounts
+        let report = mirror.reconcile(accounts: [canonAcct, workAcct],
+                                      canonicalDir: canonical.path, policy: policy())
+
+        // Assert: mirror exists under canonical's key
+        let canonMirror = mirrorPath(cwd, id, account: canonical)
+        XCTAssertTrue(fm.fileExists(atPath: canonMirror), "canonical mirror must exist")
+
+        // Assert: no mirror created under the work account (symlinked cwd skipped)
+        let workMirror = mirrorPath(cwd, id, account: work)
+        XCTAssertFalse(fm.fileExists(atPath: workMirror), "symlinked cwd must not produce a second mirror entry")
+
+        // Exactly one link operation (from the canonical account's real entry)
+        XCTAssertEqual(report.linked.count, 1)
     }
 
     func testPurgeRemovesMirrorAndLiveAndDoesNotResurrect() throws {

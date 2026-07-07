@@ -38,7 +38,7 @@ struct SessionsScreen: View {
             }
             Button("Cancel", role: .cancel) { purgeTarget = nil }
         } message: {
-            Text("This permanently deletes the transcript from both the live and mirror locations. This cannot be undone.")
+            Text("This permanently deletes the transcript's live file and its mirror if one exists. This cannot be undone.")
         }
     }
 

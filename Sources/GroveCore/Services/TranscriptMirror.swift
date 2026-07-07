@@ -59,6 +59,7 @@ public struct TranscriptMirror: Sendable {
             let projects = acc.configDir + "/projects"
             for cwd in (try? fm.contentsOfDirectory(atPath: projects)) ?? [] {
                 let cwdDir = projects + "/" + cwd
+                if (try? fm.destinationOfSymbolicLink(atPath: cwdDir)) != nil { continue } // shared-store symlink → canonical mirrors it, skip
                 for name in (try? fm.contentsOfDirectory(atPath: cwdDir)) ?? [] {
                     guard name.hasSuffix(".jsonl") else { continue }
                     let live = cwdDir + "/" + name
