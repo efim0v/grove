@@ -288,6 +288,7 @@ struct SessionsScreen: View {
             // chevron menu offering "Resume as <name>" for every OTHER
             // configured account (cross-account resume — verdict: FEASIBLE).
             // External rows from non-default accounts also get a "Share" button.
+            // All resumable rows with ≥1 other account get a "Migrate to…" icon menu.
             HStack(spacing: 4) {
                 actionLabel("Resume")
                 if isExternal, let account = owningAccount(for: row),
@@ -296,6 +297,7 @@ struct SessionsScreen: View {
                                                    canonicalDir: state.canonicalDir) {
                     shareButton(row: row, account: account)
                 }
+                migrateToMenu(row)
                 resumeAsMenu(row, isExternal: isExternal)
             }
         }
@@ -314,6 +316,45 @@ struct SessionsScreen: View {
         }
         .buttonStyle(.plain)
         .help("Share across accounts — makes this session visible under every linked account")
+    }
+
+    /// "Migrate to account…" menu — copies the full session footprint (transcript +
+    /// aux + tasks + settings keys + plugins) to another account. Non-destructive.
+    /// Only shown when ≥1 other account exists. Snapshot-safe: a static lookalike offscreen.
+    @ViewBuilder
+    private func migrateToMenu(_ row: SessionRow) -> some View {
+        let sourceAccount = state.config.accounts.first { $0.name == row.accountName }
+            ?? state.config.accounts.first
+            ?? AccountConfig(name: "default", configDir: "~/.claude")
+        let others = state.config.accounts.filter { $0.name != row.accountName }
+        if !others.isEmpty {
+            if isSnapshotRender {
+                Image(systemName: "tray.and.arrow.up")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                Menu {
+                    ForEach(others, id: \.name) { targetAccount in
+                        Button("Migrate to \(targetAccount.name)") {
+                            let cwd = row.cwd
+                            let sid = row.sessionId
+                            let src = sourceAccount
+                            let dst = targetAccount
+                            Task { await state.migrateSession(cwd: cwd, sessionId: sid,
+                                                              from: src, to: dst) }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "tray.and.arrow.up")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.primary)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Migrate this session (data + config + plugins/hooks) to another account — full copy")
+            }
+        }
     }
 
     private func owningAccount(for row: SessionRow) -> AccountConfig? {

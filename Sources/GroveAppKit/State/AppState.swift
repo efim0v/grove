@@ -883,6 +883,42 @@ extension AppState {
         if let first = report.issues.first { actionError = "Transcript mirror: \(first)" }
     }
 
+    // MARK: - Session migration (Phase 4A4)
+
+    /// Full cross-account session migration: copies the session's transcript,
+    /// aux files, tasks, settings keys, and plugins into the target account's
+    /// configDir — non-destructively (never overwrites). No-op when source and
+    /// target share the same account name.
+    public func migrateSession(cwd: String, sessionId: String,
+                               from sourceAccount: AccountConfig,
+                               to targetAccount: AccountConfig) async {
+        guard sourceAccount.name != targetAccount.name else { return }
+
+        let fromConfigDir = expandTilde(sourceAccount.configDir)
+        let toConfigDir   = expandTilde(targetAccount.configDir)
+        let fromHomeJSON  = claudeJSONPath(for: sourceAccount)
+        let toHomeJSON    = claudeJSONPath(for: targetAccount)
+        let mirrorRoot    = TranscriptMirror.mirrorRoot(canonicalDir: canonicalDir)
+        let fromKey       = accountKey(fromConfigDir)
+
+        // Ensure the target's standard directories exist (like linkAccount does).
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: toConfigDir, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: toConfigDir + "/projects", withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: toConfigDir + "/plugins", withIntermediateDirectories: true)
+
+        let report = await Task.detached(priority: .utility) {
+            SessionMigration.migrateSession(
+                sessionId: sessionId, cwd: cwd,
+                fromConfigDir: fromConfigDir, toConfigDir: toConfigDir,
+                fromHomeJSON: fromHomeJSON, toHomeJSON: toHomeJSON,
+                mirrorRoot: mirrorRoot, fromAccountKey: fromKey)
+        }.value
+
+        if let first = report.issues.first { actionError = "Migrate: \(first)" }
+        await refreshSessionIndex()
+    }
+
     /// Permanent delete of a session's transcript (mirror + live sides), then
     /// refreshes the session index. Failures land in actionError.
     public func purgeTranscript(id: String) {
