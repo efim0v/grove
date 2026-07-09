@@ -274,11 +274,37 @@ struct SessionsScreen: View {
             // Resumable: "Resume" under the owning account (row tap), plus a
             // chevron menu offering "Resume as <name>" for every OTHER
             // configured account (cross-account resume — verdict: FEASIBLE).
+            // External rows from non-default accounts also get a "Share" button.
             HStack(spacing: 4) {
                 actionLabel("Resume")
+                if isExternal, let account = owningAccount(for: row),
+                   !isSnapshotRender,
+                   AppState.canShareAcrossAccounts(account: account,
+                                                   canonicalDir: state.canonicalDir) {
+                    shareButton(row: row, account: account)
+                }
                 resumeAsMenu(row, isExternal: isExternal)
             }
         }
+    }
+
+    /// "Share" button — adopts the session into the canonical store so it is
+    /// visible from every linked account. Only shown for non-default-account rows.
+    private func shareButton(row: SessionRow, account: AccountConfig) -> some View {
+        Button {
+            guard let session = findExternalSession(row) else { return }
+            Task { await state.adoptSession(cwd: session.cwd, account: account) }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.primary)
+        }
+        .buttonStyle(.plain)
+        .help("Share across accounts — makes this session visible under every linked account")
+    }
+
+    private func owningAccount(for row: SessionRow) -> AccountConfig? {
+        state.config.accounts.first { $0.name == row.accountName }
     }
 
     private func actionLabel(_ text: String) -> some View {

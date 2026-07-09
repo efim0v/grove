@@ -127,8 +127,28 @@ struct OtherSessionsScreen: View {
             Text("Resume")
                 .font(.callout)
                 .foregroundStyle(Palette.primary)
+            if let account = state.config.accounts.first(where: { $0.name == row.accountName }),
+               !isSnapshotRender,
+               AppState.canShareAcrossAccounts(account: account, canonicalDir: state.canonicalDir) {
+                shareButton(row: row, account: account)
+            }
             resumeAsMenu(row)
         }
+    }
+
+    /// "Share" button — adopts the session into the canonical store so it is
+    /// visible from every linked account. Only shown for non-default-account rows.
+    private func shareButton(row: SessionRow, account: AccountConfig) -> some View {
+        Button {
+            guard let session = findSession(row) else { return }
+            Task { await state.adoptSession(cwd: session.cwd, account: account) }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 11))
+                .foregroundStyle(Palette.primary)
+        }
+        .buttonStyle(.plain)
+        .help("Share across accounts — makes this session visible under every linked account")
     }
 
     @ViewBuilder

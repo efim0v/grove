@@ -795,8 +795,10 @@ extension AppState {
     }
 
     /// The canonical store directory: the default account's `~/.claude` (or the
-    /// test override). Linking roots here; it is never symlinked.
-    private var canonicalDir: String {
+    /// test override). Linking roots here; it is never symlinked. Internal so
+    /// views in the same module (SessionsScreen, OtherSessionsScreen) can evaluate
+    /// canShareAcrossAccounts without recomputing the path.
+    var canonicalDir: String {
         canonicalDirOverride ?? (NSHomeDirectory() + "/.claude")
     }
 
@@ -908,6 +910,49 @@ extension AppState {
             persist()
         }
         return nil
+    }
+
+    // MARK: - Session adoption (Phase 2 / Task 4)
+
+    /// Predicate: true when `account` is NOT the canonical/default account, meaning
+    /// its sessions are not yet shared and can benefit from adoption. Pure, static,
+    /// unit-testable. `canonicalDir` is the expanded canonical store path.
+    public static func canShareAcrossAccounts(account: AccountConfig, canonicalDir: String) -> Bool {
+        expandTilde(account.configDir) != canonicalDir
+    }
+
+    /// Brings a session discovered under `account` into the canonical shared store so
+    /// its transcript is reachable from every linked account.
+    ///
+    /// Safety contract:
+    /// - No-op when `account` IS the canonical account (already shared).
+    /// - Aborts with `actionError` when the session is currently live under ANY account
+    ///   (ensureWorkspaceLinked moves the transcript file; moving an open file causes
+    ///   data loss for the running process).
+    /// - On success, refreshes the session index so the UI reflects the new state.
+    public func adoptSession(cwd: String, account: AccountConfig) async {
+        // No-op for the canonical/default account — already the root of sharing.
+        guard Self.canShareAcrossAccounts(account: account, canonicalDir: canonicalDir) else { return }
+
+        // SAFETY: refuse if the session is live anywhere. ensureWorkspaceLinked moves
+        // the transcript file; an open file descriptor on the moved file means future
+        // writes from the live claude process go to an unlinked inode (data loss).
+        let service = liveProcessValidatorOverride
+            .map { ClaudeService().withProcessValidator($0) } ?? ClaudeService()
+        let mangled = ClaudeService.mangle(cwd)
+        let live = service.allLiveProcesses(accounts: config.accounts)
+        let isLive = live.contains { $0.cwd == cwd || ClaudeService.mangle($0.cwd) == mangled }
+        if isLive {
+            actionError = "This session is running — close it, then Share."
+            return
+        }
+
+        if let error = ensureLinkedForResume(account, mangledCwd: mangled) {
+            actionError = error
+            return
+        }
+
+        await refreshSessionIndex()
     }
 
     /// The name of an account (other than `launchAccount`) under which `sessionId`
