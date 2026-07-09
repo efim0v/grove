@@ -96,7 +96,7 @@ final class AppStateAdoptSessionTests: XCTestCase {
 
         // No live processes — liveProcessValidatorOverride defaults to nil (real check),
         // and there's no real process, so liveness returns false.
-        await state.adoptSession(cwd: cwd, account: workAccount)
+        await state.adoptSession(cwd: cwd, sessionId: sessionId, account: workAccount)
 
         // No error.
         XCTAssertNil(state.actionError,
@@ -132,7 +132,7 @@ final class AppStateAdoptSessionTests: XCTestCase {
         state.config.accounts = [canonicalAccount]
 
         // adoptSession for the canonical account should do nothing — no symlink, no error.
-        await state.adoptSession(cwd: cwd, account: canonicalAccount)
+        await state.adoptSession(cwd: cwd, sessionId: "", account: canonicalAccount)
 
         XCTAssertNil(state.actionError,
                      "adoptSession for the canonical account must set no actionError")
@@ -183,7 +183,7 @@ final class AppStateAdoptSessionTests: XCTestCase {
         // Inject a validator that treats our fake pid as alive.
         state.liveProcessValidatorOverride = { pid in pid == fakePid }
 
-        await state.adoptSession(cwd: cwd, account: workAccount)
+        await state.adoptSession(cwd: cwd, sessionId: sessionId, account: workAccount)
 
         // Must set actionError mentioning the session is running.
         let error = try XCTUnwrap(state.actionError,
@@ -202,6 +202,56 @@ final class AppStateAdoptSessionTests: XCTestCase {
             let fileType = attrs[.type] as? FileAttributeType
             XCTAssertNotEqual(fileType, FileAttributeType.typeSymbolicLink,
                               "account's projects/<mangled> must remain a real dir when adoption is refused")
+        }
+    }
+
+    // MARK: - Test 5: adoptSession — table-only live session (cwd=="") → refused (C1 BUG FIX)
+
+    /// Regression test for C1: a session live via `claude --resume <id>` appears in
+    /// the process table as LiveProcess(cwd: "", sessionId: "S1"). The old cwd-only
+    /// guard missed this case → transcript moved while open → DATA LOSS. The fixed
+    /// adoptSession(cwd:sessionId:account:) must refuse even when there is no file
+    /// record (no sessions/<pid>.json) — only a table-only live process.
+    func testAdoptSessionRefusesWhenTableOnlyLiveSessionMatchesById() async throws {
+        let canonicalDir = root.appendingPathComponent("canonical-table-only")
+        let nonDefaultDir = root.appendingPathComponent("work-table-only")
+        let cwd = "/Users/x/Projects/resumed-app"
+        let sessionId = "table-only-s1"
+
+        // Create the non-default account's transcript (so ensureLinkedForResume has something to move).
+        try writeTranscript(configDir: nonDefaultDir, cwd: cwd, sessionId: sessionId)
+
+        let defaultAccount = AccountConfig(name: "default", configDir: canonicalDir.path)
+        let workAccount = AccountConfig(name: "work", configDir: nonDefaultDir.path)
+
+        let state = makeState()
+        state.canonicalDirOverride = canonicalDir.path
+        state.config.accounts = [defaultAccount, workAccount]
+
+        // Inject a table-only live process: cwd=="" (as --resume produces), sessionId matches.
+        // NO sessions/<pid>.json — this is the table-only path.
+        let tableOnlyProcess = LiveProcess(pid: 9001, sessionId: sessionId, cwd: "",
+                                          status: "idle", accountName: "")
+        state.allLiveProcessesOverride = [tableOnlyProcess]
+
+        await state.adoptSession(cwd: cwd, sessionId: sessionId, account: workAccount)
+
+        // Must set actionError — the session is live via the process table.
+        let error = try XCTUnwrap(state.actionError,
+                                  "adoptSession must refuse a table-only live session (C1 fix)")
+        XCTAssertTrue(error.lowercased().contains("running") || error.lowercased().contains("live"),
+                      "actionError must mention the session is running; got: \(error)")
+
+        // The account's projects dir must NOT be a symlink (adoption was refused).
+        let mangled = ClaudeService.mangle(cwd)
+        let accountProjectPath = nonDefaultDir
+            .appendingPathComponent("projects")
+            .appendingPathComponent(mangled).path
+        if FileManager.default.fileExists(atPath: accountProjectPath) {
+            let attrs = try FileManager.default.attributesOfItem(atPath: accountProjectPath)
+            let fileType = attrs[.type] as? FileAttributeType
+            XCTAssertNotEqual(fileType, FileAttributeType.typeSymbolicLink,
+                              "account's projects/<mangled> must remain a real dir when table-only live adoption is refused")
         }
     }
 }

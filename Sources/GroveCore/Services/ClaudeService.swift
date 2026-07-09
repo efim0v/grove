@@ -78,6 +78,30 @@ public extension Array where Element == LiveProcess {
     }
 }
 
+public extension ClaudeService {
+    /// Pure liveness predicate for the adoptSession safety guard. Returns true when
+    /// ANY process in `live` matches the session being adopted, via EITHER:
+    ///   1. sessionId match — catches `claude --resume <id>` / `--session-id <id>`
+    ///      processes, which appear in the table with `cwd == ""` (the COMMON path
+    ///      now that `sessions/<pid>.json` records are often absent). Without this
+    ///      clause the old cwd-only guard missed these → transcript moved while open
+    ///      → data loss on the unlinked inode. (C1 fix)
+    ///   2. cwd match — catches fresh `claude` sessions (no --resume), which carry
+    ///      their working directory and have an empty sessionId.
+    ///
+    /// Guards against degenerate inputs: an empty `sessionId` never matches a
+    /// table-only row (avoids false positives when the session id is not yet known),
+    /// and an empty `cwd` never triggers the cwd branch.
+    static func isSessionLive(among live: [LiveProcess], cwd: String, sessionId: String) -> Bool {
+        live.contains {
+            // Table-only --resume/--session-id: cwd=="" in the table, match by id.
+            (!sessionId.isEmpty && $0.sessionId == sessionId)
+            // Fresh bare-claude session: cwd carried, id is "".
+            || (!cwd.isEmpty && ($0.cwd == cwd || mangle($0.cwd) == mangle(cwd)))
+        }
+    }
+}
+
 /// Reads Claude Code account identity, session transcripts and (Task 9) live processes
 /// from a `CLAUDE_CONFIG_DIR`. A class (not a struct) so it can keep an mtime-keyed
 /// parse cache: a jsonl file is re-parsed only when its modification date changes.

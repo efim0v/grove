@@ -189,6 +189,12 @@ public final class AppState: ObservableObject {
     /// set { _ in true } so a fixture sessions/<pid>.json counts as live.
     internal var liveProcessValidatorOverride: ((Int32) -> Bool)?
 
+    /// Test seam: injects a fixed live-process list into adoptSession's liveness
+    /// guard, bypassing both file-record reads AND the process-table scan. Required
+    /// for testing the table-only live path (cwd=="", sessionId set) without a real
+    /// process. nil means the real allLiveProcesses call.
+    internal var allLiveProcessesOverride: [LiveProcess]?
+
     /// Test seam: the app-support dir the statusline wrapper script is shipped
     /// into. nil = the real ~/Library/Application Support/Grove/bin. TESTS set a
     /// temp dir so install never writes under the real app-support tree.
@@ -427,9 +433,8 @@ extension AppState {
     /// Also populates `externalSessionsByProject` and `otherSessions` (Phase 2 /
     /// Task 2): a disk-wide scan of ALL recent sessions attributed to projects by
     /// cwd prefix. The recency cap reuses `config.transcriptMirror.maxDays` (90 by
-    /// default). allRecentSessions runs inside the same detached task; attribution
-    /// happens back on the main actor (cheap O(sessions×projects) prefix match,
-    /// reads `config.projects` which lives on the main actor).
+    /// default). allRecentSessions + attribution both run inside the detached task;
+    /// the finished dictionaries are assigned back on the main actor.
     public func refreshSessionIndex() async {
         let accounts = config.accounts
         let claude = self.claude
@@ -441,8 +446,20 @@ extension AppState {
         }
         let sinceDays = config.transcriptMirror.maxDays
         let now = Date()
-        let (sessionRows, allSessions) = await Task.detached(priority: .utility) {
-            () -> ([UUID: [ProjectSessionRow]], [ClaudeSession]) in
+
+        // Precompute canonical roots for every project ONCE on the main actor
+        // (reads config.projects; each root is a single resolvingSymlinksInPath syscall).
+        // The per-session attribution loop below needs these but runs off-main — we
+        // pass a value snapshot so the closure never touches main-actor state. (I1 fix)
+        let projectRoots: [(id: UUID, roots: [String])] = config.projects.map { p in
+            let roots = [expandTilde(p.path), expandTilde(p.workspacesRoot ?? "")]
+                .filter { !$0.isEmpty }
+                .map { canonicalPath($0) }
+            return (id: p.id, roots: roots)
+        }
+
+        let (sessionRows, byProject, unmatched) = await Task.detached(priority: .utility) {
+            () -> ([UUID: [ProjectSessionRow]], [UUID: [ClaudeSession]], [ClaudeSession]) in
             // Single source of truth (file records ∪ process table) — same data the
             // project scan / Claude tab use, so no tab can disagree on liveness.
             let live = claude.allLiveProcesses(accounts: accounts)
@@ -452,23 +469,30 @@ extension AppState {
                 out[job.id] = buildProjectSessionRows(sessions: sessions, live: live, cmuxMap: cmuxMap)
             }
             // Disk-wide scan for attribution indices (Phase 2 / Task 2).
+            // 500 is a GLOBAL budget across all projects (newest-first over the
+            // ~90d transcriptMirror.maxDays window), so on a very active machine a
+            // rarely-used project's recent sessions can fall below the cut.
             let all = claude.allRecentSessions(accounts: accounts, limit: 500,
                                                sinceDays: sinceDays, now: now)
-            return (out, all)
+
+            // Attribute sessions to projects off the main actor using the precomputed
+            // canonical roots snapshot — avoids resolvingSymlinksInPath syscalls (up to
+            // 500 sessions × N projects) on the main thread. (I1 fix)
+            var sessionsByProject: [UUID: [ClaudeSession]] = [:]
+            var otherSessions: [ClaudeSession] = []
+            for session in all {
+                let sessionCanon = canonicalPath(session.cwd)
+                if let match = projectRoots.first(where: { proj in
+                    proj.roots.contains { sessionCanon == $0 || sessionCanon.hasPrefix($0 + "/") }
+                }) {
+                    sessionsByProject[match.id, default: []].append(session)
+                } else {
+                    otherSessions.append(session)
+                }
+            }
+            return (out, sessionsByProject, otherSessions)
         }.value
         recentSessionsByProject = sessionRows
-
-        // Attribute allSessions to projects on the main actor (reads config.projects).
-        // O(sessions × projects) prefix matching — cheap relative to the I/O above.
-        var byProject: [UUID: [ClaudeSession]] = [:]
-        var unmatched: [ClaudeSession] = []
-        for session in allSessions {
-            if let proj = project(forCwd: session.cwd) {
-                byProject[proj.id, default: []].append(session)
-            } else {
-                unmatched.append(session)
-            }
-        }
         externalSessionsByProject = byProject
         otherSessions = unmatched
     }
@@ -930,19 +954,29 @@ extension AppState {
     ///   (ensureWorkspaceLinked moves the transcript file; moving an open file causes
     ///   data loss for the running process).
     /// - On success, refreshes the session index so the UI reflects the new state.
-    public func adoptSession(cwd: String, account: AccountConfig) async {
+    ///
+    /// `sessionId` is required to catch sessions that are live via
+    /// `claude --resume <id>` / `--session-id <id>` — these appear in the process
+    /// table with `cwd == ""`, so cwd-only matching misses them (C1 fix).
+    public func adoptSession(cwd: String, sessionId: String, account: AccountConfig) async {
         // No-op for the canonical/default account — already the root of sharing.
         guard Self.canShareAcrossAccounts(account: account, canonicalDir: canonicalDir) else { return }
 
         // SAFETY: refuse if the session is live anywhere. ensureWorkspaceLinked moves
         // the transcript file; an open file descriptor on the moved file means future
         // writes from the live claude process go to an unlinked inode (data loss).
-        let service = liveProcessValidatorOverride
-            .map { ClaudeService().withProcessValidator($0) } ?? ClaudeService()
+        // ClaudeService.isSessionLive checks BOTH sessionId (table-only --resume path,
+        // cwd=="") AND cwd (fresh sessions) so neither liveness signal is missed.
+        let live: [LiveProcess]
+        if let override = allLiveProcessesOverride {
+            live = override
+        } else {
+            let service = liveProcessValidatorOverride
+                .map { ClaudeService().withProcessValidator($0) } ?? ClaudeService()
+            live = service.allLiveProcesses(accounts: config.accounts)
+        }
         let mangled = ClaudeService.mangle(cwd)
-        let live = service.allLiveProcesses(accounts: config.accounts)
-        let isLive = live.contains { $0.cwd == cwd || ClaudeService.mangle($0.cwd) == mangled }
-        if isLive {
+        if ClaudeService.isSessionLive(among: live, cwd: cwd, sessionId: sessionId) {
             actionError = "This session is running — close it, then Share."
             return
         }

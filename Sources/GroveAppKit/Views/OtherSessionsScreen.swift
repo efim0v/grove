@@ -141,7 +141,7 @@ struct OtherSessionsScreen: View {
     private func shareButton(row: SessionRow, account: AccountConfig) -> some View {
         Button {
             guard let session = findSession(row) else { return }
-            Task { await state.adoptSession(cwd: session.cwd, account: account) }
+            Task { await state.adoptSession(cwd: session.cwd, sessionId: session.id, account: account) }
         } label: {
             Image(systemName: "square.and.arrow.up")
                 .font(.system(size: 11))
