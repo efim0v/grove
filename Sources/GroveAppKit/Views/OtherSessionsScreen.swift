@@ -69,7 +69,6 @@ struct OtherSessionsScreen: View {
             Text("Status").frame(width: SessionsScreen.statusWidth, alignment: .leading)
             Text("Session").frame(maxWidth: .infinity, alignment: .leading)
             Text("Location").frame(width: SessionsScreen.locationWidth, alignment: .leading)
-            Text("Account").frame(width: SessionsScreen.accountWidth, alignment: .leading)
             Text("").frame(width: SessionsScreen.gearWidth)
             Text("").frame(width: SessionsScreen.actionWidth, alignment: .trailing)
         }
@@ -82,17 +81,13 @@ struct OtherSessionsScreen: View {
         HStack(spacing: 10) {
             statusCell(row, now: now)
                 .frame(width: SessionsScreen.statusWidth, alignment: .leading)
-            Text(row.title)
-                .lineLimit(1)
+            sessionCell(row)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text(row.location)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .frame(width: SessionsScreen.locationWidth, alignment: .leading)
-            Text(row.accountName)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .frame(width: SessionsScreen.accountWidth, alignment: .leading)
             Color.clear.frame(width: SessionsScreen.gearWidth)   // no gear for other sessions
             actionCell(row).frame(width: SessionsScreen.actionWidth, alignment: .trailing)
         }
@@ -103,19 +98,38 @@ struct OtherSessionsScreen: View {
         .help(row.cwd)
     }
 
-    // MARK: - Status cell
+    // MARK: - Session cell (2-line: title + account subtitle)
+
+    @ViewBuilder
+    private func sessionCell(_ row: SessionRow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(row.title)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(row.accountName)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    // MARK: - Status cell (2-line: dot+status / age)
 
     @ViewBuilder
     private func statusCell(_ row: SessionRow, now: Date) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(Color(white: 0.5))   // always resumable / neutral
-                .frame(width: 7, height: 7)
-            Text("resumable")
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(Color(white: 0.5))   // always resumable / neutral
+                    .frame(width: 7, height: 7)
+                Text("resumable")
+                    .foregroundStyle(.secondary)
+            }
             Text(relativeAge(row.lastActivity, now: now))
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.tertiary)
+                .padding(.leading, 13)   // align under the status word (dot 7 + gap 6)
         }
     }
 

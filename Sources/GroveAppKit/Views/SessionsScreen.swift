@@ -149,7 +149,6 @@ struct SessionsScreen: View {
             Text("Status").frame(width: Self.statusWidth, alignment: .leading)
             Text("Session").frame(maxWidth: .infinity, alignment: .leading)
             Text("Location").frame(width: Self.locationWidth, alignment: .leading)
-            Text("Account").frame(width: Self.accountWidth, alignment: .leading)
             Text("").frame(width: Self.gearWidth)
             Text("").frame(width: Self.actionWidth, alignment: .trailing)
         }
@@ -158,26 +157,20 @@ struct SessionsScreen: View {
         .padding(.vertical, 4)
     }
 
-    static let statusWidth: CGFloat = 132
-    static let locationWidth: CGFloat = 130
-    static let accountWidth: CGFloat = 80
+    static let statusWidth: CGFloat = 78
+    static let locationWidth: CGFloat = 96
     static let gearWidth: CGFloat = 26
-    static let actionWidth: CGFloat = 130
+    static let actionWidth: CGFloat = 96
 
     private func sessionRow(_ row: SessionRow, now: Date, isExternal: Bool = false) -> some View {
         HStack(spacing: 10) {
             statusCell(row, now: now).frame(width: Self.statusWidth, alignment: .leading)
-            Text(row.title)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            sessionCell(row).frame(maxWidth: .infinity, alignment: .leading)
             Text(row.location)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .truncationMode(.middle)
                 .frame(width: Self.locationWidth, alignment: .leading)
-            Text(row.accountName)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .frame(width: Self.accountWidth, alignment: .leading)
             gearCell(row).frame(width: Self.gearWidth)
             actionCell(row, isExternal: isExternal).frame(width: Self.actionWidth, alignment: .trailing)
         }
@@ -219,29 +212,49 @@ struct SessionsScreen: View {
         }
     }
 
-    // MARK: - Status cell
+    // MARK: - Session cell (2-line: title + account·model subtitle)
+
+    @ViewBuilder
+    private func sessionCell(_ row: SessionRow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(row.title)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(row.accountName)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    // MARK: - Status cell (2-line: dot+status / age)
 
     @ViewBuilder
     private func statusCell(_ row: SessionRow, now: Date) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(dotColor(row.liveStatus))
-                .frame(width: 7, height: 7)
-            if let status = row.liveStatus {
-                Text(statusWord(status))
-                    .foregroundStyle(.primary)
-                if let startedAt = row.startedAt {
-                    Text(relativeAge(startedAt, now: now))
-                        .font(.caption)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(dotColor(row.liveStatus))
+                    .frame(width: 7, height: 7)
+                if let status = row.liveStatus {
+                    Text(statusWord(status))
+                        .foregroundStyle(.primary)
+                } else {
+                    Text("resumable")
                         .foregroundStyle(.secondary)
                 }
-            } else {
-                Text("resumable")
-                    .foregroundStyle(.secondary)
-                Text(relativeAge(row.lastActivity, now: now))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
             }
+            Group {
+                if let startedAt = row.startedAt, row.liveStatus != nil {
+                    Text(relativeAge(startedAt, now: now))
+                } else {
+                    Text(relativeAge(row.lastActivity, now: now))
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .padding(.leading, 13)   // align under the status word (dot 7 + gap 6)
         }
     }
 
