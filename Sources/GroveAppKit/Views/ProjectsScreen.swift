@@ -44,6 +44,9 @@ struct ProjectsTab: View {
             ForEach(state.config.projects) { project in
                 projectSection(project)
             }
+            if !state.otherSessions.isEmpty {
+                otherSessionsSection
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -118,6 +121,39 @@ struct ProjectsTab: View {
         }
         .buttonStyle(.plain)
         .help(project.path)
+    }
+
+    /// Footer section for sessions that don't match any configured project.
+    /// Hidden when the bucket is empty. Styled like a project section but with a
+    /// fixed name header and no workspace card — just an open-bucket affordance.
+    private var otherSessionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("Other sessions")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 10)
+                Text("\(state.otherSessions.count)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, Self.sectionContentInset)
+            Button { state.open(.otherSessions) } label: {
+                HStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    Text("View other sessions")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+                .padding(.horizontal, Self.sectionContentInset)
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var emptyState: some View {

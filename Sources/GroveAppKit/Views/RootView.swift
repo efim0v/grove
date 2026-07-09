@@ -74,6 +74,7 @@ public struct RootView: View {
         case .statsSettings: return (560, 560)
         case .accounts: return (560, 480)
         case .globalSettings: return (480, 420)
+        case .otherSessions: return (600, 540)
         }
     }
 
@@ -104,6 +105,8 @@ public struct RootView: View {
                         AccountsScreen(state: state)
                     case .globalSettings:
                         GlobalSettingsScreen(state: state)
+                    case .otherSessions:
+                        OtherSessionsScreen(state: state)
                     }
                 }
                 // The routed screen fills the column so the SHARED footer (below)
@@ -147,7 +150,7 @@ public struct RootView: View {
         switch route {
         case .projects, .project: return true
         case .accounts, .globalSettings, .projectSettings,
-             .statsSettings, .createWorkspace:
+             .statsSettings, .createWorkspace, .otherSessions:
             return false
         }
     }

@@ -46,23 +46,37 @@ struct SessionsScreen: View {
 
     private func content(snapshot: ProjectSnapshot) -> some View {
         let now = Date()
-        let rows = filterRows(buildSessionRows(snapshot: snapshot,
-                                               cmuxMap: cmuxMap()),
-                              query: state.searchQuery)
+        let snapshotRows = buildSessionRows(snapshot: snapshot, cmuxMap: cmuxMap())
+        let filteredRows = filterRows(snapshotRows, query: state.searchQuery)
+        // External sessions for this project (discovered disk-wide but not in snapshot).
+        let externalSessions = selectedProjectExternalSessions
+        let externalRows = state.searchQuery.isEmpty
+            ? buildExternalSessionRows(snapshotRows: snapshotRows, externalSessions: externalSessions)
+            : []   // external rows are not searched (they're hidden when query is active)
+        let hasContent = !filteredRows.isEmpty || !externalRows.isEmpty
         return Group {
-            if rows.isEmpty {
+            if !hasContent {
                 emptyState(text: state.searchQuery.isEmpty
                            ? "No Claude sessions in this project yet."
                            : "No sessions match “\(state.searchQuery)”.")
             } else if isSnapshotRender {
                 // ImageRenderer does not render ScrollView content offscreen:
                 // lay the table out unscrolled so every row shows in the PNG.
-                table(rows: rows, now: now)
+                tableWithExternal(rows: filteredRows, externalRows: externalRows, now: now)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
-                ScrollView { table(rows: rows, now: now).collapsesSearchOnScroll() }
+                ScrollView {
+                    tableWithExternal(rows: filteredRows, externalRows: externalRows, now: now)
+                        .collapsesSearchOnScroll()
+                }
             }
         }
+    }
+
+    /// External sessions for the selected project from the disk-wide attribution index.
+    private var selectedProjectExternalSessions: [ClaudeSession] {
+        guard let id = state.selectedProjectID else { return [] }
+        return state.externalSessionsByProject[id] ?? []
     }
 
     /// Hook registry in normal use; snapshot mode passes an empty map (the
@@ -81,6 +95,19 @@ struct SessionsScreen: View {
 
     // MARK: - Table
 
+    /// Combined table: normal snapshot rows first, then the External group (if any).
+    private func tableWithExternal(rows: [SessionRow], externalRows: [SessionRow],
+                                   now: Date) -> some View {
+        VStack(spacing: 0) {
+            if !rows.isEmpty {
+                table(rows: rows, now: now)
+            }
+            if !externalRows.isEmpty {
+                externalGroup(rows: externalRows, now: now)
+            }
+        }
+    }
+
     private func table(rows: [SessionRow], now: Date) -> some View {
         VStack(spacing: 0) {
             headerRow
@@ -94,12 +121,36 @@ struct SessionsScreen: View {
         .padding(.vertical, 8)
     }
 
+    /// "External" group: sessions discovered disk-wide that weren't in the project
+    /// snapshot. Shown below the normal table with a clearly-labelled section header.
+    private func externalGroup(rows: [SessionRow], now: Date) -> some View {
+        VStack(spacing: 0) {
+            Divider().padding(.horizontal, 12)
+            HStack {
+                Text("External — opened outside Grove")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 4)
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                sessionRow(row, now: now, isExternal: true)
+                if index < rows.count - 1 { Divider().opacity(0.4).padding(.horizontal, 12) }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+        }
+    }
+
     private var headerRow: some View {
         HStack(spacing: 10) {
             Text("Status").frame(width: Self.statusWidth, alignment: .leading)
             Text("Session").frame(maxWidth: .infinity, alignment: .leading)
             Text("Location").frame(width: Self.locationWidth, alignment: .leading)
             Text("Account").frame(width: Self.accountWidth, alignment: .leading)
+            Text("").frame(width: Self.gearWidth)
             Text("").frame(width: Self.actionWidth, alignment: .trailing)
         }
         .font(.caption.weight(.semibold))
@@ -110,9 +161,10 @@ struct SessionsScreen: View {
     static let statusWidth: CGFloat = 132
     static let locationWidth: CGFloat = 130
     static let accountWidth: CGFloat = 80
+    static let gearWidth: CGFloat = 26
     static let actionWidth: CGFloat = 130
 
-    private func sessionRow(_ row: SessionRow, now: Date) -> some View {
+    private func sessionRow(_ row: SessionRow, now: Date, isExternal: Bool = false) -> some View {
         HStack(spacing: 10) {
             statusCell(row, now: now).frame(width: Self.statusWidth, alignment: .leading)
             Text(row.title)
@@ -126,19 +178,44 @@ struct SessionsScreen: View {
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
                 .frame(width: Self.accountWidth, alignment: .leading)
-            actionCell(row).frame(width: Self.actionWidth, alignment: .trailing)
+            gearCell(row).frame(width: Self.gearWidth)
+            actionCell(row, isExternal: isExternal).frame(width: Self.actionWidth, alignment: .trailing)
         }
         .font(.callout)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .onTapGesture { performPrimary(row) }
+        .onTapGesture {
+            if isExternal { performExternal(row) } else { performPrimary(row) }
+        }
         .help(row.cwd)
         .contextMenu {
-            if !isSnapshotRender {
+            if !isSnapshotRender && !isExternal {
                 Button("Purge transcript\u{2026}", role: .destructive) {
                     purgeTarget = row.sessionId
                 }
             }
+        }
+    }
+
+    /// Per-session settings: a gear that opens the config/relaunch sheet (new
+    /// model / effort / account / skip-permissions). Only for resumable rows — a
+    /// live process can't be reconfigured in place. The Button intercepts the tap
+    /// so it doesn't fall through to the row's primary action.
+    @ViewBuilder
+    private func gearCell(_ row: SessionRow) -> some View {
+        if row.action == .resume {
+            if isSnapshotRender {
+                Image(systemName: "gearshape").foregroundStyle(.secondary)
+            } else {
+                Button { state.beginConfigure(row) } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Relaunch with new model / effort / account / permissions")
+            }
+        } else {
+            Color.clear
         }
     }
 
@@ -188,7 +265,7 @@ struct SessionsScreen: View {
     // MARK: - Action cell
 
     @ViewBuilder
-    private func actionCell(_ row: SessionRow) -> some View {
+    private func actionCell(_ row: SessionRow, isExternal: Bool = false) -> some View {
         if row.action == .go {
             // The whole row is tappable (-> performPrimary); the label is the
             // affordance text.
@@ -199,7 +276,7 @@ struct SessionsScreen: View {
             // configured account (cross-account resume — verdict: FEASIBLE).
             HStack(spacing: 4) {
                 actionLabel("Resume")
-                resumeAsMenu(row)
+                resumeAsMenu(row, isExternal: isExternal)
             }
         }
     }
@@ -213,7 +290,7 @@ struct SessionsScreen: View {
     /// Other-account selector. Snapshot-safe: a static chevron lookalike
     /// offscreen (Menu is AppKit-backed), a real Menu live.
     @ViewBuilder
-    private func resumeAsMenu(_ row: SessionRow) -> some View {
+    private func resumeAsMenu(_ row: SessionRow, isExternal: Bool = false) -> some View {
         // Offer every account the session is reachable under, plus any other
         // configured account (link-on-demand), minus the row's primary account.
         let reachable = Set(row.accounts)
@@ -233,7 +310,11 @@ struct SessionsScreen: View {
                 Menu {
                     ForEach(others, id: \.name) { account in
                         Button("Resume as \(account.name)") {
-                            resume(row, as: account)
+                            if isExternal {
+                                resumeExternal(row, as: account)
+                            } else {
+                                resume(row, as: account)
+                            }
                         }
                     }
                 } label: {
@@ -246,6 +327,12 @@ struct SessionsScreen: View {
                 .frame(width: 16)
             }
         }
+    }
+
+    /// Resume-as for an external row (not in the project snapshot).
+    private func resumeExternal(_ row: SessionRow, as account: AccountConfig) {
+        guard let session = findExternalSession(row) else { return }
+        Task { await state.resumeSession(session, as: account) }
     }
 
     // MARK: - Actions
@@ -272,6 +359,20 @@ struct SessionsScreen: View {
         guard let snapshot = state.selectedSnapshot,
               let session = findSession(row, in: snapshot) else { return }
         Task { await state.resumeSession(session, as: account) }
+    }
+
+    /// Primary tap for an EXTERNAL row (not in the project snapshot).
+    private func performExternal(_ row: SessionRow) {
+        guard let session = findExternalSession(row) else { return }
+        let account = account(named: row.accountName)
+        Task { await state.resumeSession(session, as: account) }
+    }
+
+    /// Looks up the ClaudeSession for an external row from externalSessionsByProject.
+    private func findExternalSession(_ row: SessionRow) -> ClaudeSession? {
+        guard let id = state.selectedProjectID,
+              let sessions = state.externalSessionsByProject[id] else { return nil }
+        return sessions.first { $0.id == row.sessionId && $0.cwd == row.cwd }
     }
 
     private func account(named name: String) -> AccountConfig {

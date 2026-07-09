@@ -233,3 +233,67 @@ public func buildSessionRows(snapshot: ProjectSnapshot,
     }
     return rows
 }
+
+// MARK: - External session rows (Part A)
+
+/// Returns `SessionRow`s for sessions discovered externally (via `refreshSessionIndex`'s
+/// disk-wide scan) that are NOT already represented in `snapshotRows` — i.e., whose
+/// `(cwd, sessionId)` composite key does not already appear in the current project
+/// snapshot. This prevents listing the same session twice when it happens to be inside
+/// a scanned workspace.
+///
+/// The returned rows carry the full `cwd` and `accountName` so Task 4 ("Share / adopt"
+/// affordance) can use them directly. All rows have `.resume` action (external sessions
+/// have no live-process information at this stage).
+///
+/// Input order is preserved (the caller supplies sessions newest-first from
+/// `allRecentSessions`). Location label is the leaf directory of each session's `cwd`.
+public func buildExternalSessionRows(snapshotRows: [SessionRow],
+                                     externalSessions: [ClaudeSession]) -> [SessionRow] {
+    let shownKeys = Set(snapshotRows.map { SessionRow.rowID(cwd: $0.cwd, session: $0.sessionId) })
+    var result: [SessionRow] = []
+    for s in externalSessions {
+        let key = SessionRow.rowID(cwd: s.cwd, session: s.id)
+        guard !shownKeys.contains(key) else { continue }
+        let location = (s.cwd as NSString).lastPathComponent
+        let title = s.title.flatMap { $0.isEmpty ? nil : $0 } ?? String(s.id.prefix(8))
+        result.append(SessionRow(
+            sessionId: s.id,
+            title: title,
+            location: location,
+            accountName: s.accountName,
+            accounts: [s.accountName],
+            cwd: s.cwd,
+            liveStatus: nil,
+            startedAt: nil,
+            lastActivity: s.lastActivity,
+            action: .resume,
+            cmuxWorkspaceId: nil))
+    }
+    return result
+}
+
+// MARK: - Other session rows (Part B)
+
+/// Converts `otherSessions` (sessions matching no configured project) into `SessionRow`s
+/// for display in the "Other sessions" bucket. Input order is preserved (newest-first from
+/// the caller). Location label is the leaf directory of each session's `cwd`. All rows
+/// have `.resume` action.
+public func buildOtherSessionRows(sessions: [ClaudeSession]) -> [SessionRow] {
+    sessions.map { s in
+        let location = (s.cwd as NSString).lastPathComponent
+        let title = s.title.flatMap { $0.isEmpty ? nil : $0 } ?? String(s.id.prefix(8))
+        return SessionRow(
+            sessionId: s.id,
+            title: title,
+            location: location,
+            accountName: s.accountName,
+            accounts: [s.accountName],
+            cwd: s.cwd,
+            liveStatus: nil,
+            startedAt: nil,
+            lastActivity: s.lastActivity,
+            action: .resume,
+            cmuxWorkspaceId: nil)
+    }
+}
