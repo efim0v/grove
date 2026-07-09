@@ -12,6 +12,17 @@ import Foundation
 // `JSONSerialization` which preserves the original type. Callers must not
 // assume `as? Int` succeeds on a bool-valued NSNumber.
 
+// MARK: - MigrateReport
+
+/// Collects outcomes of `copySessionData`: paths copied, skipped (already present),
+/// and any issues (non-fatal errors). Sendable + Equatable for test assertions.
+public struct MigrateReport: Sendable, Equatable {
+    public var copied:  [String] = []
+    public var skipped: [String] = []
+    public var issues:  [String] = []
+    public init() {}
+}
+
 public struct SessionMigration: Sendable {
 
     // MARK: - 1. deepMergeJSON
@@ -127,6 +138,158 @@ public struct SessionMigration: Sendable {
         }
         result["plugins"] = plugins
         return result
+    }
+
+    // MARK: - 5. copySessionData
+
+    /// Phase-A filesystem copy for cross-account session migration.
+    ///
+    /// Copies every data footprint item for `sessionId`/`cwd` from `fromConfigDir`
+    /// to `toConfigDir`. Non-destructive: never moves, renames, or deletes source
+    /// items. Idempotent: items already present at the target are skipped (recorded
+    /// in `report.skipped`). Collects errors in `report.issues` without throwing.
+    ///
+    /// Items copied (relative to each configDir unless noted):
+    ///   1. `projects/<mangled>/<sessionId>.jsonl`        — transcript
+    ///   2. `projects/<mangled>/<sessionId>/`             — aux dir (recursive)
+    ///   3. `projects/<mangled>/memory/`                  — merge-copy (no overwrite)
+    ///   4. `file-history/<sessionId>/`                   — recursive copy
+    ///   5. `tasks/<sessionId>/`                          — recursive copy
+    ///   6. `session-env/<sessionId>/`                    — recursive copy
+    ///   7. `grove/usage/<sessionId>.json`                — single file
+    ///
+    /// Mirror fallback (item 1): if the live transcript is absent at source, the
+    /// method tries `<mirrorRoot>/<fromAccountKey>/<mangled>/<sessionId>.jsonl`.
+    /// If neither exists, an issue is recorded and the remaining items are still
+    /// copied.
+    public static func copySessionData(
+        sessionId: String,
+        cwd: String,
+        fromConfigDir: String,
+        toConfigDir: String,
+        mirrorRoot: String?,
+        fromAccountKey: String
+    ) -> MigrateReport {
+        var report = MigrateReport()
+        let fm = FileManager.default
+        let mangled = ClaudeService.mangle(cwd)
+
+        // 1. Transcript (.jsonl)
+        let transcriptRel = "projects/\(mangled)/\(sessionId).jsonl"
+        let liveSrc = fromConfigDir + "/" + transcriptRel
+        let transcriptDst = toConfigDir + "/" + transcriptRel
+        var transcriptSrc: String? = fm.fileExists(atPath: liveSrc) ? liveSrc : nil
+        if transcriptSrc == nil, let mirror = mirrorRoot {
+            let mirrorSrc = "\(mirror)/\(fromAccountKey)/\(mangled)/\(sessionId).jsonl"
+            if fm.fileExists(atPath: mirrorSrc) { transcriptSrc = mirrorSrc }
+        }
+        if let src = transcriptSrc {
+            copySingleFile(src: src, dst: transcriptDst, report: &report)
+        } else {
+            report.issues.append("transcript unavailable: \(sessionId).jsonl not found at source or mirror")
+        }
+
+        // 2. Aux dir  projects/<mangled>/<sessionId>/
+        let auxSrc = fromConfigDir + "/projects/\(mangled)/\(sessionId)"
+        let auxDst = toConfigDir + "/projects/\(mangled)/\(sessionId)"
+        copyDir(src: auxSrc, dst: auxDst, merge: false, report: &report)
+
+        // 3. Memory dir  projects/<mangled>/memory/  — merge (no overwrite)
+        let memorySrc = fromConfigDir + "/projects/\(mangled)/memory"
+        let memoryDst = toConfigDir + "/projects/\(mangled)/memory"
+        copyDir(src: memorySrc, dst: memoryDst, merge: true, report: &report)
+
+        // 4. file-history/<sessionId>/
+        let fhSrc = fromConfigDir + "/file-history/\(sessionId)"
+        let fhDst = toConfigDir + "/file-history/\(sessionId)"
+        copyDir(src: fhSrc, dst: fhDst, merge: false, report: &report)
+
+        // 5. tasks/<sessionId>/
+        let tasksSrc = fromConfigDir + "/tasks/\(sessionId)"
+        let tasksDst = toConfigDir + "/tasks/\(sessionId)"
+        copyDir(src: tasksSrc, dst: tasksDst, merge: false, report: &report)
+
+        // 6. session-env/<sessionId>/
+        let envSrc = fromConfigDir + "/session-env/\(sessionId)"
+        let envDst = toConfigDir + "/session-env/\(sessionId)"
+        copyDir(src: envSrc, dst: envDst, merge: false, report: &report)
+
+        // 7. grove/usage/<sessionId>.json
+        let usageSrc = fromConfigDir + "/grove/usage/\(sessionId).json"
+        let usageDst = toConfigDir + "/grove/usage/\(sessionId).json"
+        if fm.fileExists(atPath: usageSrc) {
+            copySingleFile(src: usageSrc, dst: usageDst, report: &report)
+        }
+
+        return report
+    }
+
+    // MARK: - copySessionData helpers
+
+    /// Copy a single file from `src` to `dst`, creating parent dirs.
+    /// Skips (records skipped) if `dst` already exists. Records copied on success.
+    private static func copySingleFile(src: String, dst: String, report: inout MigrateReport) {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: dst) {
+            report.skipped.append(dst)
+            return
+        }
+        let parent = (dst as NSString).deletingLastPathComponent
+        do {
+            try fm.createDirectory(atPath: parent, withIntermediateDirectories: true)
+            try fm.copyItem(atPath: src, toPath: dst)
+            report.copied.append(dst)
+        } catch {
+            report.issues.append("copy \(src) → \(dst): \(error.localizedDescription)")
+        }
+    }
+
+    /// Copy `src` directory tree to `dst`.
+    /// - `merge: false`: whole-dir copy via `FileManager.copyItem` (skipped if dst exists).
+    /// - `merge: true`:  per-file walk — copies only files the target lacks (never overwrites).
+    /// Silently skips absent source dirs. Records each copied/skipped path.
+    private static func copyDir(src: String, dst: String, merge: Bool, report: inout MigrateReport) {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: src, isDirectory: &isDir), isDir.boolValue else { return }
+
+        if !merge {
+            // Whole-dir: skip if dst already exists (idempotent)
+            if fm.fileExists(atPath: dst) {
+                report.skipped.append(dst)
+                return
+            }
+            let parent = (dst as NSString).deletingLastPathComponent
+            do {
+                try fm.createDirectory(atPath: parent, withIntermediateDirectories: true)
+                try fm.copyItem(atPath: src, toPath: dst)
+                report.copied.append(dst)
+            } catch {
+                report.issues.append("copy dir \(src) → \(dst): \(error.localizedDescription)")
+            }
+        } else {
+            // Merge: walk source files, copy only those absent in target
+            guard let enumerator = fm.enumerator(atPath: src) else { return }
+            for case let rel as String in enumerator {
+                let srcFile = src + "/" + rel
+                var srcIsDir: ObjCBool = false
+                guard fm.fileExists(atPath: srcFile, isDirectory: &srcIsDir),
+                      !srcIsDir.boolValue else { continue }
+                let dstFile = dst + "/" + rel
+                if fm.fileExists(atPath: dstFile) {
+                    report.skipped.append(dstFile)
+                } else {
+                    let dstParent = (dstFile as NSString).deletingLastPathComponent
+                    do {
+                        try fm.createDirectory(atPath: dstParent, withIntermediateDirectories: true)
+                        try fm.copyItem(atPath: srcFile, toPath: dstFile)
+                        report.copied.append(dstFile)
+                    } catch {
+                        report.issues.append("merge-copy \(srcFile) → \(dstFile): \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Private helpers
