@@ -158,6 +158,89 @@ final class AppStateMigrateSessionTests: XCTestCase {
                       "source settings.json must remain after migration")
     }
 
+    // MARK: - Test 4: live-target guard — refused when TARGET account has a running process
+
+    /// Injects a live process attributed to the TARGET account via allLiveProcessesOverride.
+    /// migrateSession must refuse (set actionError mentioning "running") and must NOT
+    /// copy any files to the target configDir.
+    func testMigrateSessionRefusesWhenTargetAccountHasLiveProcess() async throws {
+        let cwd = "/Users/x/Projects/live-target"
+        let sessionId = "migrate-live-target-s1"
+        let sourceDir = root.appendingPathComponent("src-live-guard")
+        let targetDir = root.appendingPathComponent("dst-live-guard")
+
+        try writeSourceFootprint(configDir: sourceDir, cwd: cwd, sessionId: sessionId)
+
+        let sourceAccount = AccountConfig(name: "src-lg", configDir: sourceDir.path)
+        let targetAccount = AccountConfig(name: "dst-lg", configDir: targetDir.path)
+
+        let state = makeState()
+        state.config.accounts = [sourceAccount, targetAccount]
+
+        // Inject a live process attributed to the TARGET account — any live session is enough
+        let liveProcess = LiveProcess(pid: 12345, sessionId: "some-other-session",
+                                     cwd: "/some/other/cwd", status: "busy",
+                                     accountName: targetAccount.name)
+        state.allLiveProcessesOverride = [liveProcess]
+
+        await state.migrateSession(cwd: cwd, sessionId: sessionId,
+                                   from: sourceAccount, to: targetAccount)
+
+        // Must have set actionError mentioning the session is running
+        let error = try XCTUnwrap(state.actionError,
+                                   "migrateSession must set actionError when target account has a live process")
+        XCTAssertTrue(error.lowercased().contains("running"),
+                      "actionError must mention 'running'; got: \(error)")
+        XCTAssertTrue(error.contains(targetAccount.name),
+                      "actionError must mention the target account name '\(targetAccount.name)'; got: \(error)")
+
+        // Target configDir must remain empty — no transcript, no settings.json, nothing
+        let fm = FileManager.default
+        let mangled = ClaudeService.mangle(cwd)
+        let targetTranscript = targetDir
+            .appendingPathComponent("projects")
+            .appendingPathComponent(mangled)
+            .appendingPathComponent("\(sessionId).jsonl")
+        XCTAssertFalse(fm.fileExists(atPath: targetTranscript.path),
+                       "target transcript must NOT exist when migration was refused")
+        let targetSettings = targetDir.appendingPathComponent("settings.json")
+        XCTAssertFalse(fm.fileExists(atPath: targetSettings.path),
+                       "target settings.json must NOT exist when migration was refused")
+    }
+
+    /// Happy-path complement: with NO live processes, migrateSession proceeds normally.
+    func testMigrateSessionProceedsWhenTargetAccountHasNoLiveProcess() async throws {
+        let cwd = "/Users/x/Projects/not-live-target"
+        let sessionId = "migrate-not-live-s1"
+        let sourceDir = root.appendingPathComponent("src-no-live")
+        let targetDir = root.appendingPathComponent("dst-no-live")
+
+        try writeSourceFootprint(configDir: sourceDir, cwd: cwd, sessionId: sessionId)
+
+        let sourceAccount = AccountConfig(name: "src-nl", configDir: sourceDir.path)
+        let targetAccount = AccountConfig(name: "dst-nl", configDir: targetDir.path)
+
+        let state = makeState()
+        state.config.accounts = [sourceAccount, targetAccount]
+        // No live processes at all
+        state.allLiveProcessesOverride = []
+
+        await state.migrateSession(cwd: cwd, sessionId: sessionId,
+                                   from: sourceAccount, to: targetAccount)
+
+        XCTAssertNil(state.actionError,
+                     "migrateSession with no live target processes must not set actionError; got: \(state.actionError ?? "")")
+
+        // Transcript must land in target
+        let mangled = ClaudeService.mangle(cwd)
+        let targetTranscript = targetDir
+            .appendingPathComponent("projects")
+            .appendingPathComponent(mangled)
+            .appendingPathComponent("\(sessionId).jsonl")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: targetTranscript.path),
+                      "transcript must land in target when no live processes block migration")
+    }
+
     // MARK: - Test 3: no-op when source == target (same name)
 
     func testMigrateSessionIsNoOpWhenSameAccount() async throws {

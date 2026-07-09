@@ -479,7 +479,7 @@ public struct SessionMigration: Sendable {
             }
         }
 
-        // --- installed_plugins.json: deepMerge plugins map + repoint paths ------
+        // --- installed_plugins.json: repoint source FIRST, merge, then dedup ------
         let fromInstalled = fromConfigDir + "/plugins/installed_plugins.json"
         let toInstalled   = toConfigDir   + "/plugins/installed_plugins.json"
         if let srcData = fm.contents(atPath: fromInstalled),
@@ -491,13 +491,18 @@ public struct SessionMigration: Sendable {
             } else {
                 targetObj = [:]
             }
-            // Deep-merge then repoint installPaths
-            let mergedRaw = deepMergeJSON(target: targetObj, source: srcObj)
-            let merged = repointPluginInstallPaths(
-                installedPlugins: mergedRaw,
+            // Step 1: repoint source installPaths into target-space BEFORE merging,
+            //         so fingerprints are comparable to target records.
+            let repointedSrc = repointPluginInstallPaths(
+                installedPlugins: srcObj,
                 fromConfigDir: fromConfigDir,
                 toConfigDir: toConfigDir
             )
+            // Step 2: deep-merge (target wins on scalar conflicts; arrays unioned).
+            let mergedRaw = deepMergeJSON(target: targetObj, source: repointedSrc)
+            // Step 3: dedup each plugins[key] array by (version, installPath) —
+            //         both now in target-space — keeping first (target-native) occurrence.
+            let merged = dedupPluginRecords(mergedRaw)
             do {
                 let outData = try JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted)
                 try outData.write(to: URL(fileURLWithPath: toInstalled), options: .atomic)
@@ -551,6 +556,34 @@ public struct SessionMigration: Sendable {
         merge(migratePlugins(fromConfigDir: fromConfigDir, toConfigDir: toConfigDir))
 
         return report
+    }
+
+    // MARK: - Plugin dedup helper
+
+    /// Deduplicates each `plugins[key]` array in `installedPlugins` by `(version, installPath)`.
+    /// First occurrence wins (preserves target-native records). Other top-level keys untouched.
+    /// Assumes installPaths are already in the same (target) space — call
+    /// `repointPluginInstallPaths` on the source before merging.
+    private static func dedupPluginRecords(_ installedPlugins: [String: Any]) -> [String: Any] {
+        var result = installedPlugins
+        guard var plugins = result["plugins"] as? [String: Any] else { return result }
+        for (key, val) in plugins {
+            guard let entries = val as? [[String: Any]] else { continue }
+            var seen = Set<String>()
+            var deduped: [[String: Any]] = []
+            for entry in entries {
+                let v = (entry["version"] as? String) ?? ""
+                let p = (entry["installPath"] as? String) ?? ""
+                let fingerprint = "\(v)\u{0}\(p)"
+                if !seen.contains(fingerprint) {
+                    seen.insert(fingerprint)
+                    deduped.append(entry)
+                }
+            }
+            plugins[key] = deduped
+        }
+        result["plugins"] = plugins
+        return result
     }
 
     // MARK: - copySessionData helpers

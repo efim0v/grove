@@ -827,9 +827,121 @@ final class SessionMigrationTests: XCTestCase {
         XCTAssertFalse(report.skipped.isEmpty, "dedup'd plugin must appear in skipped")
     }
 
+    /// 15. installed_plugins.json dedup: target already holds demo-plugin@mkt v6.0.3;
+    ///     source has the SAME version but with a source-space installPath.
+    ///     After migratePlugins, plugins["demo-plugin@mkt"].count must be 1 (no dup),
+    ///     and its installPath must be in target-space.
+    func testMigratePluginsDeduplicatesInstalledRecordsByVersionAndPath() throws {
+        let root = try Fixture.tempDir("migrate-plugins-installed-dedup")
+        let fromDir = root.appendingPathComponent("from").path
+        let toDir   = root.appendingPathComponent("to").path
+
+        let pluginKey = "demo-plugin@mkt"
+        let ver = "6.0.3"
+        let targetInstallPath = "\(toDir)/plugins/cache/mkt/demo-plugin/\(ver)"
+        let sourceInstallPath = "\(fromDir)/plugins/cache/mkt/demo-plugin/\(ver)"
+
+        // Target already has installed_plugins.json with ONE record (target-space installPath)
+        let targetInstalledObj: [String: Any] = [
+            "version": 1,
+            "plugins": [
+                pluginKey: [
+                    ["installPath": targetInstallPath, "version": ver,
+                     "installedAt": "2025-01-01T00:00:00Z"]
+                ]
+            ]
+        ]
+        try writeJSON(targetInstalledObj, at: "\(toDir)/plugins/installed_plugins.json")
+
+        // Source has the SAME plugin/version but source-space installPath + different timestamps
+        let sourceInstalledObj: [String: Any] = [
+            "version": 1,
+            "plugins": [
+                pluginKey: [
+                    ["installPath": sourceInstallPath, "version": ver,
+                     "installedAt": "2025-06-01T00:00:00Z",
+                     "lastUpdated": "2025-06-01T00:00:00Z"]
+                ]
+            ]
+        ]
+        try writeJSON(sourceInstalledObj, at: "\(fromDir)/plugins/installed_plugins.json")
+
+        // Also put the version dir at target so cache dedup skips the file copy
+        try fm.createDirectory(
+            atPath: "\(toDir)/plugins/cache/mkt/demo-plugin/\(ver)",
+            withIntermediateDirectories: true)
+        // Source version dir must exist too
+        try write("dummy", at: root.appendingPathComponent("from"),
+                  "plugins/cache/mkt/demo-plugin/\(ver)/index.js")
+
+        let report = SessionMigration.migratePlugins(fromConfigDir: fromDir, toConfigDir: toDir)
+        XCTAssertTrue(report.issues.isEmpty, "no issues: \(report.issues)")
+
+        // After merge: exactly ONE record in the array, not two
+        let resultInstalled = try readJSON(at: "\(toDir)/plugins/installed_plugins.json")
+        let plugins = try XCTUnwrap(resultInstalled["plugins"] as? [String: Any])
+        let entries = try XCTUnwrap(plugins[pluginKey] as? [[String: Any]])
+        XCTAssertEqual(entries.count, 1,
+                       "plugins[\(pluginKey)] must have exactly 1 record after merge (no dup); got \(entries.count)")
+        // The surviving record must have target-space installPath
+        let survivingPath = try XCTUnwrap(entries.first?["installPath"] as? String)
+        XCTAssertTrue(survivingPath.hasPrefix(toDir),
+                      "surviving record installPath must be in target-space; got: \(survivingPath)")
+        XCTAssertFalse(survivingPath.hasPrefix(fromDir),
+                       "surviving record must not reference fromDir; got: \(survivingPath)")
+    }
+
+    /// 15b. Idempotency: running migratePlugins a second time leaves the array at count==1.
+    func testMigratePluginsInstalledRecordDedupIsIdempotent() throws {
+        let root = try Fixture.tempDir("migrate-plugins-installed-dedup-idempotent")
+        let fromDir = root.appendingPathComponent("from").path
+        let toDir   = root.appendingPathComponent("to").path
+
+        let pluginKey = "demo-plugin@mkt"
+        let ver = "6.0.3"
+        let targetInstallPath = "\(toDir)/plugins/cache/mkt/demo-plugin/\(ver)"
+        let sourceInstallPath = "\(fromDir)/plugins/cache/mkt/demo-plugin/\(ver)"
+
+        // Target installed_plugins (1 record)
+        let targetInstalledObj: [String: Any] = [
+            "version": 1,
+            "plugins": [
+                pluginKey: [["installPath": targetInstallPath, "version": ver]]
+            ]
+        ]
+        try writeJSON(targetInstalledObj, at: "\(toDir)/plugins/installed_plugins.json")
+
+        // Source installed_plugins (same version, source-space installPath)
+        let sourceInstalledObj: [String: Any] = [
+            "version": 1,
+            "plugins": [
+                pluginKey: [["installPath": sourceInstallPath, "version": ver]]
+            ]
+        ]
+        try writeJSON(sourceInstalledObj, at: "\(fromDir)/plugins/installed_plugins.json")
+
+        // Ensure the target version dir exists so cache dedup always skips the file copy
+        try fm.createDirectory(atPath: "\(toDir)/plugins/cache/mkt/demo-plugin/\(ver)",
+                               withIntermediateDirectories: true)
+        try write("dummy", at: root.appendingPathComponent("from"),
+                  "plugins/cache/mkt/demo-plugin/\(ver)/index.js")
+
+        // First run
+        _ = SessionMigration.migratePlugins(fromConfigDir: fromDir, toConfigDir: toDir)
+
+        // Second run (the idempotency check)
+        _ = SessionMigration.migratePlugins(fromConfigDir: fromDir, toConfigDir: toDir)
+
+        let resultInstalled = try readJSON(at: "\(toDir)/plugins/installed_plugins.json")
+        let plugins = try XCTUnwrap(resultInstalled["plugins"] as? [String: Any])
+        let entries = try XCTUnwrap(plugins[pluginKey] as? [[String: Any]])
+        XCTAssertEqual(entries.count, 1,
+                       "count must still be 1 after second run (idempotent); got \(entries.count)")
+    }
+
     // MARK: - migrateSession orchestrator
 
-    /// 15. Full orchestrator: all phases land at target; idempotent; source non-destructive.
+    /// 17. Full orchestrator: all phases land at target; idempotent; source non-destructive.
     func testMigrateSessionOrchestrator() throws {
         let root = try Fixture.tempDir("migrate-session-orch")
         let fromDir = root.appendingPathComponent("from").path
