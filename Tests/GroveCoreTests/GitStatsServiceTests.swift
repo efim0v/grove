@@ -921,6 +921,84 @@ final class GitStatsServiceTests: XCTestCase {
                        "solo committed tree: main.swift(1) + solo.swift(2) = 3")
     }
 
+    // MARK: - 24a. cat-file --batch framing: multiple files, mixed sizes, no-trailing-newline, binary
+
+    /// Tests the batch blob-fetch path with multiple files of different sizes and types.
+    /// This locks the `git cat-file --batch` framing/parsing: size-delimited payloads,
+    /// multiple objects in one stream, one file without a trailing newline, and one
+    /// binary file (NUL byte) that must be skipped exactly as the working-tree path does.
+    func testCommittedTreeBatchFetchMultipleFiles() async throws {
+        let dir = try Fixture.tempDir("batch-multi")
+        let repo = try emptyRepo(in: dir, name: "r")
+
+        // File 1: large.swift — 10 code lines (has trailing newline).
+        try write(Array(repeating: "let x = 1\n", count: 10).joined(), to: "large.swift", in: repo)
+
+        // File 2: tiny.py — 1 code line, NO trailing newline (edge case for payload framing).
+        // We write it without a trailing newline via Data so String.write won't add one.
+        let tinyURL = repo.appendingPathComponent("tiny.py")
+        try Data("x = 1".utf8).write(to: tinyURL)
+
+        // File 3: notes.md — 3 lines of markdown prose (data/prose language).
+        try write("# Title\n\nSome text.\n", to: "notes.md", in: repo)
+
+        // File 4: binary.bin — contains a NUL byte; must be skipped (isLikelyBinary).
+        let binaryURL = repo.appendingPathComponent("binary.bin")
+        try Data([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0d, 0x0a]).write(to: binaryURL)
+        // binary.bin has no known language → language(forPath:) returns nil → silently dropped.
+        // For a more targeted binary test, we need a .swift file with a NUL byte:
+        let binarySwiftURL = repo.appendingPathComponent("corrupt.swift")
+        try Data("let x = \0nil\n".utf8).write(to: binarySwiftURL)
+
+        try commit("batch-commit", in: repo, date: day1)
+
+        // Create a feature branch, add one more file.
+        try sh("git -C \(shellQuote(repo.path)) checkout -qb feature")
+        try write("func foo() {}\nfunc bar() {}\nfunc baz() {}\n", to: "extra.swift", in: repo)
+        try commit("feature-commit", in: repo, date: day2)
+        try sh("git -C \(shellQuote(repo.path)) checkout -q main")
+
+        // Now scan feature as a committed-tree (not checked out).
+        let now = gmtStartOfDay(2025, 1, 4)
+        var cache: [String: RepoFileCache] = [:]
+        let stats = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                       excludedRepos: [],
+                                       branchOverrides: [norm(repo.path): "feature"],
+                                       now: now, cache: &cache)
+
+        // Verify per-file presence.
+        XCTAssertTrue(stats.files.contains { $0.path.hasSuffix("large.swift") },
+                      "large.swift must appear in batch results")
+        XCTAssertTrue(stats.files.contains { $0.path.hasSuffix("tiny.py") },
+                      "tiny.py (no trailing newline) must appear in batch results")
+        XCTAssertTrue(stats.files.contains { $0.path.hasSuffix("notes.md") },
+                      "notes.md (prose) must appear in batch results")
+        XCTAssertTrue(stats.files.contains { $0.path.hasSuffix("extra.swift") },
+                      "extra.swift (from feature branch) must appear in batch results")
+        // corrupt.swift has a NUL byte → skipped as binary; must NOT appear.
+        XCTAssertFalse(stats.files.contains { $0.path.hasSuffix("corrupt.swift") },
+                       "binary (NUL-containing) swift file must be skipped")
+
+        // Verify line counts.
+        // large.swift: 10 code lines (all `let x = 1`)
+        let largeEntry = try XCTUnwrap(stats.files.first { $0.path.hasSuffix("large.swift") })
+        XCTAssertEqual(largeEntry.lines, 10, "large.swift must have 10 classified lines")
+
+        // tiny.py: 1 code line, no trailing newline
+        let tinyEntry = try XCTUnwrap(stats.files.first { $0.path.hasSuffix("tiny.py") })
+        XCTAssertEqual(tinyEntry.lines, 1, "tiny.py (no trailing newline) must have 1 line")
+
+        // extra.swift: 3 code lines
+        let extraEntry = try XCTUnwrap(stats.files.first { $0.path.hasSuffix("extra.swift") })
+        XCTAssertEqual(extraEntry.lines, 3, "extra.swift must have 3 classified lines")
+
+        // Total code lines: large.swift(10) + tiny.py(1) + extra.swift(3) + notes.md(2) = 16.
+        // Markdown has no comment syntax, so all non-blank lines are classified as code:
+        // "# Title" (code), "" (blank), "Some text." (code) → 2 code lines.
+        XCTAssertEqual(stats.aggregate.code, 16,
+                       "batch: large(10) + tiny(1) + extra(3) + notes.md(2 non-blank) = 16 code lines")
+    }
+
     // MARK: - 24. Default (no override) behavior is unchanged
 
     /// No override → scan uses the main checkout's working tree, identical to pre-change.

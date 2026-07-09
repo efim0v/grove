@@ -550,6 +550,7 @@ public struct GitStatsService: Sendable {
 
         // Build a synthetic `.ignorestats` scope. We need the content of any
         // `.ignorestats` files that exist in the committed tree — read them via cat-file.
+        // There are typically very few (0–2) of these, so one process per file is fine.
         var ignoreFrames: [GitignoreScope.Frame] = []
         for rel in relPaths where (rel as NSString).lastPathComponent == ".ignorestats" {
             if let r = try? await runner.runOK(
@@ -571,61 +572,155 @@ public struct GitStatsService: Sendable {
         var nextFiles: [String: CachedClassified] = [:]
         var filesForResult: [StatFileEntry] = []
 
+        // Pass 1: collect every file that passes the pre-filters (skipped dirs, language,
+        // ignorestats) into a struct so we can batch-fetch all cache-miss blobs in one
+        // `git cat-file --batch` process instead of spawning one child per file.
+        struct PendingFile {
+            let rel: String
+            let lang: LanguageDefinition
+            let projectRel: String
+            let isExcluded: Bool
+            let cacheKey: String
+            let cachedClassification: FileClassification?  // non-nil → cache hit
+        }
+        var pending: [PendingFile] = []
+        // Object specs for cache-miss files (written to cat-file --batch stdin).
+        var missSpecs: [String] = []
+
         for rel in relPaths {
-            // Apply the same infrastructure-dir skip as the working-tree scan.
             if rel.split(separator: "/").contains(where: { GitService.alwaysSkippedDirNames.contains(String($0)) }) {
                 continue
             }
             guard let lang = CodeStatsEngine.language(forPath: rel) else { continue }
-
             let projectRel = prefix.isEmpty ? rel : prefix + "/" + rel
-
             if ignoreScope.isIgnored(path: rel, isDirectory: false) { continue }
-
             let isExcluded = excludedFolders.contains {
                 projectRel == $0 || projectRel.hasPrefix($0 + "/")
             }
-
-            // Cache key: synthetic path unique to this branch + rel path.
             let cacheKey = "\(branch)/\(rel)"
-
-            // For committed trees we can't use mtime/size, so we use a sentinel
-            // (treeSHA encodes "content epoch"). If the tree SHA hasn't changed,
-            // any previously classified entry for this path is still valid.
-            let classification: FileClassification
-            if let cached = reuse[cacheKey], !treeSHA.isEmpty {
-                // Reuse: the tree SHA matches (ensured by scanKey equality above).
-                classification = cached.classification
+            let cached: FileClassification?
+            if let hit = reuse[cacheKey], !treeSHA.isEmpty {
+                cached = hit.classification
             } else {
-                // Read blob content via cat-file.
-                guard let blobResult = try? await runner.runOK(
-                    "git", ["-C", repo.path, "cat-file", "blob", "\(branch):\(rel)"], timeout: 30
-                ) else { continue }
-                let data = Data(blobResult.stdout.utf8)
-                if CodeStatsEngine.isLikelyBinary(data) {
+                cached = nil
+                missSpecs.append("\(branch):\(rel)")
+            }
+            pending.append(PendingFile(rel: rel, lang: lang, projectRel: projectRel,
+                                       isExcluded: isExcluded, cacheKey: cacheKey,
+                                       cachedClassification: cached))
+        }
+
+        // Pass 2: fetch all cache-miss blobs via ONE `git cat-file --batch` process.
+        //
+        // Pipe-deadlock safety: `git cat-file --batch` writes one blob response per
+        // spec it reads, so stdout can fill up before all specs are written. We run
+        // three concurrent detached tasks to avoid all forms of blocking:
+        //   • stdinTask  – writes all specs then closes stdin (signals EOF to git)
+        //   • stdoutTask – drains stdout continuously (binary-safe readDataToEndOfFile)
+        //   • stderrTask – drains stderr (prevents git from blocking on a full stderr pipe)
+        // We then await process exit via terminationHandler + AsyncStream (never blocks a
+        // cooperative thread), await all three drain tasks, and parse the collected output.
+        var blobBySpec: [String: Data] = [:]  // spec → raw blob bytes
+        if !missSpecs.isEmpty {
+            var environment = ProcessInfo.processInfo.environment
+            environment["LC_ALL"] = "C"
+            environment["GIT_TERMINAL_PROMPT"] = "0"
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["git", "-C", repo.path, "cat-file", "--batch"]
+            process.environment = environment
+            process.currentDirectoryURL = URL(fileURLWithPath: repo.path, isDirectory: true)
+
+            let stdinPipe = Pipe()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardInput = stdinPipe
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+
+            // Install terminationHandler BEFORE run() so we cannot miss an early exit.
+            let exitStream = AsyncStream<Void> { continuation in
+                process.terminationHandler = { _ in
+                    continuation.yield(())
+                    continuation.finish()
+                }
+            }
+
+            var launched = false
+            do { try process.run(); launched = true } catch { /* blobBySpec stays empty */ }
+
+            if launched {
+                let input = (missSpecs.joined(separator: "\n") + "\n")
+                    .data(using: .utf8) ?? Data()
+
+                // All three pipe directions run concurrently on background threads so no
+                // cooperative Swift concurrency thread is blocked by pipe I/O.
+                let stdinTask = Task.detached {
+                    stdinPipe.fileHandleForWriting.write(input)
+                    stdinPipe.fileHandleForWriting.closeFile()
+                }
+                let stdoutTask = Task.detached {
+                    stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                }
+                let stderrTask = Task.detached {
+                    stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                }
+
+                // Wait for process termination (non-blocking: uses terminationHandler).
+                for await _ in exitStream {}
+
+                // Await all pipe drains after exit (they will complete quickly once the
+                // process has exited and the pipes hit EOF).
+                await stdinTask.value
+                let stdoutData = await stdoutTask.value
+                _ = await stderrTask.value
+
+                // Parse the framed `git cat-file --batch` output. Each object is:
+                //   <object-name> SP <type> SP <size> LF
+                //   <size bytes of content>
+                //   LF
+                // On a missing object: <object-name> SP "missing" LF  (no payload).
+                blobBySpec = Self.parseCatFileBatch(stdoutData, specs: missSpecs)
+            }
+        }
+
+        // Pass 3: classify each file using the batch-fetched blobs or cached results.
+        var missSpecIndex = 0
+        for pf in pending {
+            let classification: FileClassification
+            if let cached = pf.cachedClassification {
+                classification = cached
+            } else {
+                // Pop the next miss spec (order preserved from Pass 1).
+                let spec = missSpecIndex < missSpecs.count ? missSpecs[missSpecIndex] : ""
+                missSpecIndex += 1
+                guard let blobData = blobBySpec[spec] else { continue }
+                if CodeStatsEngine.isLikelyBinary(blobData) {
                     skippedBinary += 1
                     continue
                 }
-                classification = CodeStatsEngine.classify(contents: blobResult.stdout, language: lang)
+                classification = CodeStatsEngine.classify(
+                    contents: String(decoding: blobData, as: UTF8.self), language: pf.lang)
+                // (Note: cache miss entries are stored below, outside this branch.)
             }
 
             filesForResult.append(StatFileEntry(
-                path: projectRel,
+                path: pf.projectRel,
                 lines: classification.code + classification.comment + classification.blank,
-                language: lang.name,
-                isDataProse: CodeStatsEngine.isDataProse(lang.name),
-                isExcluded: isExcluded))
-            if isExcluded { continue }
+                language: pf.lang.name,
+                isDataProse: CodeStatsEngine.isDataProse(pf.lang.name),
+                isExcluded: pf.isExcluded))
+            if pf.isExcluded { continue }
 
-            // Store with synthetic key (mtime/size are irrelevant for committed trees).
-            nextFiles[cacheKey] = CachedClassified(
-                mtime: .distantPast, size: 0, language: lang.name, classification: classification)
-            var acc = byLang[lang.name] ?? Acc()
+            nextFiles[pf.cacheKey] = CachedClassified(
+                mtime: .distantPast, size: 0, language: pf.lang.name, classification: classification)
+            var acc = byLang[pf.lang.name] ?? Acc()
             acc.files += 1
             acc.code += classification.code
             acc.comment += classification.comment
             acc.blank += classification.blank
-            byLang[lang.name] = acc
+            byLang[pf.lang.name] = acc
         }
 
         let byLanguage = byLang.map { name, acc in
@@ -999,5 +1094,87 @@ public struct GitStatsService: Sendable {
     static func emptyStats(now: Date) -> CodeStats {
         CodeStats(totalFiles: 0, totalLines: 0, code: 0, comment: 0, blank: 0,
                   byLanguage: [], scannedAt: now, skippedBinary: 0)
+    }
+
+    // MARK: cat-file --batch frame parser
+
+    /// Parses the framed stdout of `git cat-file --batch` and returns a map from
+    /// object-spec to raw blob bytes. Each blob response has the format:
+    ///
+    ///   <object-name> SP "blob" SP <size> LF   ← header line
+    ///   <size bytes of raw content>             ← payload (binary-safe)
+    ///   LF                                      ← trailing newline after payload
+    ///
+    /// Missing objects produce:  <object-name> SP "missing" LF  (no payload).
+    ///
+    /// `specs` is the ordered list of object specs that were fed to stdin; it is used
+    /// to match responses back when the object-name in the header differs from the
+    /// spec we wrote (e.g. git may normalise the name). Pairing is positional — the
+    /// N-th non-missing response corresponds to the N-th spec in the ordered list.
+    /// (In practice `git cat-file --batch` echoes our spec verbatim, so the name in
+    /// the header equals what we wrote; the positional fallback is belt-and-suspenders.)
+    static func parseCatFileBatch(_ data: Data, specs: [String]) -> [String: Data] {
+        var result: [String: Data] = [:]
+        var pos = data.startIndex
+        var specIndex = 0
+
+        // Scan byte-by-byte for the LF that terminates the header line.
+        func nextLine() -> Data? {
+            guard pos < data.endIndex else { return nil }
+            var end = pos
+            while end < data.endIndex && data[end] != UInt8(ascii: "\n") {
+                end = data.index(after: end)
+            }
+            if end >= data.endIndex { return nil }
+            let line = data[pos..<end]
+            pos = data.index(after: end)  // skip the LF itself
+            return Data(line)
+        }
+
+        while pos < data.endIndex, specIndex < specs.count {
+            guard let headerData = nextLine(),
+                  let header = String(data: headerData, encoding: .utf8) else { break }
+
+            let parts = header.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count >= 2 else { specIndex += 1; continue }
+
+            let objectName = String(parts[0])
+            let typeOrMissing = String(parts[1])
+
+            if typeOrMissing == "missing" {
+                // No payload; advance spec index so we stay in sync.
+                specIndex += 1
+                continue
+            }
+
+            // Expect: <name> blob <size>
+            guard parts.count == 3, typeOrMissing == "blob",
+                  let size = Int(parts[2].trimmingCharacters(in: .whitespaces)) else {
+                // Non-blob or malformed header; skip to next record.
+                specIndex += 1
+                continue
+            }
+
+            // Read exactly `size` bytes of payload.
+            guard pos <= data.endIndex else { break }
+            let payloadEnd = data.index(pos, offsetBy: size, limitedBy: data.endIndex) ?? data.endIndex
+            let payload = Data(data[pos..<payloadEnd])
+            pos = payloadEnd
+
+            // Skip the mandatory trailing LF after the payload (if still in bounds).
+            if pos < data.endIndex && data[pos] == UInt8(ascii: "\n") {
+                pos = data.index(after: pos)
+            }
+
+            // Map by the echo'd object name, AND by the original spec (belt-and-suspenders).
+            let spec = specs[specIndex]
+            result[spec] = payload
+            if objectName != spec {
+                result[objectName] = payload
+            }
+            specIndex += 1
+        }
+
+        return result
     }
 }
