@@ -165,7 +165,7 @@ final class GitStatsServiceTests: XCTestCase {
         let dir = try Fixture.tempDir("hist")
         let repo = try emptyRepo(in: dir, name: "r")
         // Day1: +10 lines.
-        try write(String(repeating: "a\n", count: 10), to: "f.txt", in: repo)  // .txt unclassified; numstat still counts
+        try write(String(repeating: "a\n", count: 10), to: "g.swift", in: repo)
         try write(String(repeating: "x = 1\n", count: 10), to: "f.py", in: repo)
         try commit("c1", in: repo, date: day1)
         // Day2: +5 lines (append).
@@ -183,14 +183,14 @@ final class GitStatsServiceTests: XCTestCase {
                                                  period: GitStatsService.defaultPeriod,
                                                  now: gmtStartOfDay(2025, 1, 4))
         XCTAssertEqual(history.count, 3, "3 distinct days")
-        // f.txt 10 lines + f.py 10 lines = 20 on day1; +5 -> 25; -3 then +2 -> 24.
+        // g.swift 10 lines + f.py 10 lines = 20 on day1; +5 -> 25; -3 then +2 -> 24.
         XCTAssertEqual(history[0].date, gmtStartOfDay(2025, 1, 1))
         XCTAssertEqual(history[0].netLines, 20)
         XCTAssertEqual(history[1].date, gmtStartOfDay(2025, 1, 2))
         XCTAssertEqual(history[1].netLines, 25)
         XCTAssertEqual(history[2].date, gmtStartOfDay(2025, 1, 3))
         XCTAssertEqual(history[2].netLines, 24, "two same-day commits collapse to end-of-day cumulative")
-        // Per-day added/removed: day1 +20 (f.txt 10 + f.py 10); day2 +5; day3 two commits
+        // Per-day added/removed: day1 +20 (g.swift 10 + f.py 10); day2 +5; day3 two commits
         // ACCUMULATE — first trims f.py 15->12 (-3), second grows 12->14 (+2).
         XCTAssertEqual(history[0].dayAdded, 20)
         XCTAssertEqual(history[0].dayRemoved, 0)
@@ -513,9 +513,9 @@ final class GitStatsServiceTests: XCTestCase {
         // Graph order (as `git log` emits): child first, then parent.
         let log = """
         \u{01}child\u{02}\(Int(jan1))
-        5\t0\tf.txt
+        5\t0\tf.swift
         \u{01}parent\u{02}\(Int(jan5))
-        10\t0\tf.txt
+        10\t0\tf.swift
         """
         let commits = GitStatsService.parseLog(log)
         XCTAssertEqual(commits.count, 2)
@@ -540,10 +540,10 @@ final class GitStatsServiceTests: XCTestCase {
         let dir = try Fixture.tempDir("nonmono")
         let repo = try emptyRepo(in: dir, name: "r")
         // Parent commit dated LATER (Jan 5): +10 lines.
-        try write(String(repeating: "a\n", count: 10), to: "f.txt", in: repo)
+        try write(String(repeating: "a\n", count: 10), to: "f.swift", in: repo)
         try commit("parent", in: repo, date: "2025-01-05T12:00:00Z")
         // Child commit (descends from parent) dated EARLIER (Jan 1): +5 lines.
-        try write(String(repeating: "a\n", count: 15), to: "f.txt", in: repo)
+        try write(String(repeating: "a\n", count: 15), to: "f.swift", in: repo)
         try commit("child", in: repo, date: "2025-01-01T12:00:00Z")
 
         let branch = await service.resolveBranch(repo: info(repo))
@@ -605,8 +605,8 @@ final class GitStatsServiceTests: XCTestCase {
     // MARK: - 15. parseLog classifies numstat by language group (code vs data/prose)
 
     func testParseLogClassifiesLanguages() {
-        // A commit touching a .swift (code), a .txt (unknown extension → code-neutral, so
-        // CODE), and a .md (data/prose). A binary line is skipped entirely.
+        // A commit touching a .swift (code), a .txt (UNRECOGNIZED extension → skipped, like the
+        // working-tree scan), and a .md (data/prose). A binary line is skipped entirely.
         let log = """
         \u{01}sha1\u{02}1735732800
         10\t2\ta.swift
@@ -617,16 +617,19 @@ final class GitStatsServiceTests: XCTestCase {
         let commits = GitStatsService.parseLog(log)
         XCTAssertEqual(commits.count, 1)
         let c = commits[0]
-        // Totals (all langs, binary skipped): added 10+7+4=21, removed 2+0+1=3.
-        XCTAssertEqual(c.added, 21)
+        // The unrecognized .txt is dropped entirely, so totals exclude it: added 10+4=14,
+        // removed 2+1=3 (binary img.png also skipped, .txt skipped).
+        XCTAssertEqual(c.added, 14)
         XCTAssertEqual(c.removed, 3)
-        // Code = swift + txt (unknown ext counts as code): added 10+7=17, removed 2+0=2.
-        XCTAssertEqual(c.codeAdded, 17)
+        // Code = swift only (.txt no longer counts): added 10, removed 2.
+        XCTAssertEqual(c.codeAdded, 10)
         XCTAssertEqual(c.codeRemoved, 2)
         // Data = markdown only: added 4, removed 1.
         XCTAssertEqual(c.dataAdded, 4)
         XCTAssertEqual(c.dataRemoved, 1)
-        // Invariant: code + data == total.
+        // The skipped file isn't recorded as a touched path either.
+        XCTAssertFalse(c.paths.contains("notes.txt"))
+        // Invariant: code + data == total (both recognized-only now).
         XCTAssertEqual(c.codeAdded + c.dataAdded, c.added)
         XCTAssertEqual(c.codeRemoved + c.dataRemoved, c.removed)
     }
@@ -795,5 +798,150 @@ final class GitStatsServiceTests: XCTestCase {
         XCTAssertEqual(stats.repos.first?.defaultBranch, "main",
                        "invalid override falls back to the detected default")
         XCTAssertEqual(stats.repos.first?.stats.code, 1)
+    }
+
+    // MARK: - 21. Worktree branch override: LOC reflects the WORKTREE's working tree
+
+    /// When the override branch IS checked out in a linked worktree, `currentLOC`
+    /// must scan THAT worktree's working tree — so its unique file (C.swift) appears
+    /// in the stats, unlike the main-checkout scan which only sees A.swift + B.swift.
+    func testWorktreeBranchOverrideReflectsWorktreeFiles() async throws {
+        let dir = try Fixture.tempDir("wt-override")
+        let repo = try emptyRepo(in: dir, name: "r")
+        // main: A.swift + B.swift
+        try write("let a = 1\n", to: "A.swift", in: repo)
+        try write("let b = 2\n", to: "B.swift", in: repo)
+        try commit("main-commit", in: repo, date: day1)
+
+        // Create branch `feature` off main, add C.swift committed there
+        try sh("git -C \(shellQuote(repo.path)) checkout -qb feature")
+        try write("let c = 3\nlet d = 4\n", to: "C.swift", in: repo)
+        try commit("feature-commit", in: repo, date: day2)
+        // Return main checkout to `main`
+        try sh("git -C \(shellQuote(repo.path)) checkout -q main")
+
+        // Add a linked worktree for `feature` at a separate temp path
+        let wtDir = try Fixture.tempDir("wt-feat")
+        let featureWt = wtDir.appendingPathComponent("r-feature")
+        try sh("git -C \(shellQuote(repo.path)) worktree add \(shellQuote(featureWt.path)) feature")
+
+        let now = gmtStartOfDay(2025, 1, 4)
+        var cache: [String: RepoFileCache] = [:]
+        let stats = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                       excludedRepos: [],
+                                       branchOverrides: [norm(repo.path): "feature"],
+                                       now: now, cache: &cache)
+        let repo0 = try XCTUnwrap(stats.repos.first)
+        // C.swift must appear (it only exists in the feature worktree, not in main checkout)
+        XCTAssertTrue(stats.files.contains { $0.path.hasSuffix("C.swift") },
+                      "feature worktree's C.swift must appear in the stats")
+        // LOC must include C.swift's 2 lines (plus A.swift 1 and B.swift 1 = 4 total)
+        XCTAssertEqual(repo0.stats.code, 4,
+                       "feature worktree LOC = A(1) + B(1) + C(2) = 4")
+    }
+
+    // MARK: - 22. Branch switch changes LOC numbers (cache-bust)
+
+    /// Scanning main then overriding to feature must produce DIFFERENT stats, proving
+    /// the per-repo cache doesn't serve stale main data when the branch changes.
+    func testBranchSwitchBustsCache() async throws {
+        let dir = try Fixture.tempDir("branch-cache-bust")
+        let repo = try emptyRepo(in: dir, name: "r")
+        // main: 3 lines
+        try write("let a = 1\nlet b = 2\nlet c = 3\n", to: "main.swift", in: repo)
+        try commit("main-commit", in: repo, date: day1)
+
+        // feature: adds extra.swift with 5 lines
+        try sh("git -C \(shellQuote(repo.path)) checkout -qb feature")
+        try write(String(repeating: "let x = 1\n", count: 5), to: "extra.swift", in: repo)
+        try commit("feature-commit", in: repo, date: day2)
+        try sh("git -C \(shellQuote(repo.path)) checkout -q main")
+
+        // Add linked worktree for feature
+        let wtDir = try Fixture.tempDir("wt-feat2")
+        let featureWt = wtDir.appendingPathComponent("r-feature2")
+        try sh("git -C \(shellQuote(repo.path)) worktree add \(shellQuote(featureWt.path)) feature")
+
+        let now = gmtStartOfDay(2025, 1, 4)
+
+        // First scan: no override → main (3 lines)
+        var cache: [String: RepoFileCache] = [:]
+        let mainStats = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                           excludedRepos: [], now: now, cache: &cache)
+        let mainCode = mainStats.aggregate.code
+        XCTAssertEqual(mainCode, 3, "main scan: 3 lines in main.swift")
+
+        // Second scan: override to feature — must differ from the cached main result
+        var cache2 = cache  // start from the same cache
+        let featureStats = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                              excludedRepos: [],
+                                              branchOverrides: [norm(repo.path): "feature"],
+                                              now: now, cache: &cache2)
+        let featureCode = featureStats.aggregate.code
+        XCTAssertEqual(featureCode, 8,
+                       "feature scan: main.swift(3) + extra.swift(5) = 8; cache must not serve stale main data")
+        XCTAssertNotEqual(mainCode, featureCode, "branch switch must bust the cache and produce different LOC")
+    }
+
+    // MARK: - 23. No-worktree branch → committed tree
+
+    /// When the override branch is NOT checked out in any worktree (it shares checkout
+    /// space with the main branch), stats come from the branch's COMMITTED tree via
+    /// git ls-tree, NOT from uncommitted junk in the main working dir.
+    func testNoWorktreeBranchUsesCommittedTree() async throws {
+        let dir = try Fixture.tempDir("committed-tree")
+        let repo = try emptyRepo(in: dir, name: "r")
+        // main: only main.swift
+        try write("let a = 1\n", to: "main.swift", in: repo)
+        try commit("main-commit", in: repo, date: day1)
+
+        // solo branch: commits solo.swift (2 lines), then returns to main
+        try sh("git -C \(shellQuote(repo.path)) checkout -qb solo")
+        try write("let x = 1\nlet y = 2\n", to: "solo.swift", in: repo)
+        try commit("solo-commit", in: repo, date: day2)
+        try sh("git -C \(shellQuote(repo.path)) checkout -q main")
+
+        // Place uncommitted junk in the main working tree — must NOT appear in solo stats
+        try write("let junk = 99\nlet junk2 = 100\n", to: "junk.swift", in: repo)
+
+        let now = gmtStartOfDay(2025, 1, 4)
+        var cache: [String: RepoFileCache] = [:]
+        let stats = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                       excludedRepos: [],
+                                       branchOverrides: [norm(repo.path): "solo"],
+                                       now: now, cache: &cache)
+
+        // solo's committed tree: solo.swift (2 lines) + main.swift (1 line, inherited) = 3
+        // junk.swift must NOT appear (it's only in the working tree, not in solo's committed tree)
+        XCTAssertFalse(stats.files.contains { $0.path.hasSuffix("junk.swift") },
+                       "uncommitted junk in main working dir must not appear in solo committed-tree stats")
+        XCTAssertTrue(stats.files.contains { $0.path.hasSuffix("solo.swift") },
+                      "solo.swift from the committed tree must appear")
+        XCTAssertEqual(stats.aggregate.code, 3,
+                       "solo committed tree: main.swift(1) + solo.swift(2) = 3")
+    }
+
+    // MARK: - 24. Default (no override) behavior is unchanged
+
+    /// No override → scan uses the main checkout's working tree, identical to pre-change.
+    func testDefaultNoOverrideUnchanged() async throws {
+        let dir = try Fixture.tempDir("default-no-override")
+        let repo = try emptyRepo(in: dir, name: "r")
+        try write("let a = 1\nlet b = 2\n", to: "a.swift", in: repo)
+        try write("x = 1\ny = 2\nz = 3\n", to: "b.py", in: repo)
+        try commit("c1", in: repo, date: day1)
+        // An untracked file also counted by the working-tree scan
+        try write("const z = 3;\n", to: "c.js", in: repo)
+
+        let now = gmtStartOfDay(2025, 1, 4)
+        var cache: [String: RepoFileCache] = [:]
+        let stats = await service.scan(projectPath: dir.path, scanDepth: 3,
+                                       excludedRepos: [], now: now, cache: &cache)
+
+        // a.swift: 2 code; b.py: 3 code; c.js (untracked): 1 code; total = 6
+        XCTAssertEqual(stats.aggregate.code, 6, "default scan includes tracked + untracked-not-ignored")
+        XCTAssertEqual(stats.aggregate.totalFiles, 3)
+        XCTAssertTrue(stats.files.contains { $0.path.hasSuffix("c.js") },
+                      "untracked c.js must still appear with no override (default working-tree behavior)")
     }
 }

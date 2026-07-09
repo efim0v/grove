@@ -180,12 +180,19 @@ public struct CachedClassified: Sendable, Equatable {
 /// Per-repo classification cache. Invalidated wholesale when `head` changes (a
 /// checkout/branch switch makes the path→content mapping untrustworthy); within a
 /// stable HEAD, individual files are reused on an mtime+size match.
+/// `scanKey` captures the scan anchor (scan path + optional committed ref) so that
+/// switching the branch dropdown (which may not move repo.path's HEAD) still busts
+/// the cache and re-reads from the correct worktree or committed tree.
 public struct RepoFileCache: Sendable, Equatable {
     public var head: String                       // HEAD sha at last scan ("" for empty repo)
     public var files: [String: CachedClassified]  // keyed by ABSOLUTE path
-    public init(head: String = "", files: [String: CachedClassified] = [:]) {
+    /// Opaque key that encodes the scan anchor (scan path ± committed ref). When the
+    /// key changes the entire file cache is discarded, even if `head` hasn't moved.
+    public var scanKey: String
+    public init(head: String = "", files: [String: CachedClassified] = [:], scanKey: String = "") {
         self.head = head
         self.files = files
+        self.scanKey = scanKey
     }
 }
 
@@ -233,11 +240,6 @@ public struct GitStatsService: Sendable {
         var repoStats: [RepoStats] = []
         for repo in repos {
             var repoCache = cache[repo.path] ?? RepoFileCache()
-            let (stats, updated, files) = await currentLOC(
-                repo: repo, projectPath: projectPath, excludedFolders: excludedFolders,
-                now: now, cache: repoCache)
-            repoCache = updated
-            cache[repo.path] = repoCache
 
             // Effective branch: a user override wins ONLY if it's a real local ref;
             // otherwise fall back to the auto-detected default. RepoStats carries the
@@ -247,6 +249,46 @@ public struct GitStatsService: Sendable {
                await git.branchExists(repoPath: repo.path, override) {
                 branch = override
             }
+
+            // Resolve the LOC scan anchor for this branch:
+            //   - If the branch is checked out in a linked worktree → working-tree mode
+            //     anchored at that worktree's path.
+            //   - If the branch matches the main checkout's current branch (or no override
+            //     was applied) → working-tree mode at repo.path (existing behavior).
+            //   - Otherwise (branch exists locally but is NOT checked out anywhere)
+            //     → committed-tree mode: enumerate files from `git ls-tree -r <branch>`.
+            let wts = (try? await git.worktrees(repo: repo)) ?? []
+            let effectiveScanPath: String
+            let committedRef: String?
+            if let matchingWt = wts.first(where: { wt in
+                guard let wtBranch = wt.branch else { return false }
+                // parseWorktreePorcelain already strips refs/heads/, so direct compare.
+                return wtBranch == branch
+            }) {
+                // Branch is checked out in a worktree (could be the main one or a linked one).
+                effectiveScanPath = matchingWt.path
+                committedRef = nil
+            } else if branchOverrides[repo.path] == nil {
+                // No override: use repo.path (the existing default working-tree scan).
+                effectiveScanPath = repo.path
+                committedRef = nil
+            } else {
+                // Branch exists locally but is not checked out in any worktree.
+                effectiveScanPath = repo.path
+                committedRef = branch
+            }
+
+            let (stats, updated, files) = committedRef != nil
+                ? await currentLOCCommitted(
+                    repo: repo, projectPath: projectPath, excludedFolders: excludedFolders,
+                    branch: committedRef!, now: now, cache: repoCache)
+                : await currentLOC(
+                    repo: repo, scanPath: effectiveScanPath,
+                    projectPath: projectPath, excludedFolders: excludedFolders,
+                    now: now, cache: repoCache)
+            repoCache = updated
+            cache[repo.path] = repoCache
+
             let (history, delta) = await history(repo: repo, branch: branch,
                                                  period: period, now: now)
             repoStats.append(RepoStats(
@@ -311,6 +353,12 @@ public struct GitStatsService: Sendable {
     /// (project-relative paths). Degrades to empty stats (but a populated/cleared
     /// cache, empty file list) on any git failure.
     ///
+    /// `scanPath` is the filesystem anchor for the file listing and disk reads; it
+    /// defaults to `repo.path` (the existing behavior) but can be a linked worktree
+    /// path when the chosen branch is checked out there. The `repo` parameter
+    /// continues to provide the canonical repo root for prefix computation and
+    /// git plumbing commands.
+    ///
     /// `excludedFolders` are PROJECT-root-relative folder paths; a file whose
     /// project-relative path equals or is nested under one of them is kept OUT of the
     /// count but is STILL emitted in the file list with `isExcluded == true`, so the
@@ -319,25 +367,30 @@ public struct GitStatsService: Sendable {
     /// shared `GitignoreRules`/`GitignoreScope`) provides further per-path excludes
     /// evaluated against repo-relative paths; those matches are dropped ENTIRELY
     /// (not emitted), since that exclusion is file-driven config, not UI-toggleable.
-    func currentLOC(repo: RepoInfo, projectPath: String, excludedFolders: Set<String>,
+    func currentLOC(repo: RepoInfo, scanPath: String? = nil,
+                    projectPath: String, excludedFolders: Set<String>,
                     now: Date, cache: RepoFileCache)
         async -> (CodeStats, RepoFileCache, [StatFileEntry]) {
-        let head = await self.head(repo: repo)
-        // A changed HEAD invalidates the whole cache (a checkout/branch switch
-        // remaps path→content, so per-file mtime reuse can't be trusted across it).
+        let anchor = scanPath ?? repo.path
+        // The scan key encodes the working-tree anchor. If it changes (e.g. the UI
+        // switched the branch dropdown to a different worktree) we must discard the
+        // cached file classifications — even if repo.path's HEAD hasn't moved.
+        let newScanKey = "wt:\(anchor)"
+        let head = await self.headAt(path: anchor)
+        // A changed HEAD OR changed scan anchor invalidates the whole cache.
         var reuse = cache.files
-        if cache.head != head { reuse = [:] }
+        if cache.head != head || cache.scanKey != newScanKey { reuse = [:] }
 
         guard let result = try? await runner.runOK(
-            "git", ["-C", repo.path, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            "git", ["-C", anchor, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             timeout: 60
         ) else {
-            return (Self.emptyStats(now: now), RepoFileCache(head: head, files: [:]), [])
+            return (Self.emptyStats(now: now), RepoFileCache(head: head, files: [:], scanKey: newScanKey), [])
         }
 
         let relPaths = Self.parseLsFilesZ(result.stdout)
         let fm = FileManager.default
-        let base = URL(fileURLWithPath: repo.path, isDirectory: true)
+        let base = URL(fileURLWithPath: anchor, isDirectory: true)
 
         // The project-relative prefix for this repo (e.g. "nested/r2"), used to map each
         // repo-relative file path into a project-relative one for the file list and the
@@ -441,7 +494,153 @@ public struct GitStatsService: Sendable {
         let stats = CodeStats(totalFiles: totalFiles, totalLines: code + comment + blank,
                               code: code, comment: comment, blank: blank,
                               byLanguage: byLanguage, scannedAt: now, skippedBinary: skippedBinary)
-        return (stats, RepoFileCache(head: head, files: nextFiles), filesForResult)
+        return (stats, RepoFileCache(head: head, files: nextFiles, scanKey: newScanKey), filesForResult)
+    }
+
+    // MARK: Committed-tree LOC (branch not checked out in any worktree)
+
+    /// Classifies the file set from a branch's COMMITTED tree (via `git ls-tree -r`)
+    /// when that branch is not checked out in any worktree. Content is read via
+    /// `git cat-file blob` so no working-tree files are touched. The same skip-dirs,
+    /// `.ignorestats`, folder-exclusion, and `CodeStatsEngine` classification rules
+    /// apply as in the working-tree scan, ensuring the counts are comparable.
+    ///
+    /// Cache: keyed by the branch's committed-tree SHA (resolved once via
+    /// `git rev-parse <branch>^{tree}`). A changed tree SHA busts per-file reuse.
+    /// The cache files are keyed by `<branch>/<relPath>` (a synthetic "abs path"
+    /// unique within this mode) since there are no real disk paths.
+    func currentLOCCommitted(repo: RepoInfo, projectPath: String, excludedFolders: Set<String>,
+                             branch: String, now: Date, cache: RepoFileCache)
+        async -> (CodeStats, RepoFileCache, [StatFileEntry]) {
+        // Resolve the committed tree SHA for this branch (used as the cache key).
+        let treeSHA: String
+        if let r = try? await runner.runOK(
+            "git", ["-C", repo.path, "rev-parse", "\(branch)^{tree}"], timeout: 10
+        ) {
+            treeSHA = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            treeSHA = ""
+        }
+        let newScanKey = "committed:\(branch):\(treeSHA)"
+
+        // HEAD for the committed branch (different from repo.path's HEAD when the branch
+        // isn't checked out there). Use it so history() stays independent of LOC.
+        let branchHead: String
+        if let r = try? await runner.runOK(
+            "git", ["-C", repo.path, "rev-parse", branch], timeout: 10
+        ) {
+            branchHead = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            branchHead = ""
+        }
+
+        // Bust the per-file cache when the scan anchor OR the committed tree changes.
+        var reuse = cache.files
+        if cache.scanKey != newScanKey { reuse = [:] }
+
+        // List files in the committed tree: `git ls-tree -r --name-only <branch>`
+        guard let listResult = try? await runner.runOK(
+            "git", ["-C", repo.path, "ls-tree", "-r", "--name-only", branch], timeout: 60
+        ) else {
+            return (Self.emptyStats(now: now), RepoFileCache(head: branchHead, files: [:], scanKey: newScanKey), [])
+        }
+        let relPaths = listResult.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+
+        // Build a synthetic `.ignorestats` scope. We need the content of any
+        // `.ignorestats` files that exist in the committed tree — read them via cat-file.
+        var ignoreFrames: [GitignoreScope.Frame] = []
+        for rel in relPaths where (rel as NSString).lastPathComponent == ".ignorestats" {
+            if let r = try? await runner.runOK(
+                "git", ["-C", repo.path, "cat-file", "blob", "\(branch):\(rel)"], timeout: 10
+            ) {
+                let dir = (rel as NSString).deletingLastPathComponent
+                ignoreFrames.append(GitignoreScope.Frame(directory: dir,
+                                                         rules: GitignoreRules(contents: r.stdout)))
+            }
+        }
+        ignoreFrames.sort { $0.directory.count < $1.directory.count }
+        let ignoreScope = GitignoreScope(frames: ignoreFrames)
+
+        let prefix = Self.projectRelativePrefix(repoPath: repo.path, projectPath: projectPath)
+
+        struct Acc { var files = 0; var code = 0; var comment = 0; var blank = 0 }
+        var byLang: [String: Acc] = [:]
+        var skippedBinary = 0
+        var nextFiles: [String: CachedClassified] = [:]
+        var filesForResult: [StatFileEntry] = []
+
+        for rel in relPaths {
+            // Apply the same infrastructure-dir skip as the working-tree scan.
+            if rel.split(separator: "/").contains(where: { GitService.alwaysSkippedDirNames.contains(String($0)) }) {
+                continue
+            }
+            guard let lang = CodeStatsEngine.language(forPath: rel) else { continue }
+
+            let projectRel = prefix.isEmpty ? rel : prefix + "/" + rel
+
+            if ignoreScope.isIgnored(path: rel, isDirectory: false) { continue }
+
+            let isExcluded = excludedFolders.contains {
+                projectRel == $0 || projectRel.hasPrefix($0 + "/")
+            }
+
+            // Cache key: synthetic path unique to this branch + rel path.
+            let cacheKey = "\(branch)/\(rel)"
+
+            // For committed trees we can't use mtime/size, so we use a sentinel
+            // (treeSHA encodes "content epoch"). If the tree SHA hasn't changed,
+            // any previously classified entry for this path is still valid.
+            let classification: FileClassification
+            if let cached = reuse[cacheKey], !treeSHA.isEmpty {
+                // Reuse: the tree SHA matches (ensured by scanKey equality above).
+                classification = cached.classification
+            } else {
+                // Read blob content via cat-file.
+                guard let blobResult = try? await runner.runOK(
+                    "git", ["-C", repo.path, "cat-file", "blob", "\(branch):\(rel)"], timeout: 30
+                ) else { continue }
+                let data = Data(blobResult.stdout.utf8)
+                if CodeStatsEngine.isLikelyBinary(data) {
+                    skippedBinary += 1
+                    continue
+                }
+                classification = CodeStatsEngine.classify(contents: blobResult.stdout, language: lang)
+            }
+
+            filesForResult.append(StatFileEntry(
+                path: projectRel,
+                lines: classification.code + classification.comment + classification.blank,
+                language: lang.name,
+                isDataProse: CodeStatsEngine.isDataProse(lang.name),
+                isExcluded: isExcluded))
+            if isExcluded { continue }
+
+            // Store with synthetic key (mtime/size are irrelevant for committed trees).
+            nextFiles[cacheKey] = CachedClassified(
+                mtime: .distantPast, size: 0, language: lang.name, classification: classification)
+            var acc = byLang[lang.name] ?? Acc()
+            acc.files += 1
+            acc.code += classification.code
+            acc.comment += classification.comment
+            acc.blank += classification.blank
+            byLang[lang.name] = acc
+        }
+
+        let byLanguage = byLang.map { name, acc in
+            LanguageStats(language: name, files: acc.files, code: acc.code,
+                          comment: acc.comment, blank: acc.blank,
+                          total: acc.code + acc.comment + acc.blank)
+        }.sorted { $0.code > $1.code }
+        let totalFiles = byLanguage.reduce(0) { $0 + $1.files }
+        let code = byLanguage.reduce(0) { $0 + $1.code }
+        let comment = byLanguage.reduce(0) { $0 + $1.comment }
+        let blank = byLanguage.reduce(0) { $0 + $1.blank }
+        let stats = CodeStats(totalFiles: totalFiles, totalLines: code + comment + blank,
+                              code: code, comment: comment, blank: blank,
+                              byLanguage: byLanguage, scannedAt: now, skippedBinary: skippedBinary)
+        return (stats, RepoFileCache(head: branchHead, files: nextFiles, scanKey: newScanKey), filesForResult)
     }
 
     /// The PROJECT-root-relative directory prefix for a repo: `repoPath` made relative
@@ -494,7 +693,9 @@ public struct GitStatsService: Sendable {
             return current
         }
         let base = await git.baseBranch(repo: repo, override: nil)
-        if await git.branchExists(repoPath: repo.path, base) { return base }
+        // `base` may now be a remote-tracking ref (origin/<name>), which
+        // `branchExists` (refs/heads-scoped) would reject — use `refExists`.
+        if await git.refExists(repoPath: repo.path, base) { return base }
         return "HEAD"
     }
 
@@ -517,8 +718,13 @@ public struct GitStatsService: Sendable {
 
     /// HEAD sha (the cache invalidation key). Empty repos / failures → "".
     func head(repo: RepoInfo) async -> String {
+        await headAt(path: repo.path)
+    }
+
+    /// HEAD sha at an arbitrary git working tree path. Empty repos / failures → "".
+    func headAt(path: String) async -> String {
         guard let result = try? await runner.run(
-            "git", ["-C", repo.path, "rev-parse", "HEAD"], cwd: nil, env: nil, timeout: 10
+            "git", ["-C", path, "rev-parse", "HEAD"], cwd: nil, env: nil, timeout: 10
         ), result.exitCode == 0 else { return "" }
         return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -551,14 +757,13 @@ public struct GitStatsService: Sendable {
     /// Subsequent `<add>\t<del>\t<path>` numstat lines accumulate into the current
     /// commit; binary files ("-"/"-") are skipped. Output is newest-first.
     ///
-    /// Each numstat path is classified by `CodeStatsEngine.language(forPath:)`:
-    /// a Data/Prose language (Markdown/JSON/YAML/TOML) accumulates into `data*`, while
-    /// every other case — a known CODE language OR a path with NO known language (a
-    /// `.txt`, a `Makefile`, an extensionless file) — accumulates into `code*`. Treating
-    /// unknown-language paths as code (rather than a third bucket) keeps the invariant
-    /// `code + data == total` so the churn bars (totals) and the Code/Data triangles
-    /// (split) never disagree; it is the simpler design and matches how an unrecognized
-    /// file is "code-neutral activity" rather than "data".
+    /// Each numstat path is classified by `CodeStatsEngine.language(forPath:)`. A path with
+    /// NO known language (`.txt`, lock files, `.pbxproj`, build artifacts, extensionless
+    /// files) is SKIPPED — matching the working-tree scan (`currentLOC`), which also drops
+    /// unrecognized files, so the "Lines over time" history measures the same recognized
+    /// source the Totals card does. Of the recognized files, a Data/Prose language
+    /// (Markdown/JSON/YAML/TOML) accumulates into `data*` and every other recognized language
+    /// into `code*`, preserving the `code + data == total` invariant (both recognized-only).
     static func parseLog(_ output: String) -> [ParsedCommit] {
         var commits: [ParsedCommit] = []
         for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
@@ -579,10 +784,21 @@ public struct GitStatsService: Sendable {
                 guard fields.count >= 3, !fields[2].isEmpty else { continue }
                 guard let add = Int(fields[0]), let del = Int(fields[1]) else { continue }  // "-" → binary, skip
                 let path = String(fields[2])
-                // Classify: Data/Prose language → data bucket; everything else (known
-                // code language OR unknown extension) → code bucket. Keeps code+data == total.
-                let isData = CodeStatsEngine.language(forPath: path)
-                    .map { CodeStatsEngine.isDataProse($0.name) } ?? false
+                // Match the working-tree scan exactly so "Lines over time" measures the SAME
+                // source the Totals card does. (1) Drop generated/vendored infrastructure dirs
+                // (node_modules, build, dist, .next, target, .worktrees…) — the scan skips
+                // these (`alwaysSkippedDirNames`), so a committed build tree can't inflate the
+                // history above the Totals. (2) Count ONLY recognized-language files; a path
+                // with no known language (lock files, .pbxproj, CMake/Ninja output, logs,
+                // .txt, unknown extensions) is dropped — `currentLOC`'s `language(forPath:)`
+                // guard drops it from the Totals too. Of the recognized files, Data/Prose →
+                // data bucket, every other → code; `code + data == total` still holds.
+                if path.split(separator: "/")
+                    .contains(where: { GitService.alwaysSkippedDirNames.contains(String($0)) }) {
+                    continue
+                }
+                guard let lang = CodeStatsEngine.language(forPath: path) else { continue }
+                let isData = CodeStatsEngine.isDataProse(lang.name)
                 let i = commits.count - 1
                 commits[i].added += add
                 commits[i].removed += del
@@ -688,7 +904,7 @@ public struct GitStatsService: Sendable {
     /// Aggregates per-repo results into a `ProjectGitStats`: element-wise sum of the
     /// current-LOC `CodeStats`, a carry-forward-summed per-day history, and a summed
     /// delta.
-    static func aggregate(_ repos: [RepoStats], now: Date) -> ProjectGitStats {
+    public static func aggregate(_ repos: [RepoStats], now: Date) -> ProjectGitStats {
         // Current LOC sum: merge byLanguage by name, sum scalar totals.
         var byLangCode: [String: Int] = [:]
         var byLangComment: [String: Int] = [:]
