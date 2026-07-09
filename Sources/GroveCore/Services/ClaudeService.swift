@@ -253,6 +253,61 @@ public final class ClaudeService: @unchecked Sendable {
         return rows
     }
 
+    /// All recent sessions across ALL accounts with NO project/root filter — the
+    /// disk-wide scanner that makes every recently-used Claude session discoverable
+    /// regardless of whether it was opened through grove.
+    ///
+    /// Unlike `recentSessions(underRoots:accounts:limit:)`, this method:
+    ///   - Does NOT filter by project root — every `projects/<dir>` is scanned.
+    ///   - Applies a recency cap: only transcripts whose mtime >= now - sinceDays*86400
+    ///     are considered (bounds the scan to the recent window).
+    ///   - Still sorts newest-first, deduplicates by (cwd, sessionId), and caps at
+    ///     `limit` exactly like the sibling method.
+    ///   - Uses the same `cachedParse` mtime cache to bound parse work.
+    ///
+    /// The injected `now` keeps the method pure/deterministic — no `Date()` inside.
+    public func allRecentSessions(accounts: [AccountConfig], limit: Int,
+                                  sinceDays: Int, now: Date) -> [ClaudeSession] {
+        guard limit > 0 else { return [] }
+        let fm = FileManager.default
+        let cutoff = now.addingTimeInterval(-Double(sinceDays) * 86400)
+
+        struct Candidate { let path: String; let mtime: Date; let account: String }
+        var candidates: [Candidate] = []
+        for account in accounts {
+            let projectsDir = expandTilde(account.configDir) + "/projects"
+            guard let dirs = try? fm.contentsOfDirectory(atPath: projectsDir) else { continue }
+            for dir in dirs {
+                let dirPath = projectsDir + "/" + dir
+                guard let names = try? fm.contentsOfDirectory(atPath: dirPath) else { continue }
+                for name in names where name.hasSuffix(".jsonl") {
+                    let path = dirPath + "/" + name
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue,
+                          let attrs = try? fm.attributesOfItem(atPath: path),
+                          let mtime = attrs[.modificationDate] as? Date else { continue }
+                    // Recency cap: skip transcripts older than the cutoff.
+                    guard mtime >= cutoff else { continue }
+                    candidates.append(Candidate(path: path, mtime: mtime, account: account.name))
+                }
+            }
+        }
+        candidates.sort { $0.mtime > $1.mtime }
+
+        var rows: [ClaudeSession] = []
+        var seen = Set<String>()
+        let budget = limit * 4 + 8
+        for cand in candidates.prefix(budget) {
+            guard let parsed = cachedParse(path: cand.path, mtime: cand.mtime) else { continue }
+            guard seen.insert(parsed.cwd + "\u{0}" + parsed.id).inserted else { continue }
+            rows.append(ClaudeSession(id: parsed.id, cwd: parsed.cwd, title: parsed.title,
+                                      lastActivity: cand.mtime, accountName: cand.account,
+                                      gitBranch: parsed.gitBranch))
+            if rows.count >= limit { break }
+        }
+        return rows
+    }
+
     private func cachedParse(path: String, mtime: Date) -> ParsedSession? {
         cacheLock.lock()
         if let entry = sessionCache[path], entry.mtime == mtime {
@@ -399,7 +454,7 @@ public final class ClaudeService: @unchecked Sendable {
             // a subagent) → "busy" → running; otherwise it's alive-but-quiet → "idle"
             // → waiting (ready for input).
             let status = cpu >= Self.busyCPUThreshold ? "busy" : "idle"
-            if let sessionId = Self.resumeSessionId(in: command) {
+            if let sessionId = Self.sessionId(in: command) {
                 guard !seen.contains(sessionId) else { continue }
                 seen.insert(sessionId)
                 result.append(LiveProcess(pid: pid, sessionId: sessionId, cwd: "",
@@ -462,7 +517,9 @@ public final class ClaudeService: @unchecked Sendable {
     /// executable basename is exactly "claude" and there's no resume flag. Excludes
     /// the cmux wrapper scripts (basename zsh/bash) and our own ps/grep lines.
     static func isBareClaudeCommand(_ command: String) -> Bool {
-        guard !command.contains("--resume") else { return false }
+        // A `--session-id`/`--resume` process HAS an id — it is NOT a fresh, ID-less
+        // session, so it must carry its id (joined by id), never an anonymous cwd row.
+        guard !command.contains("--resume"), !command.contains("--session-id") else { return false }
         let first = command.split(separator: " ").first.map(String.init) ?? ""
         return (first as NSString).lastPathComponent == "claude"
     }
@@ -491,7 +548,7 @@ public final class ClaudeService: @unchecked Sendable {
             guard let space = trimmed.firstIndex(of: " ") else { continue }
             let tty = String(trimmed[..<space])
             let command = String(trimmed[trimmed.index(after: space)...])
-            guard command.contains("claude"), Self.resumeSessionId(in: command) == sessionId,
+            guard command.contains("claude"), Self.sessionId(in: command) == sessionId,
                   tty != "??" else { continue }
             return tty.hasPrefix("/dev/") ? tty : "/dev/" + tty
         }
@@ -550,13 +607,18 @@ public final class ClaudeService: @unchecked Sendable {
         return total
     }
 
-    /// Extracts the session id from a `claude --resume <uuid>` command line. nil for
-    /// processes without `--resume` (a bare new session can't be mapped to an id)
-    /// and for the cmux wrapper scripts (their path lacks the `--resume` flag).
-    static func resumeSessionId(in command: String) -> String? {
-        // Accept BOTH `--resume <id>` (space) and `--resume=<id>` (equals); the
-        // equals form would otherwise leave the session unmatchable (read as fresh).
+    /// Extracts the session id from a `claude --resume <uuid>` or `claude --session-id
+    /// <uuid>` command line (cmux launches with `--session-id`). nil for processes
+    /// carrying neither flag (a truly bare new session can't be mapped to an id) and
+    /// for the cmux wrapper scripts (whose path mentions claude but lacks either flag).
+    static func sessionId(in command: String) -> String? {
+        // Accept `--resume <id>`/`--resume=<id>` AND `--session-id <id>`/`--session-id=<id>`
+        // (cmux launches Claude with `--session-id`). The equals form would otherwise
+        // leave the session unmatchable (read as fresh); and an unrecognized
+        // `--session-id` makes the process an empty-id, cwd-only table row that colors
+        // every closed session sharing the directory as running (the stuck-running bug).
         guard let range = command.range(of: "--resume ") ?? command.range(of: "--resume=")
+            ?? command.range(of: "--session-id ") ?? command.range(of: "--session-id=")
         else { return nil }
         let token = command[range.upperBound...].prefix { !$0.isWhitespace }
         let id = String(token)
@@ -644,10 +706,13 @@ public final class ClaudeService: @unchecked Sendable {
     /// Shell command string for cmux `--command`. Default account (expanded configDir
     /// == $HOME/.claude) needs no env prefix; custom accounts get CLAUDE_CONFIG_DIR.
     /// Optional `model`/`effort` append `--model <id>` / `--effort <level>` (spec §C.6,
-    /// applied at launch only — a running process can't be re-modeled, NG1). The binary
-    /// path, config dir, resume id, model and effort are single-quote shell-quoted.
+    /// applied at launch only — a running process can't be re-modeled, NG1).
+    /// `skipPermissions` appends `--dangerously-skip-permissions` (per-project, for
+    /// fully-autonomous agents). The binary path, config dir, resume id, model and
+    /// effort are single-quote shell-quoted.
     public static func launchCommand(account: AccountConfig, resume sessionId: String? = nil,
-                                     model: String? = nil, effort: String? = nil) -> String {
+                                     model: String? = nil, effort: String? = nil,
+                                     skipPermissions: Bool = false) -> String {
         let dir = expandTilde(account.configDir)
         let isDefaultAccount = dir == NSHomeDirectory() + "/.claude"
         let claude = shellQuote(claudeExecutable())
@@ -657,6 +722,8 @@ public final class ClaudeService: @unchecked Sendable {
         if let sessionId, !sessionId.isEmpty { command += " --resume \(shellQuote(sessionId))" }
         if let model, !model.isEmpty { command += " --model \(shellQuote(model))" }
         if let effort, !effort.isEmpty { command += " --effort \(shellQuote(effort))" }
+        // A literal flag (no value) — append last so it reads naturally in logs.
+        if skipPermissions { command += " --dangerously-skip-permissions" }
         return command
     }
 }
