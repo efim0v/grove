@@ -35,6 +35,13 @@ public final class AppState: ObservableObject {
     /// refreshUsage on the scan tick. Empty until the first refresh.
     @Published public var usageByAccount: [String: AccountUsageAnalytics] = [:]
     @Published public var snapshotsByAccount: [String: [UsageSnapshot]] = [:]
+    /// Per-account snapshot-delta cost ledger — the forward-accurate daily-cost source for the
+    /// Daily Usage chart, accumulated from statusline snapshots in refreshUsage and persisted.
+    @Published public var usageLedgerByAccount: [String: UsageCostLedger] = [:]
+    /// Monotonic per-account save generation (bumped on each ledger change on the main actor) +
+    /// the serial writer that uses it to drop out-of-order stale persists.
+    private var ledgerGeneration: [String: Int] = [:]
+    private let ledgerWriter = UsageLedgerWriter()
     /// Per-account `organizationRateLimitTier`, resolved OFF the main actor in
     /// refreshUsage. aggregateRemaining (and thus several view bodies, incl. the
     /// always-visible charts pane) reads this via tier(for:) — it must never hit disk.
@@ -144,6 +151,14 @@ public final class AppState: ObservableObject {
     /// `statsRescanPending` and is honored once the in-flight scan settles.
     private var statsScanInFlight: Set<UUID> = []
     private var statsRescanPending: Set<UUID> = []
+    /// In-flight debounce task for `setStatsBranch` — cancelled and rescheduled on each
+    /// rapid branch pick so N quick switches coalesce to one rescan.
+    private var statsBranchDebounce: Task<Void, Never>?
+
+    /// Debounce interval (seconds) for branch-switch rescans. Default 0.25s in production;
+    /// tests set this to 0 so the debounce fires synchronously and the coalesce assertion
+    /// is deterministic without artificial sleeps.
+    internal var statsBranchDebounceInterval: TimeInterval = 0.25
 
     /// Test seam: when set, every cmux interaction uses this service instead of
     /// a real `CmuxService()` (which would resolve and invoke the real cmux
@@ -177,9 +192,19 @@ public final class AppState: ObservableObject {
     /// dir so history persistence never writes under the real app-support tree.
     internal var statsStoreDirOverride: String?
 
+    /// Test seam: the directory the per-account usage-cost ledger files live in. nil = the real
+    /// ~/Library/Application Support/Grove/usageledger. TESTS that call refreshUsage MUST set a
+    /// temp dir so the ledger never writes under the real app-support tree.
+    internal var usageLedgerStoreDirOverride: String?
+
     /// Test seam: account tiers (organizationRateLimitTier). nil = read from each
     /// account's .claude.json oauthAccount. TESTS inject so aggregate math is hermetic.
     internal var tierOverride: [String: String]?
+
+    /// Test observability: incremented each time `runCodeStatsScan` begins a scan. nil
+    /// in production (never read); tests set it to 0 before calling `setStatsBranch`
+    /// and assert it equals 1 after the debounce fires to verify coalescing.
+    internal var statsRescanStartedCount: Int?
 
     /// Live OAuth usage client (Anthropic `api/oauth/usage`). Persistent so its
     /// in-actor cache + 429 backoff survive between ticks. Used ONLY as a fallback
@@ -339,6 +364,8 @@ public final class AppState: ObservableObject {
     /// Removes the account from Grove's config only — the directory is untouched.
     public func removeAccount(name: String) {
         config.accounts.removeAll { $0.name == name }
+        usageLedgerByAccount.removeValue(forKey: name)
+        usageLedgerStore.delete(account: name)
         persist()
     }
 }
@@ -505,10 +532,15 @@ extension AppState {
     /// at `cwd`, focused. cmux is started first when not running.
     public func launchClaude(cwd: String, title: String, account: AccountConfig,
                              resume sessionId: String?,
-                             model: String? = nil, effort: String? = nil) async {
+                             model: String? = nil, effort: String? = nil,
+                             skipPermissions: Bool? = nil) async {
         let service = cmux()
+        // --dangerously-skip-permissions: an explicit per-launch choice (from the
+        // config sheet) wins; otherwise resolve the project default by `cwd`, here in
+        // the single launch chokepoint so EVERY caller honors the setting.
         let command = ClaudeService.launchCommand(account: account, resume: sessionId,
-                                                  model: model, effort: effort)
+                                                  model: model, effort: effort,
+                                                  skipPermissions: skipPermissions ?? effectiveSkipPermissions(cwd: cwd))
         do {
             try await service.ensureRunning()
             try await service.newWorkspace(name: title, cwd: cwd, command: command, focus: true)
@@ -525,6 +557,11 @@ extension AppState {
     public func setProjectEffort(projectID: UUID, effort: String?) {
         guard let i = config.projects.firstIndex(where: { $0.id == projectID }) else { return }
         config.projects[i].defaultEffort = (effort?.isEmpty == true) ? nil : effort
+        persist()
+    }
+    public func setProjectSkipPermissions(projectID: UUID, _ on: Bool) {
+        guard let i = config.projects.firstIndex(where: { $0.id == projectID }) else { return }
+        config.projects[i].dangerouslySkipPermissions = on
         persist()
     }
 
@@ -563,6 +600,13 @@ extension AppState {
 
     func effectiveEffort(cwd: String, account: AccountConfig) -> String? {
         project(forCwd: cwd)?.defaultEffort ?? account.defaultEffort
+    }
+
+    /// Whether to launch with `--dangerously-skip-permissions` for `cwd`: the owning
+    /// project's per-project toggle (false when no project owns the cwd, e.g. a login
+    /// shell at $HOME). Project-scoped only — there is no account/global form.
+    func effectiveSkipPermissions(cwd: String) -> Bool {
+        project(forCwd: cwd)?.dangerouslySkipPermissions ?? false
     }
 
     /// Degraded-mode affordance (spec §7): the error banner's "Launch cmux"
@@ -619,27 +663,43 @@ extension AppState {
         }
     }
 
-    /// Presents the launch sheet pre-filled to RESUME `row`'s session. The project's
-    /// default model/effort seed the pickers (the user can override per launch).
-    public func beginResume(_ row: ProjectSessionRow) {
-        let project = config.projects.first { row.cwd.hasPrefix(expandTilde($0.path)) }
+    /// Seeds the launch/config sheet for `cwd`/`sessionId` with the owning project's
+    /// defaults (model / effort / skip-permissions), letting the user override any
+    /// of them — plus the account and target — before the launch runs. `account` is
+    /// recorded as BOTH the chosen and the origin account, so a later account change
+    /// in the sheet is detected as a cross-account resume.
+    private func seedLaunch(sessionId: String?, cwd: String, title: String, account: String) {
+        let owner = project(forCwd: cwd)
+        let acct = config.accounts.first { $0.name == account }
         launchRequest = LaunchRequest(
-            sessionId: row.sessionId, cwd: row.cwd, title: row.location,
-            account: row.accountName,
-            model: project?.defaultModel, effort: project?.defaultEffort, target: .cmux)
+            sessionId: sessionId, cwd: cwd, title: title,
+            account: account, originAccount: account,
+            model: owner?.defaultModel ?? acct?.defaultModel,
+            effort: owner?.defaultEffort ?? acct?.defaultEffort,
+            skipPermissions: effectiveSkipPermissions(cwd: cwd),
+            target: .cmux)
     }
 
-    /// Presents the launch sheet for a fresh ("New Claude") session in `cwd`
-    /// under `account`. Parallels `beginResume` (`sessionId: nil`), seeding the
-    /// pickers with the owning project's default model/effort so the user can
-    /// confirm target/model/effort before a process is spawned.
+    /// Presents the launch sheet pre-filled to RESUME `row`'s session.
+    public func beginResume(_ row: ProjectSessionRow) {
+        seedLaunch(sessionId: row.sessionId, cwd: row.cwd, title: row.location, account: row.accountName)
+    }
+
+    /// Presents the launch sheet for a fresh ("New Claude") session in `cwd`.
     public func beginNew(cwd: String, title: String, account: AccountConfig) {
-        let owner = project(forCwd: cwd)
-        launchRequest = LaunchRequest(
-            sessionId: nil, cwd: cwd, title: title,
-            account: account.name,
-            model: owner?.defaultModel ?? account.defaultModel,
-            effort: owner?.defaultEffort ?? account.defaultEffort, target: .cmux)
+        seedLaunch(sessionId: nil, cwd: cwd, title: title, account: account.name)
+    }
+
+    /// Opens the per-session config/relaunch sheet for a Claude-tab row (closed →
+    /// resume with new model / effort / account / skip-permissions).
+    public func beginConfigure(_ row: SessionRow) {
+        seedLaunch(sessionId: row.sessionId, cwd: row.cwd, title: row.title, account: row.accountName)
+    }
+
+    /// Opens the per-session config/relaunch sheet for a Workspaces-tab session.
+    public func beginConfigure(session: ClaudeSession) {
+        let title = session.title ?? (session.cwd as NSString).lastPathComponent
+        seedLaunch(sessionId: session.id, cwd: session.cwd, title: title, account: session.accountName)
     }
 
     /// Runs the configured launch (Resume or New) at the chosen target. Closes the
@@ -648,13 +708,22 @@ extension AppState {
         launchRequest = nil
         let account = config.accounts.first { $0.name == request.account }
             ?? config.accounts.first ?? AccountConfig(name: "default", configDir: "~/.claude")
+        // Resuming under a DIFFERENT account than the session belongs to needs the
+        // canonical-store linking first (so the new account's claude sees the
+        // transcript); abort the launch if that move is blocked.
+        if let sessionId = request.sessionId, !sessionId.isEmpty {
+            guard prepareResumeAccount(sessionId: sessionId, cwd: request.cwd,
+                                       fromAccount: request.originAccount, to: account) else { return }
+        }
         switch request.target {
         case .cmux:
             await launchClaude(cwd: request.cwd, title: request.title, account: account,
-                               resume: request.sessionId, model: request.model, effort: request.effort)
+                               resume: request.sessionId, model: request.model, effort: request.effort,
+                               skipPermissions: request.skipPermissions)
         case .terminal:
             let command = ClaudeService.launchCommand(account: account, resume: request.sessionId,
-                                                      model: request.model, effort: request.effort)
+                                                      model: request.model, effort: request.effort,
+                                                      skipPermissions: request.skipPermissions)
             let cwd = request.cwd
             let ok = await Task.detached(priority: .userInitiated) {
                 TerminalFocus.launchInTerminal(command: command, cwd: cwd)
@@ -840,38 +909,50 @@ extension AppState {
     /// fails, or the same session is live under a DIFFERENT account (concurrency
     /// guard, added in Task 4).
     public func resumeSession(_ session: ClaudeSession, as account: AccountConfig) async {
-        if account.name != session.accountName {
-            if let other = sessionLiveUnderOtherAccount(session.id, launchAccount: account) {
-                actionError = "This session is live under “\(other)” — close it first, "
-                    + "then resume as \(account.name)."
-                return
-            }
-            guard canonicalAccount != nil else {
-                actionError = "Can't share sessions without a canonical account: add an "
-                    + "account whose config dir is ~/.claude (the default account)."
-                return
-            }
-            guard let owner = config.accounts.first(where: { $0.name == session.accountName }) else {
-                actionError = "Can't resume as \(account.name): the owning account "
-                    + "“\(session.accountName)” is no longer configured."
-                return
-            }
-            let mangled = ClaudeService.mangle(session.cwd)
-            // Link the owner first (so the transcript migrates into canonical),
-            // then the target (so the symlinked store makes it visible).
-            if let error = ensureLinkedForResume(owner, mangledCwd: mangled) {
-                actionError = error
-                return
-            }
-            if let error = ensureLinkedForResume(account, mangledCwd: mangled) {
-                actionError = error
-                return
-            }
-        }
+        guard prepareResumeAccount(sessionId: session.id, cwd: session.cwd,
+                                   fromAccount: session.accountName, to: account) else { return }
         let title = session.title ?? (session.cwd as NSString).lastPathComponent
         await launchClaude(cwd: session.cwd, title: title, account: account, resume: session.id,
                            model: effectiveModel(cwd: session.cwd, account: account),
                            effort: effectiveEffort(cwd: session.cwd, account: account))
+    }
+
+    /// Prepares a resume that may target a DIFFERENT account than the session
+    /// belongs to: when `account` differs from `fromAccount`, both are linked into
+    /// the canonical store so the transcript is visible under the new account.
+    /// Returns false (and sets `actionError`) when the move is blocked; true when
+    /// same-account (a no-op) or successfully linked. Shared by `resumeSession` and
+    /// the config-sheet `confirmLaunch` path.
+    private func prepareResumeAccount(sessionId: String, cwd: String,
+                                      fromAccount: String, to account: AccountConfig) -> Bool {
+        guard account.name != fromAccount else { return true }
+        if let other = sessionLiveUnderOtherAccount(sessionId, launchAccount: account) {
+            actionError = "This session is live under “\(other)” — close it first, "
+                + "then resume as \(account.name)."
+            return false
+        }
+        guard canonicalAccount != nil else {
+            actionError = "Can't share sessions without a canonical account: add an "
+                + "account whose config dir is ~/.claude (the default account)."
+            return false
+        }
+        guard let owner = config.accounts.first(where: { $0.name == fromAccount }) else {
+            actionError = "Can't resume as \(account.name): the owning account "
+                + "“\(fromAccount)” is no longer configured."
+            return false
+        }
+        let mangled = ClaudeService.mangle(cwd)
+        // Link the owner first (so the transcript migrates into canonical),
+        // then the target (so the symlinked store makes it visible).
+        if let error = ensureLinkedForResume(owner, mangledCwd: mangled) {
+            actionError = error
+            return false
+        }
+        if let error = ensureLinkedForResume(account, mangledCwd: mangled) {
+            actionError = error
+            return false
+        }
+        return true
     }
 }
 
@@ -953,14 +1034,18 @@ extension AppState {
         }
         let started = Date()
         let wantsOAuth = isPanelOpen || oauthLimitsOverride != nil
+        let ledgerStore = usageLedgerStore
+        let inLedgers = usageLedgerByAccount
         let result = await Task.detached(priority: .utility) {
             () -> (snaps: [String: [UsageSnapshot]], byAcc: [String: AccountUsageAnalytics],
-                   tiers: [String: String], ids: [String: AccountIdentity]) in
+                   tiers: [String: String], ids: [String: AccountIdentity],
+                   baseLedgers: [String: UsageCostLedger]) in
             let reader = UsageReader()
             var snaps: [String: [UsageSnapshot]] = [:]
             var byAcc: [String: AccountUsageAnalytics] = [:]
             var tiers: [String: String] = [:]
             var ids: [String: AccountIdentity] = [:]
+            var baseLedgers: [String: UsageCostLedger] = [:]
             for job in jobs {
                 snaps[job.name] = reader.read(configDir: job.dir, accountName: job.name)
                 byAcc[job.name] = analytics.account(configDir: job.dir, accountName: job.name,
@@ -973,8 +1058,12 @@ extension AppState {
                 if let id = ClaudeService.identity(claudeJSONPath: job.claudeJSON) {
                     ids[job.name] = id
                 }
+                // Load the baseline ledger off-main (cold-start disk read). The actual FOLD runs
+                // on the main actor below, from the LIVE ledger, so two concurrent refreshes
+                // (panel + timer) can't race the cumulative cursor.
+                baseLedgers[job.name] = inLedgers[job.name] ?? ledgerStore.load(account: job.name)
             }
-            return (snaps, byAcc, tiers, ids)
+            return (snaps, byAcc, tiers, ids, baseLedgers)
         }.value
         var snaps = result.snaps
         // OAuth limits from Anthropic's usage API, folded in as the latest capture for
@@ -997,6 +1086,30 @@ extension AppState {
         usageByAccount = result.byAcc
         tierCache = result.tiers
         identityByAccount = result.ids
+        // Fold the cost ledger on the MAIN actor (serial — no two refreshes interleave here) from
+        // the LIVE in-memory ledger, falling back to the off-main-loaded baseline only when an
+        // account isn't tracked yet (cold start). Fold the pre-OAuth STATUSLINE snapshots
+        // (`result.snaps`); the synthetic "oauth" capture is excluded by `fold` anyway. Persist
+        // only changed accounts, off-main (fire-and-forget; the in-memory state is the truth).
+        // Live accounts only: an account removed during this refresh's awaits must NOT be
+        // resurrected in memory or have its deleted ledger file re-created.
+        let liveAccounts = Set(config.accounts.map(\.name))
+        var ledgers = usageLedgerByAccount.filter { liveAccounts.contains($0.key) }
+        for job in jobs where liveAccounts.contains(job.name) {
+            var ledger = ledgers[job.name] ?? result.baseLedgers[job.name] ?? UsageCostLedger()
+            if UsageCostLedger.fold(into: &ledger, snapshots: result.snaps[job.name] ?? [], now: now) {
+                // Stamp a monotonic generation (we're on the serialized main actor) and persist
+                // via the serial writer, which skips any out-of-order stale write.
+                ledgerGeneration[job.name, default: 0] += 1
+                let gen = ledgerGeneration[job.name] ?? 0
+                let store = ledgerStore
+                let writer = ledgerWriter
+                let saved = ledger
+                Task { await writer.save(account: job.name, ledger: saved, generation: gen, store: store) }
+            }
+            ledgers[job.name] = ledger
+        }
+        usageLedgerByAccount = ledgers
         GroveLog.perf.info("usage refresh (\(jobs.count) accts, oauth=\(wantsOAuth)): \(Int(Date().timeIntervalSince(started) * 1000))ms")
     }
 
@@ -1127,6 +1240,22 @@ extension AppState {
     /// scanner + cache that must persist across ticks live on `self`, not here.
     private var statsStore: CodeStatsStore { CodeStatsStore(dir: statsStoreDir) }
 
+    /// The directory holding per-account usage-cost ledger files. Production:
+    /// ~/Library/Application Support/Grove/usageledger; tests inject usageLedgerStoreDirOverride.
+    private var usageLedgerStoreDir: URL {
+        if let override = usageLedgerStoreDirOverride { return URL(fileURLWithPath: override) }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Grove/usageledger")
+    }
+    var usageLedgerStore: UsageCostLedgerStore { UsageCostLedgerStore(dir: usageLedgerStoreDir) }
+
+    /// The per-UTC-day cost deltas the chart merges in for one account: ONLY days the ledger has
+    /// actually recorded a delta for (membership = "Grove tracked this day"). Pre-tracking days
+    /// are absent, so the chart keeps their transcript-derived cost; tracked days use the ledger.
+    public func ledgerCostByDay(forAccount name: String) -> [Date: Double] {
+        (usageLedgerByAccount[name] ?? UsageCostLedger()).costByDay
+    }
+
     /// Scans the project's code per-GIT-REPO (GitStatsService), updates the aggregate
     /// `codeStats`, the per-repo `repoStats` breakdown, and overwrites
     /// `codeStatsHistory` with the git-derived per-day series. Built like refreshUsage:
@@ -1158,6 +1287,7 @@ extension AppState {
         let service = gitStats
         let branchOverrides = selectedStatsBranchByRepo
 
+        if statsRescanStartedCount != nil { statsRescanStartedCount! += 1 }
         statsScanInFlight.insert(projectID)
         statsRescanPending.remove(projectID)
         isStatsScanning = true
@@ -1208,11 +1338,24 @@ extension AppState {
 
     /// Stats-tab branch switcher: record the chosen branch for `repoPath` and rescan
     /// the project so its history/delta reflect the new branch (current LOC is taken
-    /// from the working tree and is branch-independent, so it stays put). Honors the
-    /// per-project scan serialization via refreshCodeStats.
+    /// from the working tree and is branch-independent, so it stays put). The dict
+    /// write is OPTIMISTIC (immediate) so the chip label updates at once; the rescan
+    /// is DEBOUNCED — rapid picks cancel the pending task and schedule a new one so
+    /// N consecutive switches coalesce to one scan. Honors the per-project scan
+    /// serialization via refreshCodeStats.
     public func setStatsBranch(projectID: UUID, repoPath: String, branch: String) {
+        // Optimistic: the chip shows the new label immediately (no wait for rescan).
         selectedStatsBranchByRepo[repoPath] = branch
-        Task { await refreshCodeStats(projectID: projectID) }
+        // Debounce: cancel any pending rescan and schedule a fresh one after the interval.
+        statsBranchDebounce?.cancel()
+        let interval = statsBranchDebounceInterval
+        statsBranchDebounce = Task {
+            if interval > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            }
+            guard !Task.isCancelled else { return }
+            await refreshCodeStats(projectID: projectID)
+        }
     }
 
     /// Excludes (or re-includes) a project-root-relative folder from code-stats

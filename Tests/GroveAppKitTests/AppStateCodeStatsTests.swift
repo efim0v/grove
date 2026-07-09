@@ -224,6 +224,64 @@ final class AppStateCodeStatsTests: XCTestCase {
         XCTAssertTrue(branches.contains("alt") && branches.contains("main"))
     }
 
+    // MARK: - setStatsBranch optimistic + debounce (new)
+
+    /// Verifies the optimistic dict write: `selectedStatsBranchByRepo` must reflect
+    /// the new branch SYNCHRONOUSLY (before any async rescan starts).
+    func testSetStatsBranchIsOptimistic() async throws {
+        let state = makeState()
+        await state.refreshCodeStats(projectID: project.id,
+                                     now: Date(timeIntervalSince1970: 1_000_000))
+        let repoPath = try XCTUnwrap(state.repoStats[project.id]?.first?.repoPath)
+
+        // Zero-interval so the rescan Task (when it runs) does not add delay; but the
+        // key check is BEFORE any Task suspension — it must already be set.
+        state.statsBranchDebounceInterval = 0
+        state.setStatsBranch(projectID: project.id, repoPath: repoPath, branch: "dev")
+
+        // Synchronous assertion — no await needed — proves the optimistic write.
+        XCTAssertEqual(state.selectedStatsBranchByRepo[repoPath], "dev",
+                       "dict must update before any suspension point")
+
+        // Let the debounce task complete so it doesn't outlive this test.
+        try await waitUntil { !state.isStatsScanning }
+    }
+
+    /// Verifies debounce coalescing: N rapid `setStatsBranch` calls must trigger
+    /// only ONE rescan, not N. Uses `statsRescanStartedCount` as the scan counter
+    /// and `statsBranchDebounceInterval = 0` for a deterministic no-sleep debounce.
+    func testSetStatsBranchDebounceCoalescesRapidCalls() async throws {
+        let state = makeState()
+        await state.refreshCodeStats(projectID: project.id,
+                                     now: Date(timeIntervalSince1970: 1_000_000))
+        let repoPath = try XCTUnwrap(state.repoStats[project.id]?.first?.repoPath)
+
+        // Arm the scan counter AFTER the initial refresh so it only counts debounce scans.
+        state.statsRescanStartedCount = 0
+        // Zero-interval: each call's Task suspends for 0 ns (not 250 ms), meaning the
+        // FIRST call's task never runs (it's cancelled before the main actor yields to
+        // it); only the LAST task survives and runs.
+        state.statsBranchDebounceInterval = 0
+
+        // Three rapid calls on the main actor — no `await` between them so they all
+        // execute before the debounce task gets a chance to run.
+        state.setStatsBranch(projectID: project.id, repoPath: repoPath, branch: "branch-a")
+        state.setStatsBranch(projectID: project.id, repoPath: repoPath, branch: "branch-b")
+        state.setStatsBranch(projectID: project.id, repoPath: repoPath, branch: "branch-c")
+
+        // The last call wins optimistically.
+        XCTAssertEqual(state.selectedStatsBranchByRepo[repoPath], "branch-c")
+
+        // Wait for the surviving debounce task to START (isStatsScanning goes true),
+        // then wait for it to finish. Without this two-phase wait, waitUntil would exit
+        // immediately (isStatsScanning is already false before the task body runs).
+        try await waitUntil { state.isStatsScanning }
+        try await waitUntil { !state.isStatsScanning }
+
+        XCTAssertEqual(state.statsRescanStartedCount, 1,
+                       "3 rapid setStatsBranch calls must coalesce to exactly 1 rescan")
+    }
+
     func testRemoveProjectClearsStatsBranchOverrides() async throws {
         let state = makeState()
         await state.refreshCodeStats(projectID: project.id,

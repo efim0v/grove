@@ -318,64 +318,27 @@ struct CodeStatsScreen: View {
         }
     }
 
-    /// The per-repo branch switcher inside the panel: picks which branch the repo is scanned
-    /// on (writes `setStatsBranch`, which persists + rescans). The chip shows the effective
-    /// branch — the pending override if the user just picked one, else the scanned default,
-    /// so the label updates immediately rather than waiting for the rescan. `Menu` is
-    /// AppKit-backed and draws an ERROR PLACEHOLDER under `ImageRenderer`, so the snapshot
-    /// path renders the chip label alone; the dropdown is live-only anyway.
+    /// The per-repo branch switcher inside the panel: thin forwarder that passes only
+    /// STABLE VALUE-TYPED inputs into `BranchSwitcher` so a scan republish of
+    /// `isStatsScanning`/`codeStats`/`repoStats` does NOT re-init this subtree and
+    /// cannot interrupt an in-flight NSMenu presentation.
     @ViewBuilder
     private func panelBranchSwitcher(_ repo: RepoStats) -> some View {
         let effective = state.selectedStatsBranchByRepo[repo.repoPath] ?? repo.defaultBranch
-        if isSnapshotRender {
-            branchChipLabel(effective)
-        } else {
-            Menu {
-                let branches = state.branchesByRepo[repo.repoPath] ?? [repo.defaultBranch]
-                ForEach(branches, id: \.self) { branch in
-                    Button(branch) {
-                        if let id = selectedProjectID {
-                            state.setStatsBranch(projectID: id, repoPath: repo.repoPath,
-                                                 branch: branch)
-                        }
-                    }
-                }
-            } label: {
-                branchChipLabel(effective)
+        let branches = state.branchesByRepo[repo.repoPath] ?? [repo.defaultBranch]
+        BranchSwitcher(
+            repoPath: repo.repoPath,
+            selected: effective,
+            branches: branches,
+            isSnapshotRender: isSnapshotRender
+        ) { branch in
+            if let id = selectedProjectID {
+                state.setStatsBranch(projectID: id, repoPath: repo.repoPath, branch: branch)
             }
-            // `.borderlessButton` draws its OWN system disclosure indicator that
-            // `.menuIndicator(.hidden)` does NOT reliably suppress on macOS — it leaks and
-            // renders to the LEFT of / overlapping the label, so the chip looked like
-            // [▾][branch][▾]. `.menuStyle(.button)` HONORS `.menuIndicator(.hidden)`, leaving
-            // only the chevron we draw inside `branchChipLabel` (after the branch name);
-            // `.buttonStyle(.plain)` strips the button chrome so the bare capsule still shows.
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
         }
-    }
-
-    /// The branch chip (a Menu label): the effective branch in a subtle capsule with a
-    /// downward chevron AFTER the branch name so it reads as a dropdown. The chevron lives in
-    /// this shared label (Text THEN chevron), so the visible order is always
-    /// [branch name][▾] in BOTH the live Menu and the snapshot fallback. The live Menu uses
-    /// `.menuStyle(.button)` + `.menuIndicator(.hidden)` (NOT `.borderlessButton`, whose
-    /// system indicator ignores `.menuIndicator(.hidden)` and leaks a stray leading chevron),
-    /// so this label's chevron is the ONLY one drawn — never double-drawn, never reversed.
-    private func branchChipLabel(_ text: String) -> some View {
-        HStack(spacing: 4) {
-            Text(text)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 8, weight: .semibold))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 2)
-        .background(.white.opacity(0.08), in: Capsule())
+        // Stable identity keyed on the repo path so SwiftUI never destroys and
+        // re-creates the NSMenu-backed Menu mid-gesture on a parent re-render.
+        .id(repo.repoPath)
     }
 
     // MARK: - Totals header
@@ -1223,6 +1186,65 @@ struct CodeStatsScreen: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Standalone branch-switcher chip for the repo-panel. Its inputs are ONLY stable,
+/// value-typed data (repo path, selected branch string, available branch list, callback)
+/// — it does NOT observe `AppState` directly. Because SwiftUI re-renders a child only
+/// when its stored inputs change, a scan republish of `isStatsScanning`/`codeStats`/
+/// `repoStats` on the parent will NOT re-init this struct, so an open `NSMenu`-backed
+/// `Menu` survives parent re-renders and clicks present normally.
+///
+/// Snapshot rendering swaps the `Menu` for a plain label (`Menu` is AppKit-backed and
+/// draws an error placeholder under `ImageRenderer`).
+private struct BranchSwitcher: View {
+    let repoPath: String
+    let selected: String
+    let branches: [String]
+    let isSnapshotRender: Bool
+    let onPick: (String) -> Void
+
+    var body: some View {
+        if isSnapshotRender {
+            chipLabel(selected)
+        } else {
+            Menu {
+                ForEach(branches, id: \.self) { branch in
+                    Button(branch) { onPick(branch) }
+                }
+            } label: {
+                chipLabel(selected)
+            }
+            // `.borderlessButton` draws its OWN system disclosure indicator that
+            // `.menuIndicator(.hidden)` does NOT reliably suppress on macOS — it leaks
+            // and renders to the LEFT of / overlapping the label, so the chip looked like
+            // [▾][branch][▾]. `.menuStyle(.button)` HONORS `.menuIndicator(.hidden)`,
+            // leaving only the chevron drawn inside `chipLabel`; `.buttonStyle(.plain)`
+            // strips the button chrome so the bare capsule still shows.
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    /// The branch chip: effective branch text in a subtle capsule with a downward chevron
+    /// AFTER the name so it reads as a dropdown. The chevron lives here so it's the ONLY
+    /// one drawn in both the live Menu and the snapshot fallback — never double-drawn.
+    private func chipLabel(_ text: String) -> some View {
+        HStack(spacing: 4) {
+            Text(text)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(.white.opacity(0.08), in: Capsule())
     }
 }
 
