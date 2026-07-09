@@ -148,18 +148,31 @@ struct WorkspaceRowCard: View {
     // MARK: - Repo chips (branch, start point, +ahead/−behind, dirty; path as tooltip)
 
     private var repoChips: some View {
-        HStack(spacing: 6) {
+        // `.fixedSize(…vertical: true)` makes the row take the TALLEST chip's
+        // intrinsic height; each chip then stretches to that height via the
+        // `maxHeight: .infinity` frame below, so sibling chips are always the
+        // same size (equal width from `maxWidth: .infinity`, equal height here).
+        HStack(alignment: .top, spacing: 6) {
             ForEach(workspace.repos, id: \.repo.path) { repoState in
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
+                    // Line 1: repo name (truncate the middle, never wrap by syllable).
                     HStack(spacing: 4) {
                         Image(systemName: "shippingbox")
                         Text(repoState.repo.dirName).fontWeight(.medium)
+                            .lineLimit(1).truncationMode(.middle)
                     }
+                    // Line 2: the branch, on its OWN line — single line, middle-
+                    // truncated so a long `feat/…` reads cleanly instead of
+                    // wrapping per-syllable. Full name stays in the path tooltip.
+                    Text(repoState.entry.branch ?? "detached")
+                        .lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                    // Line 3: base + ahead/behind + dirty, their own compact row.
                     HStack(spacing: 6) {
-                        Text(repoState.entry.branch ?? "detached")
                         if let meta = repoState.meta {
                             Text("from \(meta.baseBranch)")
                                 .foregroundStyle(.tertiary)
+                                .lineLimit(1).truncationMode(.middle)
                             Text("+\(meta.ahead)").foregroundStyle(Palette.primary)
                             Text("−\(meta.behind)").foregroundStyle(Palette.negative)
                             Text(meta.dirtyCount > 0 ? "✎\(meta.dirtyCount)" : "✓")
@@ -172,8 +185,10 @@ struct WorkspaceRowCard: View {
                         }
                     }
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
                 .font(.caption)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
                 // Repeated mid-row elements: a ConcentricRectangle resolves its
@@ -190,6 +205,9 @@ struct WorkspaceRowCard: View {
                 .help(repoState.entry.path)
             }
         }
+        // Size the row to the tallest chip's intrinsic height so every chip
+        // stretches to match (see the `maxHeight: .infinity` frame above).
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - Sessions — a distinct, detailed sub-table (its OWN entity, set apart
@@ -235,6 +253,33 @@ struct WorkspaceRowCard: View {
                 Text(displayTitle(session)).fontWeight(.medium).lineLimit(1)
                 Spacer(minLength: 8)
                 Text(relativeAge(session.lastActivity, now: now)).foregroundStyle(.tertiary)
+                // Gear: reconfigure + relaunch a CLOSED session (new model / effort /
+                // account / skip-permissions). A live process can't be reconfigured.
+                if liveProcess(for: session) == nil, !isSnapshotRender {
+                    Button { state.beginConfigure(session: session) } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Relaunch with new model / effort / account / permissions")
+                }
+                // Share button — only for non-canonical accounts.
+                if let owningAcct = state.config.accounts.first(where: { $0.name == session.accountName }),
+                   AppState.canShareAcrossAccounts(account: owningAcct, canonicalDir: state.canonicalDir),
+                   !isSnapshotRender {
+                    Button {
+                        let acct = owningAcct
+                        Task { await state.adoptSession(cwd: session.cwd, sessionId: session.id, account: acct) }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Share across accounts (symlink into ~/.claude)")
+                }
+                // Migrate menu — shown when ≥1 other account exists.
+                sessionMigrateMenu(session)
                 if isSnapshotRender {
                     Text(liveProcess(for: session) == nil ? "Resume" : "Go")
                         .foregroundStyle(Palette.primary)
@@ -258,6 +303,44 @@ struct WorkspaceRowCard: View {
             .padding(.leading, 13)
         }
         .padding(.vertical, 4)
+    }
+
+    /// Migrate icon-menu for a session row. Snapshot-safe: renders a static icon
+    /// offscreen (Menu is AppKit-backed and breaks ImageRenderer).
+    @ViewBuilder
+    private func sessionMigrateMenu(_ session: ClaudeSession) -> some View {
+        let sourceAccount = state.config.accounts.first { $0.name == session.accountName }
+            ?? state.config.accounts.first
+            ?? AccountConfig(name: "default", configDir: "~/.claude")
+        let others = state.config.accounts.filter { $0.name != session.accountName }
+        if !others.isEmpty {
+            if isSnapshotRender {
+                Image(systemName: "tray.and.arrow.up")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                Menu {
+                    ForEach(others, id: \.name) { targetAccount in
+                        Button("Migrate to \(targetAccount.name)") {
+                            let cwd = session.cwd
+                            let sid = session.id
+                            let src = sourceAccount
+                            let dst = targetAccount
+                            Task { await state.migrateSession(cwd: cwd, sessionId: sid,
+                                                              from: src, to: dst) }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "tray.and.arrow.up")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.primary)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Migrate this session — full copy (data + config + plugins/hooks) to another account")
+            }
+        }
     }
 
     /// running (busy/idle live) / waiting / closed (no live process).
