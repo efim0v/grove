@@ -23,6 +23,55 @@ struct CodeStatsScreen: View {
     /// Pure client-side recompute from the per-day history — never a re-scan.
     @State private var period: StatsPeriod = .d30
 
+    /// Whether the Totals hero discloses its breakdown (code/data split + line kinds). The
+    /// chevron next to the hero toggles it; expanded by default so the breakdown shows.
+    @State private var totalsExpanded = true
+
+    /// Memoizes the subset re-aggregation (used only when some repos are excluded). A reference
+    /// type so writing it inside `body` does NOT itself trigger a re-render (it's not observed),
+    /// keyed on (project, exclusion set, scan time) so it recomputes when any of those change
+    /// but NOT on a hover tick (which leaves all three identical).
+    private final class SubsetAggCache {
+        var projectID: UUID?
+        var excluded: Set<String> = []
+        var signature: Date?
+        var value: ProjectGitStats?
+    }
+    @State private var subsetCache = SubsetAggCache()
+
+    /// The cached subset aggregate (see `SubsetAggCache`). Recomputes via `GitStatsService`
+    /// only when the cache key changes; returns the cached `ProjectGitStats` otherwise.
+    private func subsetAggregate(_ repos: [RepoStats], excluded: Set<String>,
+                                 signature: Date) -> ProjectGitStats {
+        if subsetCache.projectID == selectedProjectID, subsetCache.excluded == excluded,
+           subsetCache.signature == signature, let value = subsetCache.value {
+            return value
+        }
+        let value = GitStatsService.aggregate(repos, now: .now)
+        subsetCache.projectID = selectedProjectID
+        subsetCache.excluded = excluded
+        subsetCache.signature = signature
+        subsetCache.value = value
+        return value
+    }
+
+    /// Memoizes `stackedRepoSeries` (365-day stacked cumulative chart). Keyed on
+    /// `(projectID, scope, scannedAt, metric)` so hover ticks — which leave all four
+    /// identical — never recompute the O(365 × repos) series.
+    @State private var seriesCache = SeriesCache()
+
+    /// Memoizes `repoCells` (the per-repo delta cards). Keyed on
+    /// `(projectID, scope, scannedAt, period)`. A period change is the only user action
+    /// that needs a recompute; hover ticks don't.
+    @State private var repoCellsCache = RepoCellsCache()
+
+    /// Stable `Date` anchor captured once when the selected project changes (or on
+    /// first appear). Used as the `now` argument to `stackedRepoSeries` and `repoCells`
+    /// so the memo keys stay identical across render ticks (including hover ticks). The
+    /// chart's 365-day window doesn't need sub-render freshness — a stable anchor per
+    /// scan is correct and sufficient.
+    @State private var anchorNow: Date = .now
+
     /// The currently-tapped day in the "Lines over time" stacked chart, if any. Tapping a
     /// bar selects that calendar day → a tooltip above the chart with the day's total
     /// codebase size + a per-repo breakdown; tapping it again clears. Live-only (the
@@ -35,11 +84,20 @@ struct CodeStatsScreen: View {
     /// Which cumulative quantity the "over time" chart plots (Lines/Code/Data).
     @State private var growthMetric: GrowthMetric = .lines
 
-    /// The repository the shared controls strip scopes ALL stats blocks to, or nil for
-    /// "All repos" (the project aggregate). A repo name filters the Totals, Languages,
-    /// growth chart, and per-repo blocks down to that one repo via the pure
-    /// `filter*ByRepo` helpers. Default nil ("All").
-    @State private var selectedRepo: String?
+    /// Repositories EXCLUDED from every stats block by the persistent repo+branch panel
+    /// (empty == all repos counted, the default). The included set (all repos minus this)
+    /// drives the Totals, Languages, growth chart, deltas, and per-repo blocks: when it's a
+    /// strict subset, the screen re-aggregates the included repos with
+    /// `GitStatsService.aggregate`; when it's everything, it uses the precomputed project
+    /// aggregate untouched. The panel never lets the last repo be unchecked, so this can
+    /// never blank the screen. Stale names from a previous project simply don't match.
+    @State private var excludedRepos: Set<String> = []
+
+    /// Whether the repo+branch scoping panel (the per-repo checkboxes + branch switchers) is
+    /// disclosed. Hidden by default so the controls strip is just the period row; the
+    /// "Repositories" text button on the LEFT of that row toggles it, revealing the panel
+    /// beneath. View-local UI state only — it never affects scoping (that's `excludedRepos`).
+    @State private var showRepoPanel = false
 
     /// The language whose bar row the cursor is over, if any → a small details overlay
     /// anchored to that row (files / code / comment / blank / %). Live-only: `.onHover`
@@ -78,8 +136,10 @@ struct CodeStatsScreen: View {
             // the menu marks nothing active and the stale value keeps filtering. Reset both
             // so every project opens at "All repos".
             selectedDay = nil
-            selectedRepo = nil
+            excludedRepos = []
+            anchorNow = .now          // capture a fresh anchor before the scan starts
             await state.refreshCodeStats(projectID: id)
+            anchorNow = .now          // refresh anchor after the scan so bars are up to date
         }
     }
 
@@ -95,20 +155,39 @@ struct CodeStatsScreen: View {
 
     @ViewBuilder
     private func content(stats: CodeStats) -> some View {
-        // Every block scopes to the selected repo (nil == "All"): the Totals headline +
-        // Languages bars read the scoped aggregate, the deltas read the scoped history, and
-        // the per-repo blocks + growth chart read the scoped repo list. The shared controls
-        // strip (repo + period) sits ABOVE the first card as a plain row, not a glassCard.
+        // Every block scopes to the INCLUDED repos (the panel's checked set == all repos
+        // minus `excludedRepos`): the Totals headline + Languages bars read the scoped
+        // aggregate, the deltas read the scoped history, the per-repo blocks + growth chart
+        // read the scoped list. When every repo is included (the default) we use the
+        // precomputed project aggregate as-is; when it's a strict subset we re-aggregate the
+        // included repos with the same summing the scan uses, so the headline/chart reflect
+        // exactly the chosen repos. The shared controls strip (the persistent repo+branch
+        // panel + period) sits ABOVE the first card as a plain row, not a glassCard.
         let repos = state.repoStats[selectedProjectID ?? UUID()] ?? []
-        let scopedStats = filterAggregateByRepo(stats, repos: repos, repoName: selectedRepo)
-        let scopedHistory = filterHistoryByRepo(history, repos: repos, repoName: selectedRepo)
-        let scopedRepos = filterRepoStats(repos, repoName: selectedRepo)
+        // Exclusion is keyed by repoPath (unique) — leaf repoNames can collide across a
+        // multi-repo project, which would let one checkbox toggle two repos.
+        let included = repos.filter { !excludedRepos.contains($0.repoPath) }
+        let scopedRepos = included.isEmpty ? repos : included    // never blank
+        let isSubset = scopedRepos.count != repos.count
+        // The subset re-aggregation is O(days×repos); a hover sweep re-evaluates this body once
+        // per crossed bar, so memoize it (keyed on project + exclusion + scan time) instead of
+        // re-summing every tick. The default/unfiltered path never aggregates here.
+        let subsetAgg = isSubset
+            ? subsetAggregate(scopedRepos, excluded: excludedRepos, signature: stats.scannedAt)
+            : nil
+        let scopedStats = subsetAgg?.aggregate ?? stats
+        let scopedHistory = subsetAgg?.aggregateHistory ?? history
         let cards = VStack(spacing: 8) {
+            let cacheID = selectedProjectID ?? UUID()
+            let cacheScannedAt = scopedStats.scannedAt
+            let cacheScope = Set(scopedRepos.map(\.repoPath))
             sharedControlsStrip(repos: repos)
             totalsCard(stats: scopedStats, scopedHistory: scopedHistory)
+            growthCard(repos: scopedRepos, projectID: cacheID, scope: cacheScope,
+                       scannedAt: cacheScannedAt)
+            reposCard(repos: scopedRepos, projectID: cacheID, scope: cacheScope,
+                      scannedAt: cacheScannedAt)
             languageCard(stats: scopedStats)
-            reposCard(repos: scopedRepos)
-            growthCard(repos: scopedRepos)
         }
         .padding(8)
         // ScrollView content isn't rendered offscreen — a plain VStack in snapshots,
@@ -130,127 +209,250 @@ struct CodeStatsScreen: View {
     /// that the pure `filter*ByRepo` helpers + the delta recompute read. The stats-settings
     /// gear lives here too (it was in the Totals header) so the Totals card is pure data.
     private func sharedControlsStrip(repos: [RepoStats]) -> some View {
-        HStack(spacing: 8) {
-            repoSelector(repos: repos)
-            Spacer(minLength: 8)
-            periodControl
-            // Opens the separate stats-settings page (the directory+file exclusion tree);
-            // disabled until a project is selected.
-            Button {
-                if let id = selectedProjectID { state.open(.statsSettings(id)) }
-            } label: {
-                Image(systemName: "gear")
-                    .font(.caption)
+        // spacing 14 separates the period row from the repo panel; the .padding(.bottom, 6)
+        // below adds to the cards VStack's uniform 8 (≈14) so the panel reads as its own
+        // section, distinct from both the period row above and the Totals card beneath.
+        VStack(alignment: .leading, spacing: 14) {
+            // Top row: the repo-panel toggle (left), then the period selector + settings gear
+            // (right). The repo+branch scoping panel is disclosed on demand from the toggle
+            // rather than always-visible, so the strip is just this row by default.
+            HStack(spacing: 8) {
+                // Discloses the repo+branch panel below. Reuses the Repositories card's icon
+                // so it reads as "repositories"; the chevron rotates 90° when open. Disabled
+                // when there are no repos to scope.
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { showRepoPanel.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "shippingbox")
+                            .font(.caption)
+                        Text("Repositories")
+                            .font(.caption)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .rotationEffect(.degrees(showRepoPanel ? 90 : 0))
+                    }
                     .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(repos.isEmpty)
+                .help(showRepoPanel ? "Hide repositories" : "Show repositories — scope & branch")
+                Spacer(minLength: 0)
+                periodControl
+                // Opens the separate stats-settings page (the directory+file exclusion tree);
+                // disabled until a project is selected.
+                Button {
+                    if let id = selectedProjectID { state.open(.statsSettings(id)) }
+                } label: {
+                    Image(systemName: "gear")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(selectedProjectID == nil)
+                .help("Stats settings — file tree & exclusions")
             }
-            .buttonStyle(.plain)
-            .disabled(selectedProjectID == nil)
-            .help("Stats settings — file tree & exclusions")
+            // The repo+branch panel: hidden by default, disclosed by the toggle above. No
+            // surface/backdrop. Each row picks whether the repo counts (checkbox) and which
+            // branch it's scanned on. Gated here so the spacing-14 VStack collapses to just
+            // the period row when hidden (no empty gap).
+            if showRepoPanel {
+                repoBranchPanel(repos: repos)
+            }
         }
         .padding(.horizontal, 4)
+        .padding(.bottom, 6)
     }
 
-    /// The repository scope selector: "All repos" + one entry per repo, writing
-    /// `selectedRepo` (nil == All). A `Menu` is AppKit-backed and draws an ERROR PLACEHOLDER
-    /// under `ImageRenderer` (same as the branch switcher / `Picker(.segmented)`), so the
-    /// snapshot path renders the chip label alone — selection is inherently live-only. The
-    /// chip visuals are shared so both paths match. Single-repo projects hide the selector
-    /// entirely (nothing to scope).
+    /// The persistent repo+branch panel — the always-visible settings that scope EVERY
+    /// block below. No surface/backdrop: it's a plain column of rows sitting under the
+    /// period row. Each row is one repo: a checkbox toggling whether it counts toward the
+    /// Totals/Languages/chart/deltas (multi-repo projects only — there's nothing to scope
+    /// with one repo), the repo name, and the branch switcher (moved here out of the
+    /// Repositories card so all per-repo scoping lives in one place). The panel never lets
+    /// the last included repo be unchecked, so the stats can't go blank.
     @ViewBuilder
-    private func repoSelector(repos: [RepoStats]) -> some View {
-        if repos.count > 1 {
-            let options = repoScopeOptions(repos)
-            let current = options.first { $0.name == selectedRepo } ?? options[0]
-            if isSnapshotRender {
-                repoSelectorChip(current.label)
-            } else {
-                Menu {
-                    ForEach(options) { option in
+    private func repoBranchPanel(repos: [RepoStats]) -> some View {
+        let multi = repos.count > 1
+        VStack(spacing: 6) {
+            ForEach(repos, id: \.repoPath) { repo in
+                let included = !excludedRepos.contains(repo.repoPath)
+                HStack(spacing: 8) {
+                    if multi {
                         Button {
-                            selectedRepo = option.name
-                        } label: {
-                            if option.name == selectedRepo {
-                                Label(option.label, systemImage: "checkmark")
+                            // Count the CURRENTLY-present included repos (a stale excluded path
+                            // from a vanished repo mustn't block a valid toggle).
+                            let includedCount = repos.filter { !excludedRepos.contains($0.repoPath) }.count
+                            if included {
+                                // Keep at least one repo counted — never blank the screen.
+                                if includedCount > 1 { excludedRepos.insert(repo.repoPath) }
                             } else {
-                                Text(option.label)
+                                excludedRepos.remove(repo.repoPath)
                             }
+                        } label: {
+                            Image(systemName: included ? "checkmark.square.fill" : "square")
+                                .font(.system(size: 13))
+                                .foregroundStyle(included ? Color.accentColor : .secondary)
                         }
+                        .buttonStyle(.plain)
+                        .help(included ? "Exclude from totals" : "Include in totals")
                     }
-                } label: {
-                    repoSelectorChip(current.label)
+                    Text(repo.repoName)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(included ? .primary : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    panelBranchSwitcher(repo)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
+                // Frame each repo as its own row so the repo↔branch pairing reads as a unit
+                // (same field radius as the branch chip / stat block → one chip family).
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+                        .fill(.white.opacity(0.04))
+                )
             }
         }
     }
 
-    /// The repo selector's label chip: the active scope in a subtle capsule with a
-    /// disclosure chevron, mirroring the branch chip's look so the strip reads as a control.
-    private func repoSelectorChip(_ label: String) -> some View {
+    /// The per-repo branch switcher inside the panel: picks which branch the repo is scanned
+    /// on (writes `setStatsBranch`, which persists + rescans). The chip shows the effective
+    /// branch — the pending override if the user just picked one, else the scanned default,
+    /// so the label updates immediately rather than waiting for the rescan. `Menu` is
+    /// AppKit-backed and draws an ERROR PLACEHOLDER under `ImageRenderer`, so the snapshot
+    /// path renders the chip label alone; the dropdown is live-only anyway.
+    @ViewBuilder
+    private func panelBranchSwitcher(_ repo: RepoStats) -> some View {
+        let effective = state.selectedStatsBranchByRepo[repo.repoPath] ?? repo.defaultBranch
+        if isSnapshotRender {
+            branchChipLabel(effective)
+        } else {
+            Menu {
+                let branches = state.branchesByRepo[repo.repoPath] ?? [repo.defaultBranch]
+                ForEach(branches, id: \.self) { branch in
+                    Button(branch) {
+                        if let id = selectedProjectID {
+                            state.setStatsBranch(projectID: id, repoPath: repo.repoPath,
+                                                 branch: branch)
+                        }
+                    }
+                }
+            } label: {
+                branchChipLabel(effective)
+            }
+            // `.borderlessButton` draws its OWN system disclosure indicator that
+            // `.menuIndicator(.hidden)` does NOT reliably suppress on macOS — it leaks and
+            // renders to the LEFT of / overlapping the label, so the chip looked like
+            // [▾][branch][▾]. `.menuStyle(.button)` HONORS `.menuIndicator(.hidden)`, leaving
+            // only the chevron we draw inside `branchChipLabel` (after the branch name);
+            // `.buttonStyle(.plain)` strips the button chrome so the bare capsule still shows.
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+
+    /// The branch chip (a Menu label): the effective branch in a subtle capsule with a
+    /// downward chevron AFTER the branch name so it reads as a dropdown. The chevron lives in
+    /// this shared label (Text THEN chevron), so the visible order is always
+    /// [branch name][▾] in BOTH the live Menu and the snapshot fallback. The live Menu uses
+    /// `.menuStyle(.button)` + `.menuIndicator(.hidden)` (NOT `.borderlessButton`, whose
+    /// system indicator ignores `.menuIndicator(.hidden)` and leaks a stray leading chevron),
+    /// so this label's chevron is the ONLY one drawn — never double-drawn, never reversed.
+    private func branchChipLabel(_ text: String) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: "shippingbox")
-                .font(.system(size: 9))
+            Text(text)
+                .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
-            Text(label)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.primary)
                 .lineLimit(1)
-                .truncationMode(.middle)
-            Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 7))
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
         .background(.white.opacity(0.08), in: Capsule())
     }
 
     // MARK: - Totals header
 
     private func totalsCard(stats: CodeStats, scopedHistory: [CodeStatsPoint]) -> some View {
-        // Both headline numbers (Code / Data·Prose), the file counts, and the per-category
-        // deltas are pure recomputes from already-scanned data — switching the period never
-        // triggers a git re-scan. Each headline now carries its OWN net delta inline at the
-        // value's top-right: how much that category's lines grew (▲, blue) or shrank (▼, pink)
-        // over the period, a churn-free per-category state difference (a line churned 5×
-        // counts once). The old single combined net line below both headlines is gone. Both
-        // `stats` and `scopedHistory` are already scoped to the selected repo by the caller.
+        // The HERO is the total line count (all kinds), the headline the user wants raised
+        // above the parts. The disclosed breakdown shows TWO partitions of that same total —
+        // each carrying its OWN net delta at the number's TOP edge, abbreviated to whole
+        // thousands ("+11K"): the language split (code vs data/prose, with file counts) and
+        // the line-kind split (code/comment/blank). Both sum to the hero, so the card stays
+        // self-consistent. Deltas come from the per-day git history; comment/blank line KINDS
+        // have no per-day series, so only the total + the two language groups carry deltas.
+        // All values are pure recomputes — switching the period never rescans. `stats`/
+        // `scopedHistory` are already scoped to the selected repos by the caller.
         let breakdown = dataProseBreakdown(stats)
-        let netByCategory = netLinesDeltaByCategory(scopedHistory, period: period, now: .now)
-        // File-count delta isn't derivable from line history client-side, so the file
-        // caption stays a plain count (the per-day series carries only lines).
+        let netByCat = netLinesDeltaByCategory(scopedHistory, period: period, now: .now)
+        let totalDelta = compactDeltaTriangle(net: netLinesDelta(scopedHistory, period: period, now: .now))
         return VStack(alignment: .leading, spacing: 10) {
             CardLabel(title: "Totals", systemImage: "chart.pie.fill")
-            HStack(alignment: .top, spacing: 24) {
-                // The headline is the LANGUAGE-GROUP split: total lines of non-data/prose
-                // languages ("code") vs data/prose languages ("data"). Distinct axis from
-                // the line-kind strip below, hence the "lines · N files" caption (it is
-                // total lines of the code-language group, not the code-only line kind).
-                headlineNumber(value: breakdown.codeLinesText,
-                               caption: "code · \(breakdown.codeFilesText) files",
-                               delta: deltaTriangle(net: netByCategory.code))
-                headlineNumber(value: breakdown.dataProseLinesText,
-                               caption: "data · \(breakdown.dataProseFilesText) files",
-                               delta: deltaTriangle(net: netByCategory.dataProse))
+            // Hero row: the big total + "lines" + the disclosure chevron on the left, the
+            // period delta pinned to the number's TOP edge on the right (HStack .top).
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { totalsExpanded.toggle() }
+            } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    HStack(alignment: .center, spacing: 6) {
+                        Text(groupedThousands(stats.totalLines))
+                            .font(.system(size: 26, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .lineLimit(1).minimumScaleFactor(0.6)
+                            .foregroundStyle(.primary)
+                        Text("lines")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Image(systemName: totalsExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(totalDelta.label)
+                        .font(.caption.weight(.semibold)).monospacedDigit()
+                        .foregroundStyle(triangleColor(totalDelta.direction))
+                        .fixedSize()
+                }
+                .contentShape(Rectangle())
             }
-            // The LINE-KIND breakdown: every line classified Code / Comment / Blank across
-            // ALL languages. A different partition than the headline's language groups (so
-            // "Code" here ≠ the "code" headline) — the caption flags the axis.
-            VStack(alignment: .leading, spacing: 3) {
-                Text("LINE KINDS")
-                    .font(.system(size: 9, weight: .semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
-                    metric("Code", stats.code, Palette.primary)
-                    metric("Comment", stats.comment, Palette.primary.opacity(0.5))
-                    metric("Blank", stats.blank, Palette.neutral)
-                    if state.isStatsScanning {
-                        ProgressView().controlSize(.small)
+            .buttonStyle(.plain)
+            HStack(spacing: 6) {
+                Text("\(groupedThousands(stats.totalFiles)) files")
+                    .font(.caption).foregroundStyle(.secondary)
+                if state.isStatsScanning { ProgressView().controlSize(.small) }
+            }
+            if totalsExpanded {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Language split: code vs data/prose, each with its file count + own delta.
+                    HStack(alignment: .top, spacing: 20) {
+                        headlineNumber(value: breakdown.codeLinesText,
+                                       caption: "code · \(breakdown.codeFilesText) files",
+                                       delta: compactDeltaTriangle(net: netByCat.code))
+                        headlineNumber(value: breakdown.dataProseLinesText,
+                                       caption: "data · \(breakdown.dataProseFilesText) files",
+                                       delta: compactDeltaTriangle(net: netByCat.dataProse))
+                    }
+                    // Line-kind split: the SAME total partitioned by Code / Comment / Blank.
+                    // No deltas — git numstat can't classify kinds over time.
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("LINE KINDS")
+                            .font(.system(size: 9, weight: .semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            metric("Code", stats.code, Palette.primary)
+                            metric("Comment", stats.comment, Palette.primary.opacity(0.5))
+                            metric("Blank", stats.blank, Palette.neutral)
+                        }
                     }
                 }
+                .padding(.top, 2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -292,21 +494,29 @@ struct CodeStatsScreen: View {
             .strokeBorder(.white.opacity(0.10)))
     }
 
-    /// One headline column: a big number with its per-category net delta inline at the
-    /// top-right, plus a caption. The `delta` ▲/▼ is baseline-aligned to the big number so
-    /// it reads as a superscript at the value's top-right (blue ▲ when the category grew,
-    /// pink ▼ when it shrank, gray ±0 when flat). Each category's own net over the selected
-    /// period — the misleading two-sided added/removed churn is long gone.
+    /// Map a delta direction to the brand tint: growth blue / decline pink / neutral gray.
+    private func triangleColor(_ direction: DeltaTriangle.Direction) -> Color {
+        switch direction {
+        case .up: return Palette.primary
+        case .down: return Palette.negative
+        case .flat: return Palette.neutral
+        }
+    }
+
+    /// One Totals language-group column (code / data): a prominent number with its period
+    /// net delta pinned to the value's TOP edge (HStack `.top`) — a superscript at the top-
+    /// right, tinted blue ▲ when it grew, pink ▼ when it shrank — over a "<label> · N files"
+    /// caption. The delta is the compact whole-K form, matching the hero above.
     private func headlineNumber(value: String, caption: String, delta: DeltaTriangle) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
+            HStack(alignment: .top, spacing: 5) {
                 Text(value)
-                    .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    .font(.system(size: 21, weight: .semibold, design: .rounded))
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                 Text(delta.label)
-                    .font(.caption.weight(.semibold))
+                    .font(.caption2.weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(triangleColor(delta.direction))
                     .lineLimit(1)
@@ -319,15 +529,7 @@ struct CodeStatsScreen: View {
         }
     }
 
-    /// Map a delta direction to the brand tint: growth blue / decline pink / neutral gray.
-    private func triangleColor(_ direction: DeltaTriangle.Direction) -> Color {
-        switch direction {
-        case .up: return Palette.primary
-        case .down: return Palette.negative
-        case .flat: return Palette.neutral
-        }
-    }
-
+    /// One LINE-KINDS chip: a color dot + kind label + grouped-thousands count.
     private func metric(_ label: String, _ value: Int, _ color: Color) -> some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 7, height: 7)
@@ -543,9 +745,14 @@ struct CodeStatsScreen: View {
     /// repo projects collapse to one block; multi-repo (e.g. acme.shop's 4) stack
     /// tight inside one card.
     @ViewBuilder
-    private func reposCard(repos: [RepoStats]) -> some View {
+    private func reposCard(repos: [RepoStats], projectID: UUID, scope: Set<String>,
+                           scannedAt: Date) -> some View {
         if !repos.isEmpty {
-            let cards = repoCells(repos, period: period, now: .now)
+            // repoCells is O(repos × period-scan) — memoize so hover ticks don't recompute.
+            let cards = repoCellsCache.cells(
+                projectID: projectID, scope: scope, scannedAt: scannedAt,
+                period: period, now: anchorNow, repos: repos
+            ) { r, n in repoCells(r, period: period, now: n) }
             // The same stable name→color map the stacked chart's segments + legend use, so
             // a repo's swatch here matches its slice in "Lines over time".
             let colors = repoColorMap(repos)
@@ -574,7 +781,6 @@ struct CodeStatsScreen: View {
                 .font(.body.weight(.medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            branchSwitcher(card)
             Spacer(minLength: 8)
             Text(card.totalLinesText)
                 .font(.callout.monospacedDigit())
@@ -588,49 +794,6 @@ struct CodeStatsScreen: View {
                 .foregroundStyle(triangleColor(card.triangle.direction))
                 .frame(minWidth: 56, alignment: .trailing)
         }
-    }
-
-    /// Per-repo branch switcher: a borderless `Menu` whose label is the effective
-    /// branch (a capsule chip), listing the repo's local branches (fallback to just
-    /// the current one) and rescanning on pick.
-    ///
-    /// `Menu` is AppKit-backed and draws an ERROR PLACEHOLDER under `ImageRenderer`
-    /// (same failure mode as `Picker(.segmented)` and Swift Charts elsewhere in this
-    /// screen), so the snapshot path renders the chip label on its own — the dropdown
-    /// is inherently live-only anyway. The chip visuals are shared so both paths match.
-    @ViewBuilder
-    private func branchSwitcher(_ card: RepoCard) -> some View {
-        if isSnapshotRender {
-            branchChip(card)
-        } else {
-            Menu {
-                let branches = state.branchesByRepo[card.repoPath] ?? [card.defaultBranch]
-                ForEach(branches, id: \.self) { branch in
-                    Button(branch) {
-                        if let id = selectedProjectID {
-                            state.setStatsBranch(projectID: id, repoPath: card.repoPath,
-                                                 branch: branch)
-                        }
-                    }
-                }
-            } label: {
-                branchChip(card)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-        }
-    }
-
-    /// The branch chip (the Menu's label): the effective branch in a subtle capsule.
-    private func branchChip(_ card: RepoCard) -> some View {
-        Text(card.defaultBranch)
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(.white.opacity(0.08), in: Capsule())
     }
 
     // MARK: - Stacked cumulative chart ("Lines over time")
@@ -698,12 +861,17 @@ struct CodeStatsScreen: View {
     /// scrollable, and it opens scrolled to today with ~`stackedDefaultVisibleDays` (6
     /// months) filling the viewport. The Totals/Repos `period` only drives the net delta.
     /// Width of the left Y-axis gutter that holds the tick value labels (0 / 100k / …).
-    private let yAxisGutterWidth: CGFloat = 40
+    private let yAxisGutterWidth: CGFloat = 26
     /// Height of the X-axis month-label strip drawn under the bars.
     private let monthLabelStripHeight: CGFloat = 14
 
-    private func growthCard(repos: [RepoStats]) -> some View {
-        let bars = stackedRepoSeries(repos, daysBack: stackedBarMaxDaysBack, metric: growthMetric, now: .now)
+    private func growthCard(repos: [RepoStats], projectID: UUID, scope: Set<String>,
+                            scannedAt: Date) -> some View {
+        // stackedRepoSeries is O(365 × repos) — memoize so hover ticks don't recompute.
+        let bars = seriesCache.bars(
+            projectID: projectID, scope: scope, scannedAt: scannedAt,
+            metric: growthMetric, now: anchorNow, repos: repos
+        ) { r, n in stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: growthMetric, now: n) }
         let colors = repoColorMap(repos)
         let hasCode = bars.contains { $0.total > 0 }
         // "Nice" Y-axis ticks; the TOP tick (≥ peak) is the shared denominator both the
@@ -717,7 +885,8 @@ struct CodeStatsScreen: View {
                 Spacer(minLength: 8)
                 growthMetricControl
             }
-            stackedReadout(bars, repoCount: repos.count, colors: colors)
+            // The chart sits directly under the title now — the readout moved INTO the
+            // merged stat block below the chart, so hovering no longer grows this card.
             if !hasCode {
                 Text("No code history in this window yet.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -725,7 +894,7 @@ struct CodeStatsScreen: View {
             } else {
                 // Left gutter (Y tick labels) + the gridlined bar plot. Gridlines + labels
                 // render in BOTH paths (pure geometry); only the hover tooltip is live-only.
-                HStack(alignment: .top, spacing: 6) {
+                HStack(alignment: .top, spacing: 4) {
                     yAxisLabels(ticks: ticks, topTick: topTick)
                     ZStack(alignment: .topLeading) {
                         yAxisGridlines(ticks: ticks, topTick: topTick)
@@ -739,7 +908,12 @@ struct CodeStatsScreen: View {
                         }
                     }
                 }
-                stackedLegend(repos, colors: colors)
+                // ONE rounded stat block = the merged readout + legend. It always lists
+                // every repo (constant row set → constant card height) and shows each repo's
+                // value for the focused day: today by default, the hovered/tapped bar on hover.
+                // It sits INSET within the card content (not full-bleed) so it reads as a
+                // narrower, contained panel under the wider chart.
+                statBlock(bars, repos: repos, colors: colors)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -784,73 +958,59 @@ struct CodeStatsScreen: View {
         .allowsHitTesting(false)
     }
 
-    /// The readout above the chart: either the HOVERED day (live, cursor → nearest day) or,
-    /// failing that, the tapped day's total + per-repo breakdown; otherwise a neutral hint of
-    /// how many repos are stacked. The per-repo breakdown renders as small color-coded chips
-    /// (matching each repo's stacked-segment color), biggest-first. Tinted blue (the codebase
-    /// size axis).
-    @ViewBuilder
-    private func stackedReadout(_ bars: [StackedDayBar], repoCount: Int,
-                                colors: [String: Color]) -> some View {
-        // Hover wins over tap so the tooltip tracks the cursor; both fall back to the hint.
-        let active = (hoveredDay ?? selectedDay).flatMap { day in
-            bars.first(where: { $0.date == day })
-        }
-        if let bar = active {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(stackedDayReadout(bar))
-                    .font(.caption.weight(.medium))
-                    .monospacedDigit()
-                    .foregroundStyle(Palette.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                if !bar.segments.isEmpty {
-                    // Per-repo breakdown of that day, biggest-first (segment order), each a
-                    // colored chip matching its stacked segment.
-                    FlowingLegend(spacing: 10, rowSpacing: 3) {
-                        ForEach(bar.segments, id: \.repoName) { seg in
-                            HStack(spacing: 4) {
-                                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .fill(colors[seg.repoName] ?? Palette.primary)
-                                    .frame(width: 7, height: 7)
-                                Text("\(seg.repoName) \(groupedThousands(seg.lines))")
-                                    .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
+    /// The merged readout + legend: ONE rounded block below the chart. A header line shows the
+    /// FOCUSED day's date + total (hovered ?? tapped ?? today — so the default is today and
+    /// hover updates it in place), then a fixed two-column grid of EVERY included repo (sorted),
+    /// each with its line count for that day. The row set is the full repo list — NOT the day's
+    /// segment subset — so the block's height is structurally constant across hover / no-hover /
+    /// any day (a repo with no code that day shows a dimmed "—" rather than dropping a row). It
+    /// uses no Menu/hover/scroll, so it renders identically in the snapshot path (focused ==
+    /// today). This replaces both the old hover-growing readout and the separate bottom legend.
+    private func statBlock(_ bars: [StackedDayBar], repos: [RepoStats],
+                           colors: [String: Color]) -> some View {
+        // Sorted by name for stable order, but keyed by repoPath (unique) so two repos with the
+        // same leaf name don't collide as SwiftUI identities. The per-day lines + color lookups
+        // stay keyed by repoName (the chart segments' key).
+        let sortedRepos = repos.sorted { $0.repoName < $1.repoName }
+        let focused = (hoveredDay ?? selectedDay)
+            .flatMap { d in bars.first(where: { $0.date == d }) } ?? bars.last
+        // Per-repo line count for the focused day (0 if the repo had no code that day).
+        let linesByRepo = Dictionary(
+            (focused?.segments ?? []).map { ($0.repoName, $0.lines) }, uniquingKeysWith: { a, _ in a })
+        let cols = [GridItem(.flexible(), spacing: 12, alignment: .leading),
+                    GridItem(.flexible(), spacing: 12, alignment: .leading)]
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(focused.map(stackedDayReadout) ?? "No code yet")
+                .font(.caption.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(Palette.primary)
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Rectangle().fill(.white.opacity(0.08)).frame(height: 1)
+            LazyVGrid(columns: cols, alignment: .leading, spacing: 5) {
+                ForEach(sortedRepos, id: \.repoPath) { repo in
+                    let value = linesByRepo[repo.repoName] ?? 0
+                    HStack(spacing: 5) {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill((colors[repo.repoName] ?? Palette.primary).opacity(value > 0 ? 1 : 0.4))
+                            .frame(width: 8, height: 8)
+                        Text(repo.repoName)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 6)
+                        Text(value > 0 ? groupedThousands(value) : "—")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(value > 0 ? Color.secondary : Color.secondary.opacity(0.5))
                     }
                 }
             }
-        } else {
-            Text("\(repoCount) \(repoCount == 1 ? "repo" : "repos") stacked · "
-                 + (isSnapshotRender ? "codebase size over time" : "hover or tap a bar for that day’s total"))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
         }
-    }
-
-    /// A compact wrapping legend mapping each repo to its stacked-chart color. Sorted by
-    /// name so it matches the segment/swatch order; truncates long names so it stays 1–2
-    /// lines.
-    private func stackedLegend(_ repos: [RepoStats], colors: [String: Color]) -> some View {
-        let names = repos.map(\.repoName).sorted()
-        return FlowingLegend(spacing: 10, rowSpacing: 4) {
-            ForEach(names, id: \.self) { name in
-                HStack(spacing: 4) {
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(colors[name] ?? Palette.primary)
-                        .frame(width: 8, height: 8)
-                    Text(name)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+                .fill(.white.opacity(0.05))
+                .overlay(RoundedRectangle(cornerRadius: DesignRadius.field, style: .continuous)
+                    .strokeBorder(.white.opacity(0.07)))
+        )
     }
 
     /// The live chart: a horizontally-scrollable strip of fixed-width per-day stacked bars.
@@ -864,7 +1024,7 @@ struct CodeStatsScreen: View {
         let labels = monthLabelPositions(bars, slotWidth: stackedSlotWidth)
         let stripWidth = CGFloat(bars.count) * stackedSlotWidth
         return ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: true) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     // The bars. Heights normalize against the nice top tick (≥ peak) so they
                     // align with the Y gridlines behind them.

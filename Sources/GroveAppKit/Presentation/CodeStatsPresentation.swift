@@ -425,6 +425,24 @@ public func deltaTriangle(net: Int) -> DeltaTriangle {
     }
 }
 
+/// A COMPACT `DeltaTriangle` for the Totals hero: the magnitude is rounded to whole thousands
+/// with a "K" suffix once it reaches 1,000 (the user doesn't need exact churn in the delta —
+/// "+11K" reads at a glance), and shown exactly below 1,000. Sign + direction are unchanged:
+/// ▲ "+11K" / ▼ "−2K" / exact "+850" / "±0". Rounding is to NEAREST thousand (11,800 → 12K).
+public func compactDeltaTriangle(net: Int) -> DeltaTriangle {
+    let mag = abs(net)
+    let num: String = mag >= 1000
+        ? "\(Int((Double(mag) / 1000).rounded()))K"
+        : "\(mag)"
+    if net > 0 {
+        return DeltaTriangle(direction: .up, label: "▲ +\(num)")
+    } else if net < 0 {
+        return DeltaTriangle(direction: .down, label: "▼ \u{2212}\(num)")
+    } else {
+        return DeltaTriangle(direction: .flat, label: "±0")
+    }
+}
+
 // MARK: - Net-lines delta (cumulative-state difference, churn-free)
 
 /// Carry-forward value of a cumulative series AS OF an instant `t`: the value of the
@@ -818,4 +836,69 @@ public func repoCells(_ repos: [RepoStats], period: StatsPeriod, now: Date) -> [
                         totalLines: repo.stats.totalLines, net: net)
     }
     .sorted { $0.repoName < $1.repoName }
+}
+
+// MARK: - Memo caches for expensive in-body aggregations
+
+/// Memoizes `stackedRepoSeries` (the 365-day × N-repo cumulative chart). Reference type so
+/// writing it inside a SwiftUI `body` does NOT itself trigger a re-render. Keyed on
+/// `(projectID, scope, scannedAt, metric)` — the only four inputs that should change the
+/// series. `now` is threaded as a stable anchor captured once per scan (not `Date.now` per
+/// render tick), so the key is stable across hover ticks.
+final class SeriesCache {
+    private var projectID: UUID?
+    private var scope: Set<String> = []
+    private var scannedAt: Date?
+    private var metric: GrowthMetric?
+    private var value: [StackedDayBar]?
+
+    /// Return the cached series if all key fields match; otherwise call `compute`, store, and
+    /// return the result. `compute` receives the repos + anchor `now` and should call
+    /// `stackedRepoSeries` (injected so tests can count invocations without a full scan).
+    func bars(projectID: UUID, scope: Set<String>, scannedAt: Date,
+              metric: GrowthMetric, now: Date, repos: [RepoStats],
+              compute: ([RepoStats], Date) -> [StackedDayBar]) -> [StackedDayBar] {
+        if self.projectID == projectID, self.scope == scope,
+           self.scannedAt == scannedAt, self.metric == metric,
+           let cached = value {
+            return cached
+        }
+        let result = compute(repos, now)
+        self.projectID = projectID
+        self.scope = scope
+        self.scannedAt = scannedAt
+        self.metric = metric
+        self.value = result
+        return result
+    }
+}
+
+/// Memoizes `repoCells` (the per-repo card list). Reference type for the same reason as
+/// `SeriesCache`. Keyed on `(projectID, scope, scannedAt, period)` — period changes drive
+/// a delta recompute, scannedAt/scope changes reflect a new scan or changed repo selection.
+final class RepoCellsCache {
+    private var projectID: UUID?
+    private var scope: Set<String> = []
+    private var scannedAt: Date?
+    private var period: StatsPeriod?
+    private var value: [RepoCard]?
+
+    /// Return the cached cells if all key fields match; otherwise call `compute`, store, and
+    /// return the result. `compute` receives repos + anchor `now`.
+    func cells(projectID: UUID, scope: Set<String>, scannedAt: Date,
+               period: StatsPeriod, now: Date, repos: [RepoStats],
+               compute: ([RepoStats], Date) -> [RepoCard]) -> [RepoCard] {
+        if self.projectID == projectID, self.scope == scope,
+           self.scannedAt == scannedAt, self.period == period,
+           let cached = value {
+            return cached
+        }
+        let result = compute(repos, now)
+        self.projectID = projectID
+        self.scope = scope
+        self.scannedAt = scannedAt
+        self.period = period
+        self.value = result
+        return result
+    }
 }

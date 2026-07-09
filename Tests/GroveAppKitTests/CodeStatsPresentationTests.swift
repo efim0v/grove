@@ -327,6 +327,25 @@ final class CodeStatsPresentationTests: XCTestCase {
         XCTAssertEqual(flat.label, "±0")
     }
 
+    func testCompactDeltaTriangleRoundsToThousands() {
+        // ≥1000 → rounded whole-K with a "K" suffix; sign + direction preserved.
+        XCTAssertEqual(compactDeltaTriangle(net: 11_234).label, "▲ +11K")
+        XCTAssertEqual(compactDeltaTriangle(net: 11_234).direction, .up)
+        XCTAssertEqual(compactDeltaTriangle(net: 11_800).label, "▲ +12K", "rounds to NEAREST thousand")
+        XCTAssertEqual(compactDeltaTriangle(net: 4_000).label, "▲ +4K")
+        XCTAssertEqual(compactDeltaTriangle(net: -2_400).label, "▼ \u{2212}2K")
+        XCTAssertEqual(compactDeltaTriangle(net: -2_400).direction, .down)
+        // <1000 → exact value (no K), still signed.
+        XCTAssertEqual(compactDeltaTriangle(net: 850).label, "▲ +850")
+        XCTAssertEqual(compactDeltaTriangle(net: -320).label, "▼ \u{2212}320")
+        // 0 → ±0 flat.
+        XCTAssertEqual(compactDeltaTriangle(net: 0).label, "±0")
+        XCTAssertEqual(compactDeltaTriangle(net: 0).direction, .flat)
+        // Boundary: exactly 1000 → 1K.
+        XCTAssertEqual(compactDeltaTriangle(net: 1_000).label, "▲ +1K")
+        XCTAssertEqual(compactDeltaTriangle(net: 999).label, "▲ +999")
+    }
+
     // MARK: - Net-lines delta (cumulative-state difference, churn-free)
 
     func testNetLinesDeltaAggregateStateDifference() {
@@ -834,5 +853,193 @@ final class CodeStatsPresentationTests: XCTestCase {
         ])
         let scoped = filterHistoryByRepo([], repos: [repo], repoName: "a")
         XCTAssertEqual(scoped.first?.totalLines, 0, "negative cumulative net clamps to 0")
+    }
+
+    // MARK: - Memo caches (SeriesCache + RepoCellsCache)
+
+    // Helper: a minimal RepoStats with a single history point.
+    private func miniRepo(_ name: String, scannedAt: Date = Date(timeIntervalSince1970: 1_000_000),
+                          netLines: Int = 100) -> RepoStats {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let cs = CodeStats(totalFiles: 1, totalLines: netLines, code: netLines, comment: 0, blank: 0,
+                           byLanguage: [], scannedAt: scannedAt, skippedBinary: 0)
+        return RepoStats(repoPath: "/tmp/\(name)", repoName: name, defaultBranch: "main",
+                         stats: cs,
+                         history: [RepoHistoryPoint(date: now.addingTimeInterval(-86_400),
+                                                    netLines: netLines)],
+                         delta: .zero)
+    }
+
+    // MARK: SeriesCache
+
+    func testSeriesCacheSameKeyReturnsCachedValueWithoutRecompute() {
+        // Arrange: a cache and an input set. Track how many times compute was called.
+        let cache = SeriesCache()
+        var computeCount = 0
+        let repos = [miniRepo("A")]
+        let scannedAt = Date(timeIntervalSince1970: 1_000_000)
+        let scope = Set(repos.map(\.repoPath))
+        let projectID = UUID()
+        let now = Date(timeIntervalSince1970: 1_100_000)
+
+        // Act: fetch twice with the same key.
+        let first = cache.bars(projectID: projectID, scope: scope, scannedAt: scannedAt,
+                               metric: .lines, now: now, repos: repos) { r, n in
+            computeCount += 1
+            return stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: .lines, now: n)
+        }
+        let second = cache.bars(projectID: projectID, scope: scope, scannedAt: scannedAt,
+                                metric: .lines, now: now, repos: repos) { r, n in
+            computeCount += 1
+            return stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: .lines, now: n)
+        }
+
+        // Assert: computed exactly once; both results are identical.
+        XCTAssertEqual(computeCount, 1, "second call must be a cache hit — no recompute")
+        XCTAssertEqual(first, second)
+    }
+
+    func testSeriesCacheRecomputesOnNewScannedAt() {
+        let cache = SeriesCache()
+        var computeCount = 0
+        let repos = [miniRepo("A")]
+        let scope = Set(repos.map(\.repoPath))
+        let projectID = UUID()
+        let now = Date(timeIntervalSince1970: 1_100_000)
+
+        let t1 = Date(timeIntervalSince1970: 1_000_000)
+        let t2 = Date(timeIntervalSince1970: 1_001_000)   // different scannedAt → cache miss
+
+        _ = cache.bars(projectID: projectID, scope: scope, scannedAt: t1, metric: .lines,
+                       now: now, repos: repos) { r, n in
+            computeCount += 1
+            return stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: .lines, now: n)
+        }
+        _ = cache.bars(projectID: projectID, scope: scope, scannedAt: t2, metric: .lines,
+                       now: now, repos: repos) { r, n in
+            computeCount += 1
+            return stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: .lines, now: n)
+        }
+
+        XCTAssertEqual(computeCount, 2, "changed scannedAt must invalidate the cache")
+    }
+
+    func testSeriesCacheRecomputesOnChangedMetric() {
+        let cache = SeriesCache()
+        var computeCount = 0
+        let repos = [miniRepo("A")]
+        let scope = Set(repos.map(\.repoPath))
+        let projectID = UUID()
+        let scannedAt = Date(timeIntervalSince1970: 1_000_000)
+        let now = Date(timeIntervalSince1970: 1_100_000)
+
+        _ = cache.bars(projectID: projectID, scope: scope, scannedAt: scannedAt, metric: .lines,
+                       now: now, repos: repos) { r, n in
+            computeCount += 1
+            return stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: .lines, now: n)
+        }
+        _ = cache.bars(projectID: projectID, scope: scope, scannedAt: scannedAt, metric: .code,
+                       now: now, repos: repos) { r, n in
+            computeCount += 1
+            return stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: .code, now: n)
+        }
+
+        XCTAssertEqual(computeCount, 2, "changed metric must invalidate the cache")
+    }
+
+    func testSeriesCacheRecomputesOnChangedScope() {
+        let cache = SeriesCache()
+        var computeCount = 0
+        let repoA = miniRepo("A")
+        let repoB = miniRepo("B")
+        let projectID = UUID()
+        let scannedAt = Date(timeIntervalSince1970: 1_000_000)
+        let now = Date(timeIntervalSince1970: 1_100_000)
+
+        _ = cache.bars(projectID: projectID, scope: Set([repoA.repoPath]), scannedAt: scannedAt,
+                       metric: .lines, now: now, repos: [repoA]) { r, n in
+            computeCount += 1
+            return stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: .lines, now: n)
+        }
+        _ = cache.bars(projectID: projectID, scope: Set([repoA.repoPath, repoB.repoPath]),
+                       scannedAt: scannedAt, metric: .lines, now: now, repos: [repoA, repoB]) { r, n in
+            computeCount += 1
+            return stackedRepoSeries(r, daysBack: stackedBarMaxDaysBack, metric: .lines, now: n)
+        }
+
+        XCTAssertEqual(computeCount, 2, "changed scope (added repo) must invalidate the cache")
+    }
+
+    // MARK: RepoCellsCache
+
+    func testRepoCellsCacheSameKeyReturnsCachedValueWithoutRecompute() {
+        let cache = RepoCellsCache()
+        var computeCount = 0
+        let repos = [miniRepo("A")]
+        let scope = Set(repos.map(\.repoPath))
+        let projectID = UUID()
+        let scannedAt = Date(timeIntervalSince1970: 1_000_000)
+        let now = Date(timeIntervalSince1970: 1_100_000)
+        let period = StatsPeriod.d30
+
+        let first = cache.cells(projectID: projectID, scope: scope, scannedAt: scannedAt,
+                                period: period, now: now, repos: repos) { r, n in
+            computeCount += 1
+            return repoCells(r, period: period, now: n)
+        }
+        let second = cache.cells(projectID: projectID, scope: scope, scannedAt: scannedAt,
+                                 period: period, now: now, repos: repos) { r, n in
+            computeCount += 1
+            return repoCells(r, period: period, now: n)
+        }
+
+        XCTAssertEqual(computeCount, 1, "second call must be a cache hit — no recompute")
+        XCTAssertEqual(first, second)
+    }
+
+    func testRepoCellsCacheRecomputesOnChangedPeriod() {
+        let cache = RepoCellsCache()
+        var computeCount = 0
+        let repos = [miniRepo("A")]
+        let scope = Set(repos.map(\.repoPath))
+        let projectID = UUID()
+        let scannedAt = Date(timeIntervalSince1970: 1_000_000)
+        let now = Date(timeIntervalSince1970: 1_100_000)
+
+        _ = cache.cells(projectID: projectID, scope: scope, scannedAt: scannedAt,
+                        period: .d7, now: now, repos: repos) { r, n in
+            computeCount += 1
+            return repoCells(r, period: .d7, now: n)
+        }
+        _ = cache.cells(projectID: projectID, scope: scope, scannedAt: scannedAt,
+                        period: .d30, now: now, repos: repos) { r, n in
+            computeCount += 1
+            return repoCells(r, period: .d30, now: n)
+        }
+
+        XCTAssertEqual(computeCount, 2, "changed period must invalidate the RepoCellsCache")
+    }
+
+    func testRepoCellsCacheRecomputesOnChangedScannedAt() {
+        let cache = RepoCellsCache()
+        var computeCount = 0
+        let repos = [miniRepo("A")]
+        let scope = Set(repos.map(\.repoPath))
+        let projectID = UUID()
+        let now = Date(timeIntervalSince1970: 1_100_000)
+        let period = StatsPeriod.d30
+
+        _ = cache.cells(projectID: projectID, scope: scope,
+                        scannedAt: Date(timeIntervalSince1970: 1_000_000),
+                        period: period, now: now, repos: repos) { r, n in
+            computeCount += 1; return repoCells(r, period: period, now: n)
+        }
+        _ = cache.cells(projectID: projectID, scope: scope,
+                        scannedAt: Date(timeIntervalSince1970: 1_001_000),
+                        period: period, now: now, repos: repos) { r, n in
+            computeCount += 1; return repoCells(r, period: period, now: n)
+        }
+
+        XCTAssertEqual(computeCount, 2, "changed scannedAt must invalidate RepoCellsCache")
     }
 }
