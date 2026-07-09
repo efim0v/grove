@@ -224,6 +224,335 @@ public struct SessionMigration: Sendable {
         return report
     }
 
+    // MARK: - 6. migrateProjectConfig (Phase B)
+
+    /// Copies the `projects[cwd]` entry from the source `.claude.json` into the
+    /// target `.claude.json`, non-destructively. Other projects and top-level keys
+    /// in the target are untouched. Creates the target file if absent. Preserves /
+    /// sets file mode 0600 on the target (matching Claude's own behaviour).
+    ///
+    /// The caller is responsible for resolving the correct path for each account:
+    ///   default account (configDir == ~/.claude) → $HOME/.claude.json
+    ///   other accounts                           → <configDir>/.claude.json
+    public static func migrateProjectConfig(
+        cwd: String,
+        fromHomeJSON: String,
+        toHomeJSON: String
+    ) -> MigrateReport {
+        var report = MigrateReport()
+        let fm = FileManager.default
+
+        // Read source
+        guard let srcData = fm.contents(atPath: fromHomeJSON),
+              let srcObj = (try? JSONSerialization.jsonObject(with: srcData)) as? [String: Any],
+              let srcProjects = srcObj["projects"] as? [String: Any],
+              let sourceEntry = srcProjects[cwd] as? [String: Any] else {
+            report.issues.append("migrateProjectConfig: source cwd '\(cwd)' not found in \(fromHomeJSON)")
+            return report
+        }
+
+        // Read or create target
+        var targetObj: [String: Any]
+        if let dstData = fm.contents(atPath: toHomeJSON),
+           let parsed = (try? JSONSerialization.jsonObject(with: dstData)) as? [String: Any] {
+            targetObj = parsed
+        } else {
+            targetObj = [:]
+        }
+
+        // Merge only our cwd entry
+        let merged = mergeClaudeProjectEntry(targetHomeJSON: targetObj, sourceEntry: sourceEntry, cwd: cwd)
+
+        // Write back
+        do {
+            let outData = try JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted)
+            let url = URL(fileURLWithPath: toHomeJSON)
+            let parent = url.deletingLastPathComponent().path
+            try fm.createDirectory(atPath: parent, withIntermediateDirectories: true)
+            try outData.write(to: url, options: .atomic)
+            // Enforce 0600
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: toHomeJSON)
+            report.copied.append(toHomeJSON)
+        } catch {
+            report.issues.append("migrateProjectConfig: write \(toHomeJSON): \(error.localizedDescription)")
+        }
+
+        return report
+    }
+
+    // MARK: - 7. migrateSettings (Phase C)
+
+    /// Merges a curated set of keys from `<fromConfigDir>/settings.json` into
+    /// `<toConfigDir>/settings.json`, non-destructively. Creates the target file
+    /// if absent. The target's own values win on scalar conflicts.
+    ///
+    /// Keys merged: enabledPlugins, model, statusLine, extraKnownMarketplaces,
+    ///              effortLevel, skipDangerousModePermissionPrompt, theme.
+    ///
+    /// statusLine rule: if the source `statusLine.command` contains `fromConfigDir`
+    /// (i.e. it references a per-account script path), that key is SKIPPED entirely
+    /// rather than copied verbatim into the target, which would point the target at
+    /// the wrong account's script. A follow-up note is added to `report.copied`.
+    /// When `statusLine` has no such reference it is merged normally.
+    public static func migrateSettings(
+        fromConfigDir: String,
+        toConfigDir: String
+    ) -> MigrateReport {
+        var report = MigrateReport()
+        let fm = FileManager.default
+        let srcPath = fromConfigDir + "/settings.json"
+        let dstPath = toConfigDir  + "/settings.json"
+
+        guard let srcData = fm.contents(atPath: srcPath),
+              var sourceSettings = (try? JSONSerialization.jsonObject(with: srcData)) as? [String: Any] else {
+            report.issues.append("migrateSettings: cannot read \(srcPath)")
+            return report
+        }
+
+        // statusLine rule: skip if command references fromConfigDir
+        if let sl = sourceSettings["statusLine"] as? [String: Any],
+           let cmd = sl["command"] as? String,
+           cmd.contains(fromConfigDir) {
+            sourceSettings.removeValue(forKey: "statusLine")
+            report.copied.append(
+                "note: statusLine skipped — command '\(cmd)' references fromConfigDir '\(fromConfigDir)'; " +
+                "copy manually after confirming the correct per-account script path"
+            )
+        }
+
+        // Read or create target
+        var targetSettings: [String: Any]
+        if let dstData = fm.contents(atPath: dstPath),
+           let parsed = (try? JSONSerialization.jsonObject(with: dstData)) as? [String: Any] {
+            targetSettings = parsed
+        } else {
+            targetSettings = [:]
+        }
+
+        let keys = ["enabledPlugins", "model", "statusLine",
+                    "extraKnownMarketplaces", "effortLevel",
+                    "skipDangerousModePermissionPrompt", "theme"]
+        let merged = mergeSettingsKeys(target: targetSettings, source: sourceSettings, keys: keys)
+
+        do {
+            let outData = try JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted)
+            let url = URL(fileURLWithPath: dstPath)
+            try fm.createDirectory(atPath: toConfigDir, withIntermediateDirectories: true)
+            try outData.write(to: url, options: .atomic)
+            report.copied.append(dstPath)
+        } catch {
+            report.issues.append("migrateSettings: write \(dstPath): \(error.localizedDescription)")
+        }
+
+        return report
+    }
+
+    // MARK: - 8. migratePlugins (Phase D)
+
+    /// Copies plugin trees from `<fromConfigDir>/plugins/` to `<toConfigDir>/plugins/`,
+    /// deduplicating by `<mkt>/<plugin>/<ver>` — any version already present at the
+    /// target is skipped entirely (idempotent, non-destructive). Merges
+    /// `known_marketplaces.json` and `installed_plugins.json`. Repoints every
+    /// `installPath` in the merged `installed_plugins.json` from `fromConfigDir` to
+    /// `toConfigDir`. Creates `<to>/plugins/cache` and `<to>/plugins/marketplaces`
+    /// as needed. Never deletes or overwrites existing target content.
+    ///
+    /// Nesting correctness: each `<mkt>/<plugin>/<ver>` leaf is copied by enumerating
+    /// files directly rather than calling `FileManager.copyItem` on the version dir when
+    /// the parent already exists — avoids the `cp -R srcdir dstdir` nesting trap.
+    public static func migratePlugins(
+        fromConfigDir: String,
+        toConfigDir: String
+    ) -> MigrateReport {
+        var report = MigrateReport()
+        let fm = FileManager.default
+        let fromCache = fromConfigDir + "/plugins/cache"
+        let toCache   = toConfigDir   + "/plugins/cache"
+        let fromMkts  = fromConfigDir + "/plugins/marketplaces"
+        let toMkts    = toConfigDir   + "/plugins/marketplaces"
+
+        // Ensure target plugin dirs exist
+        for dir in [toCache, toMkts] {
+            do {
+                try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            } catch {
+                report.issues.append("migratePlugins: createDirectory \(dir): \(error.localizedDescription)")
+            }
+        }
+
+        // --- Cache: iterate <mkt>/<plugin>/<ver> triples -------------------------
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: fromCache, isDirectory: &isDir), isDir.boolValue {
+            let mkts = (try? fm.contentsOfDirectory(atPath: fromCache)) ?? []
+            for mkt in mkts {
+                let fromMktPath = fromCache + "/" + mkt
+                let toMktPath   = toCache   + "/" + mkt
+                let plugins = (try? fm.contentsOfDirectory(atPath: fromMktPath)) ?? []
+                for plugin in plugins {
+                    let fromPluginPath = fromMktPath + "/" + plugin
+                    let toPluginPath   = toMktPath   + "/" + plugin
+                    let versions = (try? fm.contentsOfDirectory(atPath: fromPluginPath)) ?? []
+                    for ver in versions {
+                        let fromVerPath = fromPluginPath + "/" + ver
+                        let toVerPath   = toPluginPath   + "/" + ver
+
+                        // Dedup: skip if target already has this version
+                        if fm.fileExists(atPath: toVerPath) {
+                            report.skipped.append(toVerPath)
+                            continue
+                        }
+
+                        // Copy per-file into the correct destination path (no nesting trap)
+                        do {
+                            try fm.createDirectory(atPath: toVerPath, withIntermediateDirectories: true)
+                        } catch {
+                            report.issues.append("migratePlugins: mkdir \(toVerPath): \(error.localizedDescription)")
+                            continue
+                        }
+
+                        guard let enumerator = fm.enumerator(atPath: fromVerPath) else { continue }
+                        for case let rel as String in enumerator {
+                            let srcFile = fromVerPath + "/" + rel
+                            var srcIsDir: ObjCBool = false
+                            guard fm.fileExists(atPath: srcFile, isDirectory: &srcIsDir),
+                                  !srcIsDir.boolValue else {
+                                if srcIsDir.boolValue {
+                                    let dstSubDir = toVerPath + "/" + rel
+                                    try? fm.createDirectory(atPath: dstSubDir, withIntermediateDirectories: true)
+                                }
+                                continue
+                            }
+                            let dstFile = toVerPath + "/" + rel
+                            let dstParent = (dstFile as NSString).deletingLastPathComponent
+                            do {
+                                try fm.createDirectory(atPath: dstParent, withIntermediateDirectories: true)
+                                try fm.copyItem(atPath: srcFile, toPath: dstFile)
+                                report.copied.append(dstFile)
+                            } catch {
+                                report.issues.append("migratePlugins: copy \(srcFile) → \(dstFile): \(error.localizedDescription)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Marketplaces: per-mkt dir merge -------------------------------------
+        if fm.fileExists(atPath: fromMkts, isDirectory: &isDir), isDir.boolValue {
+            let mkts = (try? fm.contentsOfDirectory(atPath: fromMkts)) ?? []
+            for mkt in mkts {
+                let srcMkt = fromMkts + "/" + mkt
+                let dstMkt = toMkts   + "/" + mkt
+                if !fm.fileExists(atPath: dstMkt) {
+                    do {
+                        try fm.copyItem(atPath: srcMkt, toPath: dstMkt)
+                        report.copied.append(dstMkt)
+                    } catch {
+                        report.issues.append("migratePlugins: copy mkt dir \(srcMkt): \(error.localizedDescription)")
+                    }
+                } else {
+                    report.skipped.append(dstMkt)
+                }
+            }
+        }
+
+        // --- known_marketplaces.json: deepMerge ----------------------------------
+        let fromKnown = fromConfigDir + "/plugins/known_marketplaces.json"
+        let toKnown   = toConfigDir   + "/plugins/known_marketplaces.json"
+        if let srcData = fm.contents(atPath: fromKnown),
+           let srcObj = (try? JSONSerialization.jsonObject(with: srcData)) as? [String: Any] {
+            let targetObj: [String: Any]
+            if let dstData = fm.contents(atPath: toKnown),
+               let parsed = (try? JSONSerialization.jsonObject(with: dstData)) as? [String: Any] {
+                targetObj = parsed
+            } else {
+                targetObj = [:]
+            }
+            let merged = deepMergeJSON(target: targetObj, source: srcObj)
+            if let outData = try? JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted) {
+                do {
+                    try outData.write(to: URL(fileURLWithPath: toKnown), options: .atomic)
+                    report.copied.append(toKnown)
+                } catch {
+                    report.issues.append("migratePlugins: write \(toKnown): \(error.localizedDescription)")
+                }
+            }
+        }
+
+        // --- installed_plugins.json: deepMerge plugins map + repoint paths ------
+        let fromInstalled = fromConfigDir + "/plugins/installed_plugins.json"
+        let toInstalled   = toConfigDir   + "/plugins/installed_plugins.json"
+        if let srcData = fm.contents(atPath: fromInstalled),
+           let srcObj = (try? JSONSerialization.jsonObject(with: srcData)) as? [String: Any] {
+            let targetObj: [String: Any]
+            if let dstData = fm.contents(atPath: toInstalled),
+               let parsed = (try? JSONSerialization.jsonObject(with: dstData)) as? [String: Any] {
+                targetObj = parsed
+            } else {
+                targetObj = [:]
+            }
+            // Deep-merge then repoint installPaths
+            let mergedRaw = deepMergeJSON(target: targetObj, source: srcObj)
+            let merged = repointPluginInstallPaths(
+                installedPlugins: mergedRaw,
+                fromConfigDir: fromConfigDir,
+                toConfigDir: toConfigDir
+            )
+            do {
+                let outData = try JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted)
+                try outData.write(to: URL(fileURLWithPath: toInstalled), options: .atomic)
+                report.copied.append(toInstalled)
+            } catch {
+                report.issues.append("migratePlugins: write \(toInstalled): \(error.localizedDescription)")
+            }
+        }
+
+        return report
+    }
+
+    // MARK: - 9. migrateSession orchestrator
+
+    /// Full cross-account session migration orchestrator. Runs all four phases:
+    ///   A: copySessionData   — transcript, aux, memory, file-history, tasks, session-env, usage
+    ///   B: migrateProjectConfig — .claude.json projects[cwd] merge
+    ///   C: migrateSettings   — settings.json curated-key merge
+    ///   D: migratePlugins    — plugin tree copy + installPath repoint
+    ///
+    /// Returns a merged MigrateReport. Idempotent and non-destructive.
+    public static func migrateSession(
+        sessionId: String,
+        cwd: String,
+        fromConfigDir: String,
+        toConfigDir: String,
+        fromHomeJSON: String,
+        toHomeJSON: String,
+        mirrorRoot: String?,
+        fromAccountKey: String
+    ) -> MigrateReport {
+        var report = MigrateReport()
+
+        func merge(_ r: MigrateReport) {
+            report.copied  += r.copied
+            report.skipped += r.skipped
+            report.issues  += r.issues
+        }
+
+        merge(copySessionData(
+            sessionId: sessionId, cwd: cwd,
+            fromConfigDir: fromConfigDir, toConfigDir: toConfigDir,
+            mirrorRoot: mirrorRoot, fromAccountKey: fromAccountKey
+        ))
+        merge(migrateProjectConfig(
+            cwd: cwd,
+            fromHomeJSON: fromHomeJSON,
+            toHomeJSON: toHomeJSON
+        ))
+        merge(migrateSettings(fromConfigDir: fromConfigDir, toConfigDir: toConfigDir))
+        merge(migratePlugins(fromConfigDir: fromConfigDir, toConfigDir: toConfigDir))
+
+        return report
+    }
+
     // MARK: - copySessionData helpers
 
     /// Copy a single file from `src` to `dst`, creating parent dirs.
