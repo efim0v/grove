@@ -54,6 +54,13 @@ public final class AppState: ObservableObject {
     /// Per-project recent Claude sessions (item 4): the Projects tab's previews.
     /// Filled by refreshSessionIndex (cheap, off-main — no git scan).
     @Published public var recentSessionsByProject: [UUID: [ProjectSessionRow]] = [:]
+    /// Disk-wide recent sessions (Phase 2 / Task 2) attributed to a configured
+    /// project by cwd prefix match. Keyed by ProjectConfig.id, newest-first.
+    /// Populated by refreshSessionIndex alongside recentSessionsByProject.
+    @Published public var externalSessionsByProject: [UUID: [ClaudeSession]] = [:]
+    /// Disk-wide recent sessions whose cwd matches NO configured project.
+    /// Newest-first. Populated by refreshSessionIndex.
+    @Published public var otherSessions: [ClaudeSession] = []
     /// Which scope the embedded charts section shows (0 = Overall when >1 account, else the
     /// first account). The ‹ › arrows step this; persisted so it survives panel reopen.
     @Published public var chartsScopeIndex: Int = 0
@@ -416,6 +423,13 @@ extension AppState {
     /// Independent of the heavy git scan: it only reads recent transcripts + live
     /// processes + the cmux hook map, all OFF the main actor. This is what makes
     /// the primary flow (open → pick a session → go to its terminal) instant.
+    ///
+    /// Also populates `externalSessionsByProject` and `otherSessions` (Phase 2 /
+    /// Task 2): a disk-wide scan of ALL recent sessions attributed to projects by
+    /// cwd prefix. The recency cap reuses `config.transcriptMirror.maxDays` (90 by
+    /// default). allRecentSessions runs inside the same detached task; attribution
+    /// happens back on the main actor (cheap O(sessions×projects) prefix match,
+    /// reads `config.projects` which lives on the main actor).
     public func refreshSessionIndex() async {
         let accounts = config.accounts
         let claude = self.claude
@@ -425,7 +439,10 @@ extension AppState {
                 ?? config.workspacesRootTemplate.replacingOccurrences(of: "{project}", with: p.name))
             return (id: p.id, roots: [expandTilde(p.path), wsRoot].filter { !$0.isEmpty })
         }
-        let result = await Task.detached(priority: .utility) { () -> [UUID: [ProjectSessionRow]] in
+        let sinceDays = config.transcriptMirror.maxDays
+        let now = Date()
+        let (sessionRows, allSessions) = await Task.detached(priority: .utility) {
+            () -> ([UUID: [ProjectSessionRow]], [ClaudeSession]) in
             // Single source of truth (file records ∪ process table) — same data the
             // project scan / Claude tab use, so no tab can disagree on liveness.
             let live = claude.allLiveProcesses(accounts: accounts)
@@ -434,9 +451,26 @@ extension AppState {
                 let sessions = claude.recentSessions(underRoots: job.roots, accounts: accounts, limit: 2)
                 out[job.id] = buildProjectSessionRows(sessions: sessions, live: live, cmuxMap: cmuxMap)
             }
-            return out
+            // Disk-wide scan for attribution indices (Phase 2 / Task 2).
+            let all = claude.allRecentSessions(accounts: accounts, limit: 500,
+                                               sinceDays: sinceDays, now: now)
+            return (out, all)
         }.value
-        recentSessionsByProject = result
+        recentSessionsByProject = sessionRows
+
+        // Attribute allSessions to projects on the main actor (reads config.projects).
+        // O(sessions × projects) prefix matching — cheap relative to the I/O above.
+        var byProject: [UUID: [ClaudeSession]] = [:]
+        var unmatched: [ClaudeSession] = []
+        for session in allSessions {
+            if let proj = project(forCwd: session.cwd) {
+                byProject[proj.id, default: []].append(session)
+            } else {
+                unmatched.append(session)
+            }
+        }
+        externalSessionsByProject = byProject
+        otherSessions = unmatched
     }
 
     /// Refreshes branchesByRepo for `repos`, concurrently (one git call per
