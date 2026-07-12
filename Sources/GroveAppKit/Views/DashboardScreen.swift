@@ -132,8 +132,8 @@ struct DashboardColumnView: View {
         VStack(spacing: 8) {
             LimitCardView(card: column.fiveHour)
             LimitCardView(card: column.weekly)
-            if column.weeklySonnet.hasData {
-                LimitCardView(card: column.weeklySonnet)
+            if column.weeklyModel.hasData {
+                LimitCardView(card: column.weeklyModel)
             }
             DailyUsageCardView(bars: column.daily, isSnapshotRender: isSnapshotRender)
             TokenUsageCardView(rows: column.tokens, models: column.models)

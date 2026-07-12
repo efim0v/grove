@@ -29,12 +29,19 @@ public struct UsageSnapshot: Sendable, Equatable {
     /// 7-day Sonnet-specific window. The statusline never emits it; it's populated
     /// from Anthropic's OAuth usage API (seven_day_sonnet). nil when unavailable.
     public let sevenDaySonnet: CapturedWindow?
+    /// 7-day Opus-specific window. OAuth-only (seven_day_opus). nil when unavailable.
+    public let sevenDayOpus: CapturedWindow?
+    /// 7-day Fable-specific window. OAuth-only (seven_day_fable). nil when unavailable.
+    /// TODO: verify seven_day_fable key against a live payload
+    public let sevenDayFable: CapturedWindow?
     // Public init so cross-module callers/tests can construct a snapshot directly.
     public init(accountName: String, sessionId: String, capturedAt: Date?, cwd: String?,
                 modelId: String?, modelDisplayName: String?, effort: String?,
                 contextUsedPercentage: Double?, totalInputTokens: Int?, totalCostUSD: Double?,
                 fiveHour: CapturedWindow?, sevenDay: CapturedWindow?,
-                sevenDaySonnet: CapturedWindow? = nil) {
+                sevenDaySonnet: CapturedWindow? = nil,
+                sevenDayOpus: CapturedWindow? = nil,
+                sevenDayFable: CapturedWindow? = nil) {
         self.accountName = accountName
         self.sessionId = sessionId
         self.capturedAt = capturedAt
@@ -48,6 +55,8 @@ public struct UsageSnapshot: Sendable, Equatable {
         self.fiveHour = fiveHour
         self.sevenDay = sevenDay
         self.sevenDaySonnet = sevenDaySonnet
+        self.sevenDayOpus = sevenDayOpus
+        self.sevenDayFable = sevenDayFable
     }
 }
 

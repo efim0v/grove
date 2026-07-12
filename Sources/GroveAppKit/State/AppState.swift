@@ -1318,11 +1318,14 @@ extension AppState {
         let five = window(usage.fiveHour)
         let seven = window(usage.sevenDay)
         let sonnet = window(usage.sevenDaySonnet)
-        guard five != nil || seven != nil || sonnet != nil else { return nil }
+        let opus = window(usage.sevenDayOpus)
+        let fable = window(usage.sevenDayFable)
+        guard five != nil || seven != nil || sonnet != nil || opus != nil || fable != nil else { return nil }
         return UsageSnapshot(accountName: accountName, sessionId: "oauth", capturedAt: now, cwd: nil,
                              modelId: nil, modelDisplayName: nil, effort: nil,
                              contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
-                             fiveHour: five, sevenDay: seven, sevenDaySonnet: sonnet)
+                             fiveHour: five, sevenDay: seven, sevenDaySonnet: sonnet,
+                             sevenDayOpus: opus, sevenDayFable: fable)
     }
 
     private func tier(for account: AccountConfig) -> String? {

@@ -35,7 +35,7 @@ private func trim(_ v: Double) -> String {
 
 /// One limit bar. Color grades by REMAINING capacity (reuses `CapacityLevel`).
 public struct LimitCard: Equatable, Sendable {
-    public enum Window: String, Equatable, Sendable { case fiveHour, weekly, weeklySonnet }
+    public enum Window: String, Equatable, Sendable { case fiveHour, weekly, weeklySonnet, weeklyModel }
     public let window: Window
     public let title: String
     public let systemImage: String
@@ -316,6 +316,10 @@ public struct DashboardColumn: Equatable, Sendable, Identifiable {
     /// 7-day Sonnet limit (reference's "Weekly Sonnet"). Rendered only when it has
     /// data — its source (OAuth) may be unavailable.
     public let weeklySonnet: LimitCard
+    /// 7-day model-specific limit (Weekly Opus / Weekly Fable / Weekly Sonnet) for the
+    /// account's ACTIVE model. Title and window are resolved from the latest capture's
+    /// modelId. Rendered only when it has data — its source (OAuth) may be unavailable.
+    public let weeklyModel: LimitCard
     public let daily: [DailyUsageBar]
     public let models: [ModelShare]
     public let tokens: [TokenRow]
@@ -346,6 +350,59 @@ func latestCapture(_ snapshots: [UsageSnapshot]) -> UsageSnapshot? {
     snapshots.max { ($0.capturedAt ?? .distantPast) < ($1.capturedAt ?? .distantPast) }
 }
 
+// MARK: - Model-specific weekly window
+
+/// Maps the active model's id to the dedicated 7-day limit window and its card title.
+///
+/// Model family resolution by prefix:
+///   - `claude-opus-*`   → "Weekly Opus"  / sevenDayOpus
+///   - `claude-fable-*`  → "Weekly Fable" / sevenDayFable
+///   - `claude-sonnet-*` → "Weekly Sonnet"/ sevenDaySonnet
+///   - anything else / nil → title "Weekly Model", window nil (card hidden via hasData=false)
+///
+/// The active model is resolved from the latest NON-oauth snapshot that carries a modelId
+/// (statusline captures set the model; the synthetic "oauth" capture has modelId==nil).
+/// The window value itself is read from `currentWindow` across ALL snapshots (OAuth-only
+/// snapshots carry the per-model limit values even though they don't set modelId).
+///
+/// For "Overall" (multi-account), pass all snapshots merged: the most-recent live model
+/// determines the family; the window value is picked from the same merged set.
+public func modelWindow(latestModelId: String?, snapshots: [UsageSnapshot], now: Date)
+    -> (title: String, window: CapturedWindow?) {
+    // Resolve model family from the id prefix (strip the [1m] variant suffix for matching).
+    let baseId = latestModelId.map { id -> String in
+        if let bracket = id.firstIndex(of: "[") { return String(id[..<bracket]) }
+        return id
+    }
+    switch baseId {
+    case let id? where id.hasPrefix("claude-opus-"):
+        return ("Weekly Opus",   currentWindow(snapshots, { $0.sevenDayOpus },   now: now))
+    case let id? where id.hasPrefix("claude-fable-"):
+        return ("Weekly Fable",  currentWindow(snapshots, { $0.sevenDayFable },  now: now))
+    case let id? where id.hasPrefix("claude-sonnet-"):
+        return ("Weekly Sonnet", currentWindow(snapshots, { $0.sevenDaySonnet }, now: now))
+    default:
+        return ("Weekly Model", nil)
+    }
+}
+
+/// Resolves the active model id from the most-recent NON-oauth snapshot that carries one.
+/// OAuth snapshots are synthetic and never carry a modelId; statusline ones do.
+func resolveLatestModelId(_ snapshots: [UsageSnapshot]) -> String? {
+    let statusline = snapshots.filter { $0.sessionId != "oauth" }
+    return latestCapture(statusline)?.modelId
+}
+
+/// SF Symbol for the model-specific weekly card based on the resolved title.
+func modelSystemImage(_ title: String) -> String {
+    switch title {
+    case "Weekly Opus":   return "o.circle.fill"
+    case "Weekly Fable":  return "f.circle.fill"
+    case "Weekly Sonnet": return "s.circle.fill"
+    default:              return "m.circle.fill"
+    }
+}
+
 /// Builds one account's dashboard column from its analytics + captures.
 public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
                              snapshots: [UsageSnapshot], now: Date,
@@ -364,6 +421,13 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
     let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "s.circle.fill",
                                  usedPercentage: sonnet?.usedPercentage ?? 0, resetsAt: sonnet?.resetsAt,
                                  hasData: sonnet != nil, now: now)
+    let activeModelId = resolveLatestModelId(snapshots)
+    let mw = modelWindow(latestModelId: activeModelId, snapshots: snapshots, now: now)
+    let weeklyModelCard = LimitCard(window: .weeklyModel, title: mw.title,
+                                    systemImage: modelSystemImage(mw.title),
+                                    usedPercentage: mw.window?.usedPercentage ?? 0,
+                                    resetsAt: mw.window?.resetsAt,
+                                    hasData: mw.window != nil, now: now)
     let todayKey = UsageCostLedger.utcCalendar.startOfDay(for: now)
     let lTodayCost: Double? = ledgerCostByDay.isEmpty ? nil : ledgerCostByDay[todayKey]
     let lMonthCost: Double? = ledgerCostByDay.isEmpty ? nil
@@ -373,6 +437,7 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
         fiveHour: five,
         weekly: weekly,
         weeklySonnet: weeklySonnet,
+        weeklyModel: weeklyModelCard,
         daily: dailyUsageBars(mergeLedgerCost(analytics?.daily ?? [], ledgerCostByDay: ledgerCostByDay), now: now),
         models: modelShares(analytics?.sessions ?? [:]),
         tokens: tokenRows(today: analytics?.today ?? UsageTotals(),
@@ -411,6 +476,16 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
     let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "s.circle.fill",
                                  usedPercentage: sonnetUsed, resetsAt: sonnetReset,
                                  hasData: aggregateSonnet.total > 0, now: now)
+    // For "Overall": resolve active model from the most-recent live capture across ALL accounts.
+    // This picks whichever account's model was most recently captured, which is the best
+    // single-model proxy when accounts use different models.
+    let overallModelId = resolveLatestModelId(allCaptures)
+    let omw = modelWindow(latestModelId: overallModelId, snapshots: allCaptures, now: now)
+    let weeklyModelCard = LimitCard(window: .weeklyModel, title: omw.title,
+                                    systemImage: modelSystemImage(omw.title),
+                                    usedPercentage: omw.window?.usedPercentage ?? 0,
+                                    resetsAt: omw.window?.resetsAt,
+                                    hasData: omw.window != nil, now: now)
 
     // Ledger-correct each account's daily COST before summing, so the overall bar height (cost)
     // reflects the snapshot-tracked recent days, not the empty transcript days.
@@ -436,6 +511,7 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
         fiveHour: five,
         weekly: weekly,
         weeklySonnet: weeklySonnet,
+        weeklyModel: weeklyModelCard,
         daily: dailyUsageBars(mergedDaily, now: now),
         models: modelShares(allSessions),
         tokens: tokenRows(today: today, thisMonth: month,

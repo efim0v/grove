@@ -30,12 +30,19 @@ public struct OAuthUsage: Sendable, Equatable {
     public let sevenDay: OAuthWindow?
     public let sevenDaySonnet: OAuthWindow?
     public let sevenDayOpus: OAuthWindow?
+    /// 7-day Fable-specific window. Parsed opportunistically from the OAuth response.
+    /// The exact JSON key ("seven_day_fable") is assumed but not yet verified against
+    /// a live Fable payload.
+    /// TODO: verify seven_day_fable key against a live payload
+    public let sevenDayFable: OAuthWindow?
     public init(fiveHour: OAuthWindow?, sevenDay: OAuthWindow?,
-                sevenDaySonnet: OAuthWindow?, sevenDayOpus: OAuthWindow?) {
+                sevenDaySonnet: OAuthWindow?, sevenDayOpus: OAuthWindow?,
+                sevenDayFable: OAuthWindow? = nil) {
         self.fiveHour = fiveHour
         self.sevenDay = sevenDay
         self.sevenDaySonnet = sevenDaySonnet
         self.sevenDayOpus = sevenDayOpus
+        self.sevenDayFable = sevenDayFable
     }
 }
 
@@ -140,7 +147,9 @@ public actor OAuthUsageClient {
             fiveHour: window("five_hour"),
             sevenDay: window("seven_day"),
             sevenDaySonnet: window("seven_day_sonnet"),
-            sevenDayOpus: window("seven_day_opus")
+            sevenDayOpus: window("seven_day_opus"),
+            // TODO: verify seven_day_fable key against a live payload
+            sevenDayFable: window("seven_day_fable")
         )
     }
 }
