@@ -96,6 +96,9 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         usageCancellable = state.$usageByAccount
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in Task { @MainActor in self?.updateMenuBarReadout() } }
+        // Phase 5A: ensure every configured account has the grove statusline wrapper so
+        // its usage is captured (the icloud "no usage" fix), before the first read.
+        state.reconcileMonitoring()
         Task { @MainActor in await state.refreshUsage(now: Date()) }
         menuReadoutTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
             // Skip while the panel is open — RootView's 15s loop already refreshes, so

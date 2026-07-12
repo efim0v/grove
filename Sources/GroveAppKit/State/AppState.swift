@@ -200,6 +200,12 @@ public final class AppState: ObservableObject {
     /// temp dir so install never writes under the real app-support tree.
     internal var statuslineScriptDirOverride: String?
 
+    /// Test seam: the base dir under which NEW accounts' config dirs are created by
+    /// `addAccount` (which also auto-installs a statusline there). nil = the real
+    /// ~/.claude-accounts. TESTS set a temp dir so addAccount never creates a real
+    /// account dir / writes a real settings.json under $HOME.
+    internal var accountsRootOverride: String?
+
     /// Test seam: the directory the per-project code-stats history files live in.
     /// nil = the real ~/Library/Application Support/Grove/stats. TESTS set a temp
     /// dir so history persistence never writes under the real app-support tree.
@@ -364,14 +370,21 @@ public final class AppState: ObservableObject {
         persist()
     }
 
-    /// New account convention (spec §6.3): configDir = ~/.claude-accounts/<name>.
+    /// New account convention (spec §6.3): configDir = ~/.claude-accounts/<name>
+    /// (redirectable in tests via `accountsRootOverride`). Phase 5A: also creates the
+    /// dir and auto-installs the grove statusline there so the account captures usage
+    /// from its first session (best-effort — account creation still succeeds if the
+    /// install fails).
     public func addAccount(name: String) {
         guard !config.accounts.contains(where: { $0.name == name }) else {
             actionError = "account '\(name)' already exists"
             return
         }
-        config.accounts.append(AccountConfig(name: name, configDir: "~/.claude-accounts/\(name)"))
+        let configDir = accountsRootOverride.map { $0 + "/" + name } ?? "~/.claude-accounts/\(name)"
+        let account = AccountConfig(name: name, configDir: configDir)
+        config.accounts.append(account)
         persist()
+        enableMonitoring(account, reportErrors: false)
     }
 
     /// Removes the account from Grove's config only — the directory is untouched.
@@ -859,6 +872,8 @@ extension AppState {
             config.accounts[index].sharedStore = true
             persist()
         }
+        // Phase 5A: capture usage by default for every linked account.
+        enableMonitoring(account, reportErrors: false)
     }
 
     // MARK: - Transcript mirror
@@ -933,6 +948,12 @@ extension AppState {
         }.value
 
         if let first = report.issues.first { actionError = "Migrate: \(first)" }
+        // Phase 5A: capture usage by default for the target account now that it holds
+        // a real session. Use the persisted entry so the gate reflects prior state.
+        if let target = config.accounts.first(where: { $0.name == targetAccount.name }),
+           !target.monitoring {
+            enableMonitoring(target, reportErrors: false)
+        }
         await refreshSessionIndex()
     }
 
@@ -1199,7 +1220,12 @@ extension AppState {
             (name: $0.name, dir: expandTilde($0.configDir), claudeJSON: claudeJSONPath(for: $0))
         }
         let started = Date()
-        let wantsOAuth = isPanelOpen || oauthLimitsOverride != nil
+        // Fetch OAuth only on an EXPLICIT decision: the panel is open (a user
+        // gesture) OR the user opted into the always-on live poll. The test provider
+        // override supplies the *provider* (see below) but must NOT itself force the
+        // fetch — otherwise the background menu-bar timer would hit the keychain
+        // before any gesture. `oauthLiveEnabled` was a dead flag until now (Phase 5A).
+        let wantsOAuth = isPanelOpen || config.usage.oauthLiveEnabled
         let ledgerStore = usageLedgerStore
         let inLedgers = usageLedgerByAccount
         let result = await Task.detached(priority: .utility) {
@@ -1365,13 +1391,38 @@ extension AppState {
 
     /// Installs the grove statusline wrapper for `account`, saving its prior
     /// command into AccountConfig.savedStatusline and marking monitoring=true.
-    /// Failures land in actionError; nothing is mutated on failure.
+    /// Failures land in actionError; nothing is mutated on failure. This is the
+    /// user-facing toggle; the auto-install sites (addAccount/linkAccount/
+    /// migrateSession) share the same core via `enableMonitoring(_:)`.
     public func installMonitoring(_ account: AccountConfig) {
-        let installer = StatuslineInstaller(scriptDir: statuslineScriptDir)
+        enableMonitoring(account, reportErrors: true)
+    }
+
+    /// Shared statusline auto-install: ensures the account's configDir exists, ships
+    /// the (idempotent, original-preserving) grove wrapper, repoints its settings.json,
+    /// and records monitoring=true + savedStatusline. Best-effort — the whole point of
+    /// auto-installing at account-setup time (Phase 5A) is capture-by-default, so a
+    /// failure must never abort the surrounding action (addAccount/linkAccount/
+    /// migrateSession). `reportErrors` surfaces failures in `actionError` only for the
+    /// explicit user toggle; the auto sites stay silent.
+    ///
+    /// Re-runs are safe: `StatuslineInstaller.install` recovers the true original from
+    /// the previously-baked wrapper, so calling this on an already-monitored account
+    /// preserves — never clobbers — the saved original.
+    private func enableMonitoring(_ account: AccountConfig, reportErrors: Bool) {
         let dir = expandTilde(account.configDir)
+        // The wrapper writes <configDir>/settings.json; the dir must exist first
+        // (addAccount's ~/.claude-accounts/<name> is brand-new and empty).
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let installer = StatuslineInstaller(scriptDir: statuslineScriptDir)
         let saved: String?
         do { saved = try installer.install(configDir: dir) }
-        catch { actionError = "Couldn't enable monitoring for “\(account.name)”: \(error.localizedDescription)"; return }
+        catch {
+            if reportErrors {
+                actionError = "Couldn't enable monitoring for “\(account.name)”: \(error.localizedDescription)"
+            }
+            return
+        }
         guard let i = config.accounts.firstIndex(where: { $0.name == account.name }) else { return }
         config.accounts[i].monitoring = true
         config.accounts[i].savedStatusline = saved
@@ -1388,6 +1439,18 @@ extension AppState {
         config.accounts[i].monitoring = false
         config.accounts[i].savedStatusline = nil
         persist()
+    }
+
+    /// Launch reconcile (Phase 5A): auto-installs the grove statusline wrapper for
+    /// every configured account not yet monitored — so accounts created before 5A (or
+    /// an account whose monitoring was never enabled, e.g. icloud) start capturing
+    /// usage. Already-monitored accounts are skipped, so a user who explicitly ran
+    /// `disableMonitoring` is not silently re-enabled on the next launch. Best-effort
+    /// per account: a missing/locked config dir is skipped without surfacing an error.
+    public func reconcileMonitoring() {
+        for account in config.accounts where !account.monitoring {
+            enableMonitoring(account, reportErrors: false)
+        }
     }
 }
 

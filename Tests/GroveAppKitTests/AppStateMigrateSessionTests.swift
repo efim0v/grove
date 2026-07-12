@@ -26,6 +26,9 @@ final class AppStateMigrateSessionTests: XCTestCase {
         state.canonicalDirOverride = root.appendingPathComponent("canonical").path
         state.cmuxHookFile = root.appendingPathComponent("no-hook.json").path
         state.usageLedgerStoreDirOverride = root.appendingPathComponent("ledger").path
+        // migrateSession now auto-installs the statusline wrapper (Phase 5A); keep that
+        // script write inside a temp dir, never the real ~/Library/Application Support.
+        state.statuslineScriptDirOverride = root.appendingPathComponent("statusline-bin").path
         return state
     }
 
@@ -239,6 +242,42 @@ final class AppStateMigrateSessionTests: XCTestCase {
             .appendingPathComponent("\(sessionId).jsonl")
         XCTAssertTrue(FileManager.default.fileExists(atPath: targetTranscript.path),
                       "transcript must land in target when no live processes block migration")
+    }
+
+    /// Phase 5A: migrating a session into a target account also auto-installs the
+    /// grove statusline wrapper on the TARGET, so the newly-populated account starts
+    /// capturing usage. Best-effort; runs only when migration proceeds (no live target).
+    func testMigrateSessionAutoInstallsStatuslineOnTarget() async throws {
+        let cwd = "/Users/x/Projects/migrate-monitor"
+        let sessionId = "migrate-mon-s1"
+        let sourceDir = root.appendingPathComponent("src-mon")
+        let targetDir = root.appendingPathComponent("dst-mon")
+
+        try writeSourceFootprint(configDir: sourceDir, cwd: cwd, sessionId: sessionId)
+
+        let sourceAccount = AccountConfig(name: "src-mon", configDir: sourceDir.path)
+        let targetAccount = AccountConfig(name: "dst-mon", configDir: targetDir.path)
+
+        let state = makeState()
+        state.config.accounts = [sourceAccount, targetAccount]
+        state.allLiveProcessesOverride = []
+
+        await state.migrateSession(cwd: cwd, sessionId: sessionId,
+                                   from: sourceAccount, to: targetAccount)
+
+        XCTAssertNil(state.actionError,
+                     "migrateSession must not set actionError on success; got: \(state.actionError ?? "")")
+
+        // The TARGET's settings.json now points at the grove wrapper.
+        let data = try Data(contentsOf: targetDir.appendingPathComponent("settings.json"))
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let command = (obj?["statusLine"] as? [String: Any])?["command"] as? String
+        XCTAssertNotNil(command)
+        XCTAssertTrue(command?.contains("grove-statusline-") == true,
+                      "migrateSession must repoint the target's statusLine at the grove wrapper; got \(command ?? "nil")")
+        // Target account marked monitored; source had no statusLine so nothing to preserve.
+        let target = state.config.accounts.first { $0.name == "dst-mon" }
+        XCTAssertEqual(target?.monitoring, true)
     }
 
     // MARK: - Test 3: no-op when source == target (same name)

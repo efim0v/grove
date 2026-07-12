@@ -16,6 +16,7 @@ final class AppStateGapTests: XCTestCase {
         let s = AppState(configStore: ConfigStore(url: configURL))
         s.cmuxOverride = stubbedCmux(runner)
         s.canonicalDirOverride = root.appendingPathComponent("canonical").path
+        s.usageLedgerStoreDirOverride = root.appendingPathComponent("ledger").path
         return s
     }
 
@@ -41,6 +42,10 @@ final class AppStateGapTests: XCTestCase {
 
     func testAccountCrudRejectsDuplicates() {
         let s = state()
+        // addAccount auto-installs a statusline (Phase 5A); keep its dir + script writes
+        // inside temp dirs, never the real ~/.claude-accounts / ~/Library.
+        s.accountsRootOverride = root.appendingPathComponent("accts").path
+        s.statuslineScriptDirOverride = root.appendingPathComponent("bin-crud").path
         let initial = s.config.accounts.count
         s.addAccount(name: "work")
         XCTAssertTrue(s.config.accounts.contains { $0.name == "work" })
@@ -135,6 +140,7 @@ final class AppStateGapTests: XCTestCase {
         let dir = try FixtureLite.tempDir("oauth-acct")
         s.config.accounts = [AccountConfig(name: "apple", configDir: dir.path)]
         s.snapshotsByAccount = [:]                       // no statusline captures
+        s.config.usage.oauthLiveEnabled = true           // opt into the OAuth poll
         let now = Date(timeIntervalSince1970: 1_750_000_000)
         let resets = ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))
         s.oauthLimitsOverride = { cfg, _ in
@@ -170,6 +176,7 @@ final class AppStateGapTests: XCTestCase {
         """
         try capture.write(to: usageDir.appendingPathComponent("c.json"), atomically: true, encoding: .utf8)
         s.config.accounts = [AccountConfig(name: "default", configDir: dir.path)]
+        s.config.usage.oauthLiveEnabled = true           // opt into the OAuth poll
         // OAuth is now ALWAYS consulted (it's the only source of the Sonnet window).
         var oauthCalled = false
         s.oauthLimitsOverride = { _, _ in
@@ -187,6 +194,100 @@ final class AppStateGapTests: XCTestCase {
         XCTAssertTrue(snaps.contains { $0.sevenDaySonnet?.usedPercentage == 8 }, "OAuth Sonnet folded in")
         // currentWindow prefers the latest (OAuth) capture for the live 5h reading.
         XCTAssertEqual(currentWindow(snaps, { $0.sevenDaySonnet }, now: now)?.usedPercentage, 8)
+    }
+
+    /// The OAuth fetch is gated by an EXPLICIT decision (panel open OR the
+    /// `oauthLiveEnabled` flag), NOT by the mere presence of the test provider
+    /// override. With the panel closed and the flag off, refreshUsage must not
+    /// consult OAuth even though a provider override is installed — otherwise the
+    /// background menu-bar timer would hit the keychain before any user gesture.
+    func testRefreshUsageSkipsOAuthWhenFlagOffAndPanelClosed() async throws {
+        let s = state()
+        let dir = try FixtureLite.tempDir("oauth-gate-off")
+        s.config.accounts = [AccountConfig(name: "apple", configDir: dir.path)]
+        s.snapshotsByAccount = [:]
+        s.isPanelOpen = false
+        s.config.usage.oauthLiveEnabled = false
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let resets = ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))
+        var oauthCalled = false
+        s.oauthLimitsOverride = { _, _ in
+            oauthCalled = true
+            return OAuthUsage(fiveHour: OAuthWindow(utilization: 22, resetsAt: resets),
+                              sevenDay: nil, sevenDaySonnet: nil, sevenDayOpus: nil)
+        }
+        await s.refreshUsage(now: now)
+        XCTAssertFalse(oauthCalled,
+            "OAuth must not be fetched when the panel is closed and oauthLiveEnabled is off")
+        XCTAssertTrue((s.snapshotsByAccount["apple"] ?? []).isEmpty,
+            "No OAuth snapshot should be folded in when OAuth is gated off")
+    }
+
+    /// `config.usage.oauthLiveEnabled` is a LIVE gate: when the user opts into the
+    /// OAuth live poll, refreshUsage fetches OAuth even with the panel CLOSED (this
+    /// is the "always-on" mode that fixes an account with no statusline capture).
+    func testRefreshUsageFetchesOAuthWhenLiveEnabledFlagOnEvenWithPanelClosed() async throws {
+        let s = state()
+        let dir = try FixtureLite.tempDir("oauth-gate-on")
+        s.config.accounts = [AccountConfig(name: "apple", configDir: dir.path)]
+        s.snapshotsByAccount = [:]
+        s.isPanelOpen = false
+        s.config.usage.oauthLiveEnabled = true
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let resets = ISO8601DateFormatter().string(from: now.addingTimeInterval(3_600))
+        var oauthCalled = false
+        s.oauthLimitsOverride = { _, _ in
+            oauthCalled = true
+            return OAuthUsage(fiveHour: OAuthWindow(utilization: 22, resetsAt: resets),
+                              sevenDay: OAuthWindow(utilization: 4, resetsAt: resets),
+                              sevenDaySonnet: nil, sevenDayOpus: nil)
+        }
+        await s.refreshUsage(now: now)
+        XCTAssertTrue(oauthCalled,
+            "OAuth must be fetched when oauthLiveEnabled is on, even with the panel closed")
+        XCTAssertEqual((s.snapshotsByAccount["apple"] ?? []).last?.fiveHour?.usedPercentage, 22)
+    }
+
+    /// Phase 5A launch reconcile: auto-installs the statusline wrapper for every
+    /// configured account that is not yet monitored (e.g. accounts created before 5A,
+    /// or an icloud account that never had monitoring enabled), preserving each
+    /// account's original command. Accounts already monitored are left untouched, so a
+    /// user who explicitly disabled monitoring is not re-enabled on the next launch.
+    func testReconcileMonitoringInstallsForUnmonitoredAccountsOnly() throws {
+        let s = state()
+        let binDir = root.appendingPathComponent("reconcile-bin")
+        s.statuslineScriptDirOverride = binDir.path
+        let dirA = root.appendingPathComponent("recon-a")   // never monitored
+        let dirB = root.appendingPathComponent("recon-b")   // already monitored
+        try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+        let originalA = "/bin/echo status-a"
+        try #"{"statusLine":{"type":"command","command":"\#(originalA)"}}"#
+            .write(to: dirA.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+        let originalB = "/bin/echo status-b"
+        try #"{"statusLine":{"type":"command","command":"\#(originalB)"}}"#
+            .write(to: dirB.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+        s.config.accounts = [
+            AccountConfig(name: "a", configDir: dirA.path),
+            AccountConfig(name: "b", configDir: dirB.path, monitoring: true),
+        ]
+
+        s.reconcileMonitoring()
+
+        XCTAssertNil(s.actionError)
+        // Account a: installed, original preserved, marked monitored.
+        let a = try XCTUnwrap(s.config.accounts.first { $0.name == "a" })
+        XCTAssertEqual(a.monitoring, true)
+        XCTAssertEqual(a.savedStatusline, originalA)
+        let aObj = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: dirA.appendingPathComponent("settings.json"))) as? [String: Any]
+        XCTAssertTrue(((aObj?["statusLine"] as? [String: Any])?["command"] as? String)?
+            .contains("grove-statusline-") == true)
+        // Account b: already monitored → left untouched (settings.json still the original).
+        let bObj = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: dirB.appendingPathComponent("settings.json"))) as? [String: Any]
+        XCTAssertEqual((bObj?["statusLine"] as? [String: Any])?["command"] as? String, originalB,
+                       "an already-monitored account must not be re-installed by reconcile")
     }
 
     func testInstallAndDisableMonitoringToggleFlag() throws {

@@ -140,29 +140,65 @@ final class AppStateConfigTests: XCTestCase {
 
     // MARK: - accounts
 
-    func testAddAccountBuildsConventionalConfigDirAndPersists() {
-        let state = makeState()
+    func testAddAccountBuildsConventionalConfigDirAndPersists() throws {
+        let state = try makeStateWithTempAccountsRoot()
         state.addAccount(name: "work")
-        XCTAssertEqual(state.config.accounts.last,
-                       AccountConfig(name: "work", configDir: "~/.claude-accounts/work"))
+        XCTAssertEqual(state.config.accounts.last?.name, "work")
         XCTAssertEqual(reloadedConfig().accounts.map { $0.name }, ["default", "work"])
         XCTAssertNil(state.actionError)
     }
 
-    func testAddDuplicateAccountSetsActionErrorAndDoesNotDuplicate() {
-        let state = makeState()
+    func testAddDuplicateAccountSetsActionErrorAndDoesNotDuplicate() throws {
+        let state = try makeStateWithTempAccountsRoot()
         state.addAccount(name: "work")
         state.addAccount(name: "work")
         XCTAssertEqual(state.config.accounts.filter { $0.name == "work" }.count, 1)
         XCTAssertNotNil(state.actionError)
     }
 
-    func testRemoveAccountPersists() {
-        let state = makeState()
+    func testRemoveAccountPersists() throws {
+        let state = try makeStateWithTempAccountsRoot()
         state.addAccount(name: "work")
         state.removeAccount(name: "work")
         XCTAssertEqual(state.config.accounts.map { $0.name }, ["default"])
         XCTAssertEqual(reloadedConfig().accounts.map { $0.name }, ["default"])
+    }
+
+    /// Phase 5A: addAccount creates the new account's config dir and auto-installs the
+    /// grove statusline wrapper there, marking it monitored — so a freshly-added
+    /// account (e.g. icloud) captures usage from its first session.
+    func testAddAccountCreatesDirAutoInstallsStatuslineAndEnablesMonitoring() throws {
+        let scratch = try FixtureLite.tempDir("appstate-config-add")
+        let accountsRoot = scratch.appendingPathComponent("accts")
+        let state = makeState()
+        state.accountsRootOverride = accountsRoot.path
+        state.statuslineScriptDirOverride = scratch.appendingPathComponent("bin").path
+
+        state.addAccount(name: "icloud")
+
+        XCTAssertNil(state.actionError)
+        let added = try XCTUnwrap(state.config.accounts.first { $0.name == "icloud" })
+        XCTAssertEqual(added.configDir, accountsRoot.appendingPathComponent("icloud").path)
+        XCTAssertEqual(added.monitoring, true)
+        // The account dir + a settings.json pointing at the grove wrapper now exist.
+        let settings = accountsRoot.appendingPathComponent("icloud/settings.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: settings.path))
+        let obj = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: settings)) as? [String: Any]
+        let command = (obj?["statusLine"] as? [String: Any])?["command"] as? String
+        XCTAssertTrue(command?.contains("grove-statusline-") == true,
+                      "addAccount must install the grove statusline wrapper; got \(command ?? "nil")")
+    }
+
+    /// Fail-safe state builder for the account-CRUD tests: routes new accounts and the
+    /// statusline script into temp dirs so addAccount's auto-install (Phase 5A) never
+    /// writes under the real ~/.claude-accounts or ~/Library/Application Support.
+    private func makeStateWithTempAccountsRoot() throws -> AppState {
+        let scratch = try FixtureLite.tempDir("appstate-config-crud")
+        let state = makeState()
+        state.accountsRootOverride = scratch.appendingPathComponent("accts").path
+        state.statuslineScriptDirOverride = scratch.appendingPathComponent("bin").path
+        return state
     }
 
     // MARK: - default launch account (per-project defaultAccount)
