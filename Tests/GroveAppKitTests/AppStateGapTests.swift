@@ -253,7 +253,8 @@ final class AppStateGapTests: XCTestCase {
     /// or an icloud account that never had monitoring enabled), preserving each
     /// account's original command. Accounts already monitored are left untouched, so a
     /// user who explicitly disabled monitoring is not re-enabled on the next launch.
-    func testReconcileMonitoringInstallsForUnmonitoredAccountsOnly() throws {
+    /// reconcileMonitoring fires I/O off-main (Task.detached), so we await completion.
+    func testReconcileMonitoringInstallsForUnmonitoredAccountsOnly() async throws {
         let s = state()
         let binDir = root.appendingPathComponent("reconcile-bin")
         s.statuslineScriptDirOverride = binDir.path
@@ -273,6 +274,13 @@ final class AppStateGapTests: XCTestCase {
         ]
 
         s.reconcileMonitoring()
+
+        // reconcileMonitoring dispatches I/O to a Task.detached; yield until task completes.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            await Task.yield()
+            if s.config.accounts.first(where: { $0.name == "a" })?.monitoring == true { break }
+        }
 
         XCTAssertNil(s.actionError)
         // Account a: installed, original preserved, marked monitored.
@@ -301,5 +309,86 @@ final class AppStateGapTests: XCTestCase {
         XCTAssertTrue(s.config.accounts[0].monitoring)
         s.disableMonitoring(s.config.accounts[0])
         XCTAssertFalse(s.config.accounts[0].monitoring)
+    }
+
+    /// FIX 1: reconcileMonitoring must NOT re-enable an explicitly-disabled account.
+    /// An account with monitoring=false AND monitoringDisabledByUser=true is skipped.
+    /// An account with monitoring=false AND monitoringDisabledByUser=false (never monitored) IS installed.
+    /// reconcileMonitoring fires file I/O off-main (Task.detached), so we await completion.
+    func testReconcileMonitoringDoesNotReEnableExplicitlyDisabledAccount() async throws {
+        let s = state()
+        let binDir = root.appendingPathComponent("fix1-bin")
+        s.statuslineScriptDirOverride = binDir.path
+
+        // Account A: never monitored (disabledByUser=false) — should be installed.
+        let dirA = root.appendingPathComponent("fix1-a")
+        try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try #"{"statusLine":{"type":"command","command":"/bin/echo status-a"}}"#
+            .write(to: dirA.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+
+        // Account B: user explicitly disabled monitoring (disabledByUser=true) — must NOT be installed.
+        let dirB = root.appendingPathComponent("fix1-b")
+        try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+        let originalB = "/bin/echo status-b"
+        try #"{"statusLine":{"type":"command","command":"\#(originalB)"}}"#
+            .write(to: dirB.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+
+        s.config.accounts = [
+            AccountConfig(name: "never-monitored", configDir: dirA.path,
+                          monitoring: false, monitoringDisabledByUser: false),
+            AccountConfig(name: "user-disabled", configDir: dirB.path,
+                          monitoring: false, monitoringDisabledByUser: true),
+        ]
+
+        s.reconcileMonitoring()
+
+        // reconcileMonitoring dispatches I/O to a Task.detached; yield back to run loop
+        // long enough for the utility task + MainActor.run hop to complete.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            await Task.yield()
+            if s.config.accounts.first(where: { $0.name == "never-monitored" })?.monitoring == true { break }
+        }
+
+        // Account A (never monitored): should be installed and marked monitored.
+        let acctA = try XCTUnwrap(s.config.accounts.first { $0.name == "never-monitored" })
+        XCTAssertTrue(acctA.monitoring, "never-monitored account should be auto-installed by reconcile")
+
+        // Account B (user disabled): must NOT be re-enabled.
+        let acctB = try XCTUnwrap(s.config.accounts.first { $0.name == "user-disabled" })
+        XCTAssertFalse(acctB.monitoring, "explicitly-disabled account must not be re-enabled by reconcile")
+        // settings.json for B must still contain the original command, not the grove wrapper.
+        let bObj = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: dirB.appendingPathComponent("settings.json"))) as? [String: Any]
+        XCTAssertEqual((bObj?["statusLine"] as? [String: Any])?["command"] as? String, originalB,
+                       "reconcile must not overwrite settings.json of an explicitly-disabled account")
+    }
+
+    /// FIX 1: disableMonitoring sets monitoringDisabledByUser=true; installMonitoring/enableMonitoring clears it.
+    func testDisableMonitoringSetsDisabledByUserFlag() throws {
+        let s = state()
+        s.statuslineScriptDirOverride = root.appendingPathComponent("fix1-toggle-bin").path
+        let dir = root.appendingPathComponent("fix1-toggle")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try "{}".write(to: dir.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+        s.config.accounts = [AccountConfig(name: "work", configDir: dir.path)]
+
+        // Install first so disableMonitoring has something to uninstall.
+        s.installMonitoring(s.config.accounts[0])
+        XCTAssertTrue(s.config.accounts[0].monitoring)
+        XCTAssertFalse(s.config.accounts[0].monitoringDisabledByUser,
+                       "install must clear monitoringDisabledByUser")
+
+        // Disable: must set the flag.
+        s.disableMonitoring(s.config.accounts[0])
+        XCTAssertFalse(s.config.accounts[0].monitoring)
+        XCTAssertTrue(s.config.accounts[0].monitoringDisabledByUser,
+                      "disableMonitoring must set monitoringDisabledByUser=true")
+
+        // Re-install via installMonitoring: must clear the flag.
+        s.installMonitoring(s.config.accounts[0])
+        XCTAssertTrue(s.config.accounts[0].monitoring)
+        XCTAssertFalse(s.config.accounts[0].monitoringDisabledByUser,
+                       "re-installing must clear monitoringDisabledByUser")
     }
 }

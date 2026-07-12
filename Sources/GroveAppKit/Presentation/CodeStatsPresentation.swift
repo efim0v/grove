@@ -988,12 +988,14 @@ public func tokensPerNetLine(
         }
     }
 
-    // Build a map: day → dayAdded from the code history (per-day, NOT cumulative).
+    // Build a map: day → net lines (additions − deletions) from the code history
+    // (per-day delta, NOT cumulative). "Net" means a day with 100 additions and
+    // 40 deletions contributes 60 net lines to the cumulative denominator.
     var linesByDay: [Date: Int] = [:]
     for point in codeHistory {
         let key = utcCal.startOfDay(for: point.date)
         guard key <= endOfToday else { continue }
-        linesByDay[key, default: 0] += point.dayAdded
+        linesByDay[key, default: 0] += point.dayAdded - point.dayRemoved
     }
 
     // Union day axis, sorted ascending.

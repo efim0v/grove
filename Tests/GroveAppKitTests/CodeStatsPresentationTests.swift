@@ -1046,13 +1046,13 @@ final class CodeStatsPresentationTests: XCTestCase {
     // MARK: - tokensPerNetLine (Phase 5D)
 
     /// Helper: make a CodeStatsPoint on a UTC calendar day (seconds since epoch at midnight UTC).
-    private func csp(dayOffset: Int, from base: Date, dayAdded: Int,
+    private func csp(dayOffset: Int, from base: Date, dayAdded: Int, dayRemoved: Int = 0,
                      totalLines: Int = 0) -> CodeStatsPoint {
         let cal = utcCal
         let day = cal.date(byAdding: .day, value: dayOffset, to: cal.startOfDay(for: base))!
         return CodeStatsPoint(date: day, totalLines: totalLines,
                               code: 0, comment: 0, blank: 0, totalFiles: 0,
-                              dayAdded: dayAdded, dayRemoved: 0)
+                              dayAdded: dayAdded, dayRemoved: dayRemoved)
     }
 
     private var utcCal: Calendar {
@@ -1170,5 +1170,64 @@ final class CodeStatsPresentationTests: XCTestCase {
         )
         // Only 100 tokens (cwd match), not 10099. ratio = 100/100*100 = 100.
         XCTAssertEqual(points[0].tokensPer100Lines, 100.0, accuracy: 0.01)
+    }
+
+    // MARK: - FIX 3: tokensPerNetLine uses NET lines (additions − deletions)
+
+    /// FIX 3: a day with deletions reduces the cumulative denominator.
+    /// Day 0: dayAdded=100, dayRemoved=40 → net contribution = 60 lines.
+    /// Day 1: dayAdded=200, dayRemoved=0  → net contribution = 200 lines; cumLines=260.
+    /// Tokens: 6000 on day 0, 0 on day 1 → cumTokens stays 6000 after day 1.
+    /// Ratios: day0 = 6000/60×100 = 10000; day1 = 6000/260×100 ≈ 2307.69.
+    func testTokensPerNetLineUsesNetLinesNotGrossAdditions() {
+        let cwd = "/ws/proj"
+        let tokensByAcct: [[String: [DayUsage]]] = [
+            [cwd: [du(dayOffset: 0, from: base, input: 3000, output: 3000)]],
+        ]
+        let history: [CodeStatsPoint] = [
+            csp(dayOffset: 0, from: base, dayAdded: 100, dayRemoved: 40),   // net = 60
+            csp(dayOffset: 1, from: base, dayAdded: 200, dayRemoved: 0),    // net = 200; cumNet = 260
+        ]
+        let now = utcCal.date(byAdding: .day, value: 1, to: utcCal.startOfDay(for: base))!
+        let points = tokensPerNetLine(
+            tokenDailyByCwdPerAccount: tokensByAcct,
+            projectCwds: [cwd],
+            codeHistory: history,
+            now: now
+        )
+        XCTAssertEqual(points.count, 2)
+        // Day 0: cumTokens=6000, cumLines=60 (net, not 100 gross) → 6000/60×100 = 10000.
+        XCTAssertEqual(points[0].tokensPer100Lines, 10000.0, accuracy: 0.01,
+                       "denominator must be NET lines (additions − deletions), not gross additions")
+        // Day 1: cumTokens=6000 (no new tokens), cumLines=60+200=260 → 6000/260×100 ≈ 2307.69.
+        XCTAssertEqual(points[1].tokensPer100Lines, 6000.0 / 260.0 * 100.0, accuracy: 0.01,
+                       "cumulative net lines accumulate correctly across days with and without deletions")
+    }
+
+    /// FIX 3: when cumulative net lines go to zero (heavy deletion day bringing it back to 0),
+    /// the ratio is 0 (no divide-by-zero), same as the existing zero-guard.
+    func testTokensPerNetLineCumNetZeroAfterDeletionsYieldsZeroRatio() {
+        let cwd = "/ws/proj"
+        let tokensByAcct: [[String: [DayUsage]]] = [
+            [cwd: [du(dayOffset: 0, from: base, input: 500, output: 0),
+                   du(dayOffset: 1, from: base, input: 500, output: 0)]],
+        ]
+        let history: [CodeStatsPoint] = [
+            csp(dayOffset: 0, from: base, dayAdded: 100, dayRemoved: 0),   // cumNet=100
+            csp(dayOffset: 1, from: base, dayAdded: 0,   dayRemoved: 100), // cumNet=0 (heavy deletion)
+        ]
+        let now = utcCal.date(byAdding: .day, value: 1, to: utcCal.startOfDay(for: base))!
+        let points = tokensPerNetLine(
+            tokenDailyByCwdPerAccount: tokensByAcct,
+            projectCwds: [cwd],
+            codeHistory: history,
+            now: now
+        )
+        XCTAssertEqual(points.count, 2)
+        // Day 0: cumNet=100, ratio = 500/100*100 = 500.
+        XCTAssertEqual(points[0].tokensPer100Lines, 500.0, accuracy: 0.01)
+        // Day 1: cumNet=0 → ratio must be 0 (guard against divide-by-zero).
+        XCTAssertEqual(points[1].tokensPer100Lines, 0.0,
+                       "cumulative net lines ≤0 must yield ratio 0, not NaN/inf")
     }
 }

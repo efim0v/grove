@@ -27,6 +27,12 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
     /// addition to `.gitignore` / `.ignorestats` and the always-skipped dirs).
     /// Back-compat: absent from old JSON decodes to [] (see init(from:)).
     public var statsIgnoredFolders: [String]
+    /// Launch every Claude session for this project (new AND resume) with
+    /// `--dangerously-skip-permissions`, for fully-autonomous agents that must not
+    /// stop for per-command confirmations. OFF by default (the flag is dangerous —
+    /// it disables Claude's tool-permission gating). Back-compat: absent from old
+    /// JSON decodes to false (see init(from:)).
+    public var dangerouslySkipPermissions: Bool
 
     public init(
         id: UUID = UUID(),
@@ -43,7 +49,8 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         defaultModel: String? = nil,
         defaultEffort: String? = nil,
         accentColor: String? = nil,
-        statsIgnoredFolders: [String] = []
+        statsIgnoredFolders: [String] = [],
+        dangerouslySkipPermissions: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -60,12 +67,14 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         self.defaultEffort = defaultEffort
         self.accentColor = accentColor
         self.statsIgnoredFolders = statsIgnoredFolders
+        self.dangerouslySkipPermissions = dangerouslySkipPermissions
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, path, workspacesRoot, branchTemplate, baseBranchOverrides
         case postCreateHooks, excludedRepos, scanDepth, defaultAccount, seedFiles
         case defaultModel, defaultEffort, accentColor, statsIgnoredFolders
+        case dangerouslySkipPermissions
     }
 
     public init(from decoder: Decoder) throws {
@@ -85,6 +94,7 @@ public struct ProjectConfig: Codable, Identifiable, Sendable, Equatable {
         defaultEffort = try c.decodeIfPresent(String.self, forKey: .defaultEffort)
         accentColor = try c.decodeIfPresent(String.self, forKey: .accentColor)
         statsIgnoredFolders = try c.decodeIfPresent([String].self, forKey: .statsIgnoredFolders) ?? []
+        dangerouslySkipPermissions = try c.decodeIfPresent(Bool.self, forKey: .dangerouslySkipPermissions) ?? false
     }
 }
 
@@ -160,6 +170,11 @@ public struct AccountConfig: Codable, Sendable, Equatable {
     /// decodes to false (see init(from:)).
     public var sharedStore: Bool
     public var monitoring: Bool
+    /// True when the user explicitly disabled monitoring via the UI toggle.
+    /// Distinguishes "user turned it off" from "never enabled" so that
+    /// reconcileMonitoring does not silently re-enable an account the user
+    /// deliberately disabled. Back-compat: absent from old JSON decodes to false.
+    public var monitoringDisabledByUser: Bool
     public var savedStatusline: String?
     public var defaultModel: String?
     public var defaultEffort: String?
@@ -169,6 +184,7 @@ public struct AccountConfig: Codable, Sendable, Equatable {
         configDir: String,
         sharedStore: Bool = false,
         monitoring: Bool = false,
+        monitoringDisabledByUser: Bool = false,
         savedStatusline: String? = nil,
         defaultModel: String? = nil,
         defaultEffort: String? = nil
@@ -177,6 +193,7 @@ public struct AccountConfig: Codable, Sendable, Equatable {
         self.configDir = configDir
         self.sharedStore = sharedStore
         self.monitoring = monitoring
+        self.monitoringDisabledByUser = monitoringDisabledByUser
         self.savedStatusline = savedStatusline
         self.defaultModel = defaultModel
         self.defaultEffort = defaultEffort
@@ -184,7 +201,7 @@ public struct AccountConfig: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case name, configDir, sharedStore
-        case monitoring, savedStatusline, defaultModel, defaultEffort
+        case monitoring, monitoringDisabledByUser, savedStatusline, defaultModel, defaultEffort
     }
 
     public init(from decoder: Decoder) throws {
@@ -193,6 +210,7 @@ public struct AccountConfig: Codable, Sendable, Equatable {
         configDir = try c.decode(String.self, forKey: .configDir)
         sharedStore = try c.decodeIfPresent(Bool.self, forKey: .sharedStore) ?? false
         monitoring = try c.decodeIfPresent(Bool.self, forKey: .monitoring) ?? false
+        monitoringDisabledByUser = try c.decodeIfPresent(Bool.self, forKey: .monitoringDisabledByUser) ?? false
         savedStatusline = try c.decodeIfPresent(String.self, forKey: .savedStatusline)
         defaultModel = try c.decodeIfPresent(String.self, forKey: .defaultModel)
         defaultEffort = try c.decodeIfPresent(String.self, forKey: .defaultEffort)

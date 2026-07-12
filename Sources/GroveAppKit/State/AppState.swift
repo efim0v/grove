@@ -1428,31 +1428,60 @@ extension AppState {
         }
         guard let i = config.accounts.firstIndex(where: { $0.name == account.name }) else { return }
         config.accounts[i].monitoring = true
+        config.accounts[i].monitoringDisabledByUser = false
         config.accounts[i].savedStatusline = saved
         persist()
     }
 
     /// Restores the saved original statusline command and clears monitoring.
+    /// Sets `monitoringDisabledByUser=true` so reconcileMonitoring knows not to
+    /// silently re-enable this account on the next launch.
     public func disableMonitoring(_ account: AccountConfig) {
         let installer = StatuslineInstaller(scriptDir: statuslineScriptDir)
         let dir = expandTilde(account.configDir)
         do { try installer.uninstall(configDir: dir, savedStatusline: account.savedStatusline) }
-        catch { actionError = "Couldn't disable monitoring for “\(account.name)”: \(error.localizedDescription)"; return }
+        catch { actionError = "Couldn't disable monitoring for \"\(account.name)\": \(error.localizedDescription)"; return }
         guard let i = config.accounts.firstIndex(where: { $0.name == account.name }) else { return }
         config.accounts[i].monitoring = false
+        config.accounts[i].monitoringDisabledByUser = true
         config.accounts[i].savedStatusline = nil
         persist()
     }
 
     /// Launch reconcile (Phase 5A): auto-installs the grove statusline wrapper for
-    /// every configured account not yet monitored — so accounts created before 5A (or
-    /// an account whose monitoring was never enabled, e.g. icloud) start capturing
-    /// usage. Already-monitored accounts are skipped, so a user who explicitly ran
-    /// `disableMonitoring` is not silently re-enabled on the next launch. Best-effort
-    /// per account: a missing/locked config dir is skipped without surfacing an error.
+    /// every configured account not yet monitored AND not explicitly disabled by the
+    /// user — so accounts created before 5A (or an account whose monitoring was never
+    /// enabled, e.g. icloud) start capturing usage. Accounts where the user explicitly
+    /// ran `disableMonitoring` are skipped (monitoringDisabledByUser=true), so the
+    /// user's intent is respected across launches. Best-effort per account: a
+    /// missing/locked config dir is skipped without surfacing an error.
+    /// File I/O runs off-main to keep launch responsive.
     public func reconcileMonitoring() {
-        for account in config.accounts where !account.monitoring {
-            enableMonitoring(account, reportErrors: false)
+        // Gather accounts needing install on the main actor, then do file I/O off-main.
+        let toInstall = config.accounts.filter { !$0.monitoring && !$0.monitoringDisabledByUser }
+        guard !toInstall.isEmpty else { return }
+        let scriptDir = statuslineScriptDir
+        Task.detached(priority: .utility) { [weak self] in
+            // Run install file I/O per account off the main thread.
+            var installed: [(name: String, savedStatusline: String?)] = []
+            for account in toInstall {
+                let dir = expandTilde(account.configDir)
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                let installer = StatuslineInstaller(scriptDir: scriptDir)
+                if let saved = try? installer.install(configDir: dir) {
+                    installed.append((name: account.name, savedStatusline: saved))
+                }
+            }
+            // Hop back to main actor to persist config changes.
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for result in installed {
+                    guard let i = self.config.accounts.firstIndex(where: { $0.name == result.name }) else { continue }
+                    self.config.accounts[i].monitoring = true
+                    self.config.accounts[i].savedStatusline = result.savedStatusline
+                }
+                if !installed.isEmpty { self.persist() }
+            }
         }
     }
 }
