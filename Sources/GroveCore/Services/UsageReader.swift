@@ -31,9 +31,13 @@ public struct UsageSnapshot: Sendable, Equatable {
     public let sevenDaySonnet: CapturedWindow?
     /// 7-day Opus-specific window. OAuth-only (seven_day_opus). nil when unavailable.
     public let sevenDayOpus: CapturedWindow?
-    /// 7-day Fable-specific window. OAuth-only (seven_day_fable). nil when unavailable.
-    /// TODO: verify seven_day_fable key against a live payload
+    /// 7-day Fable-specific window. OAuth-only (legacy seven_day_fable key). nil when unavailable.
     public let sevenDayFable: CapturedWindow?
+    /// Model-scoped 7-day window from OAuth `limits[]` `weekly_scoped` entry.
+    /// The PRIMARY source for the per-model bar. Populated from `AppState.oauthSnapshot`.
+    public let weeklyScopedWindow: CapturedWindow?
+    /// Display name of the model for `weeklyScopedWindow` (e.g. "Fable", "Opus").
+    public let weeklyScopedModel: String?
     // Public init so cross-module callers/tests can construct a snapshot directly.
     public init(accountName: String, sessionId: String, capturedAt: Date?, cwd: String?,
                 modelId: String?, modelDisplayName: String?, effort: String?,
@@ -41,7 +45,9 @@ public struct UsageSnapshot: Sendable, Equatable {
                 fiveHour: CapturedWindow?, sevenDay: CapturedWindow?,
                 sevenDaySonnet: CapturedWindow? = nil,
                 sevenDayOpus: CapturedWindow? = nil,
-                sevenDayFable: CapturedWindow? = nil) {
+                sevenDayFable: CapturedWindow? = nil,
+                weeklyScopedWindow: CapturedWindow? = nil,
+                weeklyScopedModel: String? = nil) {
         self.accountName = accountName
         self.sessionId = sessionId
         self.capturedAt = capturedAt
@@ -57,6 +63,8 @@ public struct UsageSnapshot: Sendable, Equatable {
         self.sevenDaySonnet = sevenDaySonnet
         self.sevenDayOpus = sevenDayOpus
         self.sevenDayFable = sevenDayFable
+        self.weeklyScopedWindow = weeklyScopedWindow
+        self.weeklyScopedModel = weeklyScopedModel
     }
 }
 

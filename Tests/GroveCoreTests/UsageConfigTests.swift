@@ -23,7 +23,7 @@ final class UsageConfigTests: XCTestCase {
         // usage block absent -> defaults.
         XCTAssertEqual(decoded.usage, UsageSettings())
         XCTAssertEqual(decoded.usage.refreshSeconds, 15)
-        XCTAssertFalse(decoded.usage.oauthLiveEnabled)
+        XCTAssertTrue(decoded.usage.oauthLiveEnabled, "absent oauthLiveEnabled defaults to true after Phase 5C-fix")
         // account fields absent -> false / nil.
         XCTAssertEqual(decoded.accounts.map(\.monitoring), [false, false])
         XCTAssertEqual(decoded.accounts.map(\.savedStatusline), [nil, nil])

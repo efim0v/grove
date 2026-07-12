@@ -1320,12 +1320,24 @@ extension AppState {
         let sonnet = window(usage.sevenDaySonnet)
         let opus = window(usage.sevenDayOpus)
         let fable = window(usage.sevenDayFable)
-        guard five != nil || seven != nil || sonnet != nil || opus != nil || fable != nil else { return nil }
+        // Plumb the limits[]-derived model-scoped window. This is the PRIMARY source
+        // for the per-model bar — title and utilization come from the weekly_scoped entry.
+        let scopedWindow: CapturedWindow?
+        if let s = usage.weeklyScoped {
+            scopedWindow = CapturedWindow(usedPercentage: min(max(s.utilization, 0), 100),
+                                          resetsAt: s.resetsAt)
+        } else {
+            scopedWindow = nil
+        }
+        let scopedModel = usage.weeklyScoped?.modelDisplayName
+        guard five != nil || seven != nil || sonnet != nil || opus != nil || fable != nil
+                || scopedWindow != nil else { return nil }
         return UsageSnapshot(accountName: accountName, sessionId: "oauth", capturedAt: now, cwd: nil,
                              modelId: nil, modelDisplayName: nil, effort: nil,
                              contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
                              fiveHour: five, sevenDay: seven, sevenDaySonnet: sonnet,
-                             sevenDayOpus: opus, sevenDayFable: fable)
+                             sevenDayOpus: opus, sevenDayFable: fable,
+                             weeklyScopedWindow: scopedWindow, weeklyScopedModel: scopedModel)
     }
 
     private func tier(for account: AccountConfig) -> String? {

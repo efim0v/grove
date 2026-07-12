@@ -25,24 +25,40 @@ public struct OAuthWindow: Sendable, Equatable {
     }
 }
 
+/// A model-scoped weekly window from the `limits[]` `weekly_scoped` entry.
+public struct OAuthScopedWindow: Sendable, Equatable {
+    public let utilization: Double
+    public let resetsAt: String?
+    public let modelDisplayName: String?
+    public init(utilization: Double, resetsAt: String?, modelDisplayName: String?) {
+        self.utilization = utilization
+        self.resetsAt = resetsAt
+        self.modelDisplayName = modelDisplayName
+    }
+}
+
 public struct OAuthUsage: Sendable, Equatable {
     public let fiveHour: OAuthWindow?
     public let sevenDay: OAuthWindow?
     public let sevenDaySonnet: OAuthWindow?
     public let sevenDayOpus: OAuthWindow?
-    /// 7-day Fable-specific window. Parsed opportunistically from the OAuth response.
-    /// The exact JSON key ("seven_day_fable") is assumed but not yet verified against
-    /// a live Fable payload.
-    /// TODO: verify seven_day_fable key against a live payload
+    /// 7-day Fable-specific window. Parsed opportunistically from the OAuth response
+    /// via the legacy per-model top-level keys (currently null in live payloads).
     public let sevenDayFable: OAuthWindow?
+    /// Model-scoped weekly window derived from `limits[]` `kind:"weekly_scoped"`.
+    /// This is the PRIMARY source for the per-model bar. Contains the model display
+    /// name (e.g. "Fable", "Opus") from `scope.model.display_name`.
+    public let weeklyScoped: OAuthScopedWindow?
     public init(fiveHour: OAuthWindow?, sevenDay: OAuthWindow?,
                 sevenDaySonnet: OAuthWindow?, sevenDayOpus: OAuthWindow?,
-                sevenDayFable: OAuthWindow? = nil) {
+                sevenDayFable: OAuthWindow? = nil,
+                weeklyScoped: OAuthScopedWindow? = nil) {
         self.fiveHour = fiveHour
         self.sevenDay = sevenDay
         self.sevenDaySonnet = sevenDaySonnet
         self.sevenDayOpus = sevenDayOpus
         self.sevenDayFable = sevenDayFable
+        self.weeklyScoped = weeklyScoped
     }
 }
 
@@ -143,13 +159,41 @@ public actor OAuthUsageClient {
             let resetsAt = obj["resets_at"] as? String
             return OAuthWindow(utilization: utilization, resetsAt: resetsAt)
         }
+
+        // Parse limits[] for the model-scoped weekly window. The `weekly_scoped` entry
+        // carries the per-model bar data (percent, resets_at, scope.model.display_name).
+        // Prefer the entry with is_active:true when there are multiple weekly_scoped entries.
+        var weeklyScoped: OAuthScopedWindow? = nil
+        if let limits = json["limits"] as? [[String: Any]] {
+            var candidate: OAuthScopedWindow? = nil
+            var candidateIsActive = false
+            for entry in limits {
+                guard (entry["kind"] as? String) == "weekly_scoped" else { continue }
+                let isActive = (entry["is_active"] as? Bool) ?? false
+                // Skip inactive entries if we already have an active one.
+                if candidateIsActive && !isActive { continue }
+                let pct: Double
+                if let n = entry["percent"] as? Int { pct = Double(n) }
+                else if let n = entry["percent"] as? Double { pct = n }
+                else { continue }
+                let resetsAt = entry["resets_at"] as? String
+                let scope = entry["scope"] as? [String: Any]
+                let model = scope?["model"] as? [String: Any]
+                let displayName = model?["display_name"] as? String
+                candidate = OAuthScopedWindow(utilization: pct, resetsAt: resetsAt,
+                                              modelDisplayName: displayName)
+                candidateIsActive = isActive
+            }
+            weeklyScoped = candidate
+        }
+
         return OAuthUsage(
             fiveHour: window("five_hour"),
             sevenDay: window("seven_day"),
             sevenDaySonnet: window("seven_day_sonnet"),
             sevenDayOpus: window("seven_day_opus"),
-            // TODO: verify seven_day_fable key against a live payload
-            sevenDayFable: window("seven_day_fable")
+            sevenDayFable: window("seven_day_fable"),
+            weeklyScoped: weeklyScoped
         )
     }
 }

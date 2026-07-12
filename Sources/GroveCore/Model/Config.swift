@@ -120,12 +120,14 @@ public struct SeedFile: Codable, Sendable, Equatable {
 
 /// Global usage subsystem settings (spec §6). `refreshSeconds` is the scan-tick
 /// cadence for reading capture snapshots / analytics; `oauthLiveEnabled` gates
-/// the fragile, undocumented OAuth usage poll (§C.4) — OFF by default.
+/// the OAuth usage poll (§C.4) — ON by default (Phase 5C-fix). The client has a
+/// 180s cache + 429 backoff so this is safe; a one-time keychain prompt may appear
+/// on first run. Set to false in config JSON to opt out.
 public struct UsageSettings: Codable, Sendable, Equatable {
     public var refreshSeconds: Int
     public var oauthLiveEnabled: Bool
 
-    public init(refreshSeconds: Int = 15, oauthLiveEnabled: Bool = false) {
+    public init(refreshSeconds: Int = 15, oauthLiveEnabled: Bool = true) {
         self.refreshSeconds = refreshSeconds
         self.oauthLiveEnabled = oauthLiveEnabled
     }
@@ -135,7 +137,7 @@ public struct UsageSettings: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         refreshSeconds = try c.decodeIfPresent(Int.self, forKey: .refreshSeconds) ?? 15
-        oauthLiveEnabled = try c.decodeIfPresent(Bool.self, forKey: .oauthLiveEnabled) ?? false
+        oauthLiveEnabled = try c.decodeIfPresent(Bool.self, forKey: .oauthLiveEnabled) ?? true
     }
 }
 

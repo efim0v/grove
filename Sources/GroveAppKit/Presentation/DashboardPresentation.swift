@@ -352,24 +352,36 @@ func latestCapture(_ snapshots: [UsageSnapshot]) -> UsageSnapshot? {
 
 // MARK: - Model-specific weekly window
 
-/// Maps the active model's id to the dedicated 7-day limit window and its card title.
+/// Maps the active model to the dedicated 7-day limit window and its card title.
 ///
-/// Model family resolution by prefix:
-///   - `claude-opus-*`   → "Weekly Opus"  / sevenDayOpus
-///   - `claude-fable-*`  → "Weekly Fable" / sevenDayFable
-///   - `claude-sonnet-*` → "Weekly Sonnet"/ sevenDaySonnet
-///   - anything else / nil → title "Weekly Model", window nil (card hidden via hasData=false)
+/// Priority:
+///   1. OAuth `limits[]` `weekly_scoped` entry (from `weeklyScopedWindow`/`weeklyScopedModel`
+///      on the synthetic OAuth snapshot). Title = "Weekly \(modelDisplayName)" (e.g.
+///      "Weekly Fable"). This is the PRIMARY source — it always carries the right model
+///      name from the live API response regardless of local model-id prefix matching.
+///   2. Fall back to the legacy per-model top-level fields keyed off `latestModelId` prefix:
+///      - `claude-opus-*`   → "Weekly Opus"  / sevenDayOpus
+///      - `claude-fable-*`  → "Weekly Fable" / sevenDayFable
+///      - `claude-sonnet-*` → "Weekly Sonnet"/ sevenDaySonnet
+///   3. Unknown / nil model id → title "Weekly Model", window nil (card hidden via hasData=false)
 ///
-/// The active model is resolved from the latest NON-oauth snapshot that carries a modelId
-/// (statusline captures set the model; the synthetic "oauth" capture has modelId==nil).
-/// The window value itself is read from `currentWindow` across ALL snapshots (OAuth-only
-/// snapshots carry the per-model limit values even though they don't set modelId).
+/// The active model for the fallback path is resolved from the latest NON-oauth snapshot
+/// that carries a modelId (statusline captures set the model; the synthetic "oauth" capture
+/// has modelId==nil). The window value itself is read from `currentWindow` across ALL
+/// snapshots for both paths.
 ///
 /// For "Overall" (multi-account), pass all snapshots merged: the most-recent live model
 /// determines the family; the window value is picked from the same merged set.
 public func modelWindow(latestModelId: String?, snapshots: [UsageSnapshot], now: Date)
     -> (title: String, window: CapturedWindow?) {
-    // Resolve model family from the id prefix (strip the [1m] variant suffix for matching).
+    // 1. PRIMARY: OAuth limits[]-derived model-scoped window.
+    //    The oauth snapshot carries weeklyScopedWindow + weeklyScopedModel.
+    if let scopedModel = currentWeeklyScopedModel(snapshots, now: now),
+       let scopedWindow = currentWindow(snapshots, { $0.weeklyScopedWindow }, now: now) {
+        return ("Weekly \(scopedModel)", scopedWindow)
+    }
+
+    // 2. FALLBACK: legacy per-model top-level fields keyed off model-id prefix.
     let baseId = latestModelId.map { id -> String in
         if let bracket = id.firstIndex(of: "[") { return String(id[..<bracket]) }
         return id
@@ -384,6 +396,24 @@ public func modelWindow(latestModelId: String?, snapshots: [UsageSnapshot], now:
     default:
         return ("Weekly Model", nil)
     }
+}
+
+/// Returns the model display name from the most-recently-captured fresh OAuth snapshot
+/// that carries a `weeklyScopedModel`. Used by `modelWindow` as the PRIMARY source for
+/// the bar title.
+private func currentWeeklyScopedModel(_ snapshots: [UsageSnapshot], now: Date) -> String? {
+    var best: (at: Date, model: String)?
+    for snap in snapshots {
+        guard let model = snap.weeklyScopedModel,
+              let window = snap.weeklyScopedWindow,
+              let capturedAt = snap.capturedAt else { continue }
+        // Skip stale windows.
+        if let raw = window.resetsAt, let reset = parseISODate(raw), reset <= now { continue }
+        if best == nil || capturedAt > best!.at { best = (capturedAt, model) }
+    }
+    if let best { return best.model }
+    // Fallback: any snapshot with a scoped model (even stale), matching latestCapture behaviour.
+    return latestCapture(snapshots.filter { $0.weeklyScopedModel != nil })?.weeklyScopedModel
 }
 
 /// Resolves the active model id from the most-recent NON-oauth snapshot that carries one.
