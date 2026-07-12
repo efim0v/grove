@@ -84,16 +84,55 @@ final class DashboardPresentationTests: XCTestCase {
         let today = c.startOfDay(for: now)
         let days = (0..<7).reversed().map { offset -> DayUsage in
             let day = c.date(byAdding: .day, value: -offset, to: today)!
-            return DayUsage(day: day, inputTokens: offset * 100)   // older days heavier
+            return DayUsage(day: day, inputTokens: offset * 100,
+                            cost: Double(offset))            // older days heavier (by COST now)
         }
         let bars = dailyUsageBars(days, now: now)
         XCTAssertEqual(bars.count, 7)
         XCTAssertEqual(bars.last?.label, "Today")
         XCTAssertEqual(bars[5].label, "Yest.")
         XCTAssertEqual(bars.first?.label.count, 3)            // a weekday abbreviation
-        // intensity is relative to the busiest day (the oldest here, 600 tokens).
+        // intensity is now relative to the busiest day BY COST (the oldest here, $6).
         XCTAssertEqual(bars.first?.intensity ?? 0, 1.0, accuracy: 1e-9)
         XCTAssertEqual(bars.last?.intensity ?? 1, 0.0, accuracy: 1e-9)
+    }
+
+    func testMergeLedgerCostOverridesTrackedDaysAndKeepsUntracked() {
+        let c = cal()
+        let d0 = c.startOfDay(for: now)
+        let d1 = c.date(byAdding: .day, value: -1, to: d0)!
+        let daily = [DayUsage(day: d1, inputTokens: 100, cost: 2.0),
+                     DayUsage(day: d0, inputTokens: 200, cost: 5.0)]
+        // Ledger tracked only d0 (a different cost); d1 is untracked (absent from the dict).
+        let merged = mergeLedgerCost(daily, ledgerCostByDay: [d0: 9.5])
+        XCTAssertEqual(merged[0].cost, 2.0, accuracy: 1e-9, "untracked day keeps transcript cost")
+        XCTAssertEqual(merged[1].cost, 9.5, accuracy: 1e-9, "tracked day uses the ledger delta")
+        XCTAssertEqual(merged[0].inputTokens, 100, "tokens carried through unchanged")
+        XCTAssertEqual(merged[1].inputTokens, 200)
+        // A tracked day with a genuine zero overrides transcript to 0 (membership, not value, gates it).
+        let merged0 = mergeLedgerCost(daily, ledgerCostByDay: [d0: 0])
+        XCTAssertEqual(merged0[1].cost, 0, accuracy: 1e-9, "tracked-but-zero overrides to 0")
+    }
+
+    /// End-to-end through `accountDashboard`: the ledger cost-by-day must override the right
+    /// column day. This is also the cross-module DAY-KEY ALIGNMENT guard — the ledger key is a
+    /// UTC start-of-day and the analytics daily axis is the same; if either calendar diverged the
+    /// override would silently miss and this fails.
+    func testAccountDashboardAppliesLedgerCostByDay() {
+        let c = cal()
+        let tracked = c.startOfDay(for: now)                            // a day on the 7-day axis
+        let untracked = c.date(byAdding: .day, value: -3, to: tracked)!
+        let analytics = AccountUsageAnalytics(
+            accountName: "a", today: UsageTotals(), thisMonth: UsageTotals(), last7d: UsageTotals(),
+            daily: [DayUsage(day: untracked, inputTokens: 10, cost: 1.0),
+                    DayUsage(day: tracked, inputTokens: 20, cost: 4.0)],
+            sessions: [:], costByModel: [:], byCwd: [:], unpricedModels: [], unpricedCost: 0)
+        let col = accountDashboard(name: "a", analytics: analytics, snapshots: [], now: now,
+                                   ledgerCostByDay: [tracked: 9.5])
+        XCTAssertEqual(col.daily.first { $0.day == tracked }?.cost ?? 0, 9.5, accuracy: 1e-9,
+                       "ledger delta overrides transcript on the tracked day (day keys aligned)")
+        XCTAssertEqual(col.daily.first { $0.day == untracked }?.cost ?? 0, 1.0, accuracy: 1e-9,
+                       "untracked day keeps its transcript cost")
     }
 
     func testMergeDailyUsageSumsElementwise() {
@@ -151,6 +190,20 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(shares[1].percent, 20, accuracy: 1e-9)
     }
 
+    // MARK: - tokenCellText (em-dash for zero counts)
+
+    func testTokenCellTextZeroIsEmDash() {
+        XCTAssertEqual(tokenCellText(count: 0), "—",
+                       "zero token count must render em-dash, not '0'")
+    }
+
+    func testTokenCellTextNonZeroUsesCompactFormatter() {
+        // 1_234 -> "1.2k" (one decimal, lowercase k)
+        XCTAssertEqual(tokenCellText(count: 1_234), "1.2k")
+        XCTAssertEqual(tokenCellText(count: 999), "999")
+        XCTAssertEqual(tokenCellText(count: 3_000_000), "3M")
+    }
+
     // MARK: - token rows
 
     func testTokenRowsSumCacheTiers() {
@@ -162,6 +215,66 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(rows[0].input, 100)
         XCTAssertEqual(rows[0].cache, 20)        // 10 read + 5 + 5 write
         XCTAssertEqual(rows[0].cost, 1.5)
+    }
+
+    // MARK: - tokenRows ledger-cost fallback
+
+    func testTokenRowsLedgerFallbackUsedWhenTranscriptCostZero() {
+        // transcript cost is 0 (lost days); ledger has real cost — ledger must win
+        let rows = tokenRows(today: UsageTotals(cost: 0), thisMonth: UsageTotals(cost: 0),
+                             ledgerTodayCost: 923.0, ledgerMonthCost: 1_500.0)
+        XCTAssertEqual(rows[0].cost, 923.0, accuracy: 1e-9,
+                       "Today row must use ledger cost when transcript is 0")
+        XCTAssertEqual(rows[1].cost, 1_500.0, accuracy: 1e-9,
+                       "Month row must use ledger cost when transcript is 0")
+    }
+
+    func testTokenRowsTranscriptCostPreferredWhenNonZero() {
+        // transcript has real cost — must NOT be overridden by the ledger
+        let rows = tokenRows(today: UsageTotals(cost: 5.0), thisMonth: UsageTotals(cost: 12.0),
+                             ledgerTodayCost: 923.0, ledgerMonthCost: 1_500.0)
+        XCTAssertEqual(rows[0].cost, 5.0, accuracy: 1e-9,
+                       "Today row must prefer transcript cost when non-zero")
+        XCTAssertEqual(rows[1].cost, 12.0, accuracy: 1e-9,
+                       "Month row must prefer transcript cost when non-zero")
+    }
+
+    func testTokenRowsNilLedgerCostLeavesZeroAsZero() {
+        // no ledger at all — cost stays at 0 (not crashing / not substituting garbage)
+        let rows = tokenRows(today: UsageTotals(cost: 0), thisMonth: UsageTotals(cost: 0),
+                             ledgerTodayCost: nil, ledgerMonthCost: nil)
+        XCTAssertEqual(rows[0].cost, 0, accuracy: 1e-9)
+        XCTAssertEqual(rows[1].cost, 0, accuracy: 1e-9)
+    }
+
+    // MARK: - ledgerMonthCost bucketing
+
+    func testLedgerMonthCostSumsOnlyCurrentMonthDays() {
+        // Build a ledger whose days span two months; only the current month's days must sum.
+        let c = UsageCostLedger.utcCalendar
+        // now = 2025-06-15; current month is June 2025.
+        let today = c.startOfDay(for: now)                      // 2025-06-15
+        let twoMonthsAgo = c.date(byAdding: .month, value: -2, to: today)!  // ~2025-04-15
+        let prevMonth    = c.date(byAdding: .month, value: -1, to: today)!  // ~2025-05-15
+        let ledger = UsageCostLedger(days: [
+            LedgerDay(day: twoMonthsAgo, costUSD: 100),
+            LedgerDay(day: prevMonth,    costUSD: 50),
+            LedgerDay(day: today,        costUSD: 30),
+        ])
+        let monthCost = ledgerMonthCost(ledger: ledger, now: now)
+        XCTAssertEqual(monthCost, 30, accuracy: 1e-9,
+                       "Only the current UTC calendar month's days should be summed")
+    }
+
+    func testLedgerTodayCostReturnsDayTotal() {
+        let c = UsageCostLedger.utcCalendar
+        let today = c.startOfDay(for: now)
+        let yesterday = c.date(byAdding: .day, value: -1, to: today)!
+        let ledger = UsageCostLedger(days: [
+            LedgerDay(day: yesterday, costUSD: 10),
+            LedgerDay(day: today, costUSD: 42),
+        ])
+        XCTAssertEqual(ledgerTodayCost(ledger: ledger, now: now), 42, accuracy: 1e-9)
     }
 
     // MARK: - account & overall columns

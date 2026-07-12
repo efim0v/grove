@@ -18,16 +18,21 @@ struct DashboardScreen: View {
             accountDashboard(name: account.name,
                              analytics: state.usageByAccount[account.name],
                              snapshots: state.snapshotsByAccount[account.name] ?? [],
-                             now: now)
+                             now: now,
+                             ledgerCostByDay: state.ledgerCostByDay(forAccount: account.name))
         }
         guard perAccount.count > 1 else { return perAccount }
+        let ledgerByAccount = Dictionary(uniqueKeysWithValues: state.config.accounts.map {
+            ($0.name, state.ledgerCostByDay(forAccount: $0.name))
+        })
         let overall = overallDashboard(
             analyticsByAccount: state.usageByAccount,
             snapshotsByAccount: state.snapshotsByAccount,
             aggregateFiveHour: state.aggregateRemaining(window: .fiveHour, now: now),
             aggregateWeekly: state.aggregateRemaining(window: .sevenDay, now: now),
             aggregateSonnet: state.aggregateRemaining(window: .sevenDaySonnet, now: now),
-            now: now)
+            now: now,
+            ledgerCostByAccount: ledgerByAccount)
         return [overall] + perAccount
     }
 
@@ -235,18 +240,21 @@ struct DailyUsageCardView: View {
             HStack(spacing: 6) {
                 CardLabel(title: "Daily Usage", systemImage: "chart.bar.fill")
                 Spacer()
-                // Unit when idle; the hovered bar's detail when pointing at one.
-                // Compact ("Wed · 2.4M · $8.29", no "tok") + scale-don't-truncate
-                // so it fits beside the title in the narrow Charts width.
+                // Unit when idle; the hovered bar's cost when pointing at one. COST is the bar
+                // metric (the recent ledger days carry no token count), so the label leads with
+                // cost; scale-don't-truncate so it fits beside the title in the narrow width.
                 if let hovered {
-                    Text("\(hovered.label) · \(formatCompactTokens(hovered.totalTokens)) · \(formatCompactCost(hovered.cost))")
+                    Text("\(hovered.label) · \(formatCompactCost(hovered.cost))")
                         .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
                         .lineLimit(1).minimumScaleFactor(0.7)
                 } else {
-                    Text("tokens / day").font(.caption2).foregroundStyle(.tertiary)
+                    Text("cost / day").font(.caption2).foregroundStyle(.tertiary)
                 }
             }
-            if bars.allSatisfy({ $0.totalTokens == 0 }) {
+            // Height is cost, but a week with token activity yet zero PRICED cost (unpriced /
+            // synthetic-only models) should still render its bars — only a truly empty week
+            // (no cost AND no tokens) shows the empty state.
+            if bars.allSatisfy({ $0.cost == 0 && $0.totalTokens == 0 }) {
                 Text("No usage in the last 7 days")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 96)
@@ -263,7 +271,7 @@ struct DailyUsageCardView: View {
     private var chart: some View {
         Chart(bars) { bar in
             BarMark(x: .value("Day", bar.label),
-                    y: .value("Tokens", bar.totalTokens),
+                    y: .value("Cost", bar.cost),
                     width: .ratio(0.88))   // wide bars, only a few px between them
                 .foregroundStyle(intensityColor(bar.intensity)
                     .opacity(hoverLabel == nil || hoverLabel == bar.label ? 1 : 0.4))
@@ -290,14 +298,14 @@ struct DailyUsageCardView: View {
 
     /// Manual bars for snapshot mode (Swift Charts can render blank offscreen).
     private var snapshotBars: some View {
-        let maxTokens = max(bars.map(\.totalTokens).max() ?? 1, 1)
+        let maxCost = max(bars.map(\.cost).max() ?? 0, 0.01)   // cost is fractional; avoid /0
         return HStack(alignment: .bottom, spacing: 3) {   // only a few px between bars
             ForEach(bars) { bar in
                 VStack(spacing: 4) {
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .fill(intensityColor(bar.intensity))
                         .frame(maxWidth: .infinity)        // wide bars fill the slot
-                        .frame(height: max(2, CGFloat(bar.totalTokens) / CGFloat(maxTokens) * 70))
+                        .frame(height: max(2, CGFloat(bar.cost / maxCost) * 70))
                     Text(bar.label).font(.system(size: 8)).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .bottom)
@@ -324,7 +332,9 @@ struct TokenUsageCardView: View {
                 .help("Each message is counted once (by message id), for the calendar month. "
                     + "Resuming a session replays its history into a new transcript with the SAME "
                     + "message ids — those copies are not re-billed, so Grove does not re-count them. "
-                    + "Tools that count every replayed copy report several× higher.")
+                    + "Tools that count every replayed copy report several× higher. "
+                    + "Token counts show — when per-message records are unavailable (context-continued "
+                    + "or lost-transcript days); cost is always ledger-accurate.")
             HStack(spacing: 6) {
                 cell("", .caption2.weight(.semibold), .secondary, leading: true)
                 cell("Input", .caption2.weight(.semibold), .secondary)
@@ -335,9 +345,9 @@ struct TokenUsageCardView: View {
             ForEach(rows) { row in
                 HStack(spacing: 6) {
                     cell(row.period, .caption, .secondary, leading: true)
-                    cell(formatCompactTokens(row.input), .caption)
-                    cell(formatCompactTokens(row.output), .caption)
-                    cell(formatCompactTokens(row.cache), .caption)
+                    cell(tokenCellText(count: row.input), .caption)
+                    cell(tokenCellText(count: row.output), .caption)
+                    cell(tokenCellText(count: row.cache), .caption)
                     cell(formatCompactCost(row.cost), .caption)
                 }
             }

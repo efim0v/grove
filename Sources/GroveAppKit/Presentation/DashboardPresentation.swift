@@ -136,15 +136,30 @@ public func dailyUsageBars(_ days: [DayUsage], now: Date) -> [DailyUsageBar] {
     fmt.timeZone = cal.timeZone
     fmt.locale = Locale(identifier: "en_US_POSIX")
     fmt.dateFormat = "EEE"
-    let maxTokens = days.map(\.totalTokens).max() ?? 0
+    // Bar height/intensity is driven by COST, not tokens: recent days come from the snapshot
+    // ledger which only has cost, so the whole axis must be cost to be one consistent metric.
+    let maxCost = days.map(\.cost).max() ?? 0
     return days.map { d in
         let label: String
         if cal.isDate(d.day, inSameDayAs: today) { label = "Today" }
         else if let yesterday, cal.isDate(d.day, inSameDayAs: yesterday) { label = "Yest." }
         else { label = fmt.string(from: d.day) }
-        let intensity = maxTokens > 0 ? Double(d.totalTokens) / Double(maxTokens) : 0
+        let intensity = maxCost > 0 ? d.cost / maxCost : 0
         return DailyUsageBar(day: d.day, label: label, totalTokens: d.totalTokens,
                              cost: d.cost, intensity: intensity)
+    }
+}
+
+/// Overrides each day's transcript-derived cost with the snapshot ledger's tracked cost-delta for
+/// the days Grove has actually recorded (membership of the day key in `ledgerCostByDay` IS the
+/// "Grove tracked this day" signal). Untracked days (pre-tracking / gaps) keep their transcript
+/// cost. Tokens are carried through unchanged (only the cost metric is corrected). One consistent
+/// USD-per-day series for `dailyUsageBars` to render.
+public func mergeLedgerCost(_ daily: [DayUsage], ledgerCostByDay: [Date: Double]) -> [DayUsage] {
+    daily.map { d in
+        guard let tracked = ledgerCostByDay[d.day] else { return d }
+        return DayUsage(day: d.day, inputTokens: d.inputTokens, outputTokens: d.outputTokens,
+                        cacheTokens: d.cacheTokens, cost: tracked)
     }
 }
 
@@ -252,12 +267,43 @@ public struct TokenRow: Equatable, Sendable, Identifiable {
     public let cost: Double
 }
 
-public func tokenRows(today: UsageTotals, thisMonth: UsageTotals) -> [TokenRow] {
-    func row(_ period: String, _ t: UsageTotals) -> TokenRow {
-        TokenRow(period: period, input: t.inputTokens, output: t.outputTokens,
-                 cache: t.cacheReadTokens + t.cacheWriteTokens, cost: t.cost)
+/// Renders a token count for display: 0 (genuinely absent data) becomes "—" (em-dash);
+/// non-zero values use the same compact formatter as other numeric cells ("1.2k", "3M", …).
+/// Presentationally honest: a real zero-token day is equally uninformative and equally "—".
+public func tokenCellText(count: Int) -> String {
+    count == 0 ? "—" : formatCompactTokens(count)
+}
+
+/// UTC start-of-day cost from a ledger (0 if the day is absent).
+public func ledgerTodayCost(ledger: UsageCostLedger, now: Date) -> Double {
+    let today = UsageCostLedger.utcCalendar.startOfDay(for: now)
+    return ledger.cost(on: today)
+}
+
+/// Sum of all ledger days that fall within the same UTC calendar month as `now`.
+public func ledgerMonthCost(ledger: UsageCostLedger, now: Date) -> Double {
+    ledger.days.filter { isInSameUTCMonth($0.day, as: now) }.reduce(0) { $0 + $1.costUSD }
+}
+
+/// True when `date` falls in the same UTC year+month as `now`.
+func isInSameUTCMonth(_ date: Date, as now: Date) -> Bool {
+    let cal = UsageCostLedger.utcCalendar
+    let dc = cal.dateComponents([.year, .month], from: date)
+    let nc = cal.dateComponents([.year, .month], from: now)
+    return dc.year == nc.year && dc.month == nc.month
+}
+
+public func tokenRows(today: UsageTotals, thisMonth: UsageTotals,
+                      ledgerTodayCost: Double? = nil, ledgerMonthCost: Double? = nil) -> [TokenRow] {
+    func effectiveCost(_ transcriptCost: Double, _ ledgerCost: Double?) -> Double {
+        transcriptCost > 0 ? transcriptCost : (ledgerCost ?? transcriptCost)
     }
-    return [row("Today", today), row("Month", thisMonth)]
+    func row(_ period: String, _ t: UsageTotals, _ ledgerCost: Double?) -> TokenRow {
+        TokenRow(period: period, input: t.inputTokens, output: t.outputTokens,
+                 cache: t.cacheReadTokens + t.cacheWriteTokens,
+                 cost: effectiveCost(t.cost, ledgerCost))
+    }
+    return [row("Today", today, ledgerTodayCost), row("Month", thisMonth, ledgerMonthCost)]
 }
 
 // MARK: - One dashboard column (Overall, or one account)
@@ -302,7 +348,8 @@ func latestCapture(_ snapshots: [UsageSnapshot]) -> UsageSnapshot? {
 
 /// Builds one account's dashboard column from its analytics + captures.
 public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
-                             snapshots: [UsageSnapshot], now: Date) -> DashboardColumn {
+                             snapshots: [UsageSnapshot], now: Date,
+                             ledgerCostByDay: [Date: Double] = [:]) -> DashboardColumn {
     let fh = currentWindow(snapshots, { $0.fiveHour }, now: now)
     let wk = currentWindow(snapshots, { $0.sevenDay }, now: now)
     let sonnet = currentWindow(snapshots, { $0.sevenDaySonnet }, now: now)
@@ -317,15 +364,20 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
     let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "s.circle.fill",
                                  usedPercentage: sonnet?.usedPercentage ?? 0, resetsAt: sonnet?.resetsAt,
                                  hasData: sonnet != nil, now: now)
+    let todayKey = UsageCostLedger.utcCalendar.startOfDay(for: now)
+    let lTodayCost: Double? = ledgerCostByDay.isEmpty ? nil : ledgerCostByDay[todayKey]
+    let lMonthCost: Double? = ledgerCostByDay.isEmpty ? nil
+        : ledgerCostByDay.filter { isInSameUTCMonth($0.key, as: now) }.values.reduce(0, +)
     return DashboardColumn(
         title: name,
         fiveHour: five,
         weekly: weekly,
         weeklySonnet: weeklySonnet,
-        daily: dailyUsageBars(analytics?.daily ?? [], now: now),
+        daily: dailyUsageBars(mergeLedgerCost(analytics?.daily ?? [], ledgerCostByDay: ledgerCostByDay), now: now),
         models: modelShares(analytics?.sessions ?? [:]),
         tokens: tokenRows(today: analytics?.today ?? UsageTotals(),
-                          thisMonth: analytics?.thisMonth ?? UsageTotals()),
+                          thisMonth: analytics?.thisMonth ?? UsageTotals(),
+                          ledgerTodayCost: lTodayCost, ledgerMonthCost: lMonthCost),
         costToday: analytics?.today.cost ?? 0,
         costMonth: analytics?.thisMonth.cost ?? 0)
 }
@@ -337,7 +389,8 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
                              aggregateFiveHour: RateLimitModel.Aggregate,
                              aggregateWeekly: RateLimitModel.Aggregate,
                              aggregateSonnet: RateLimitModel.Aggregate,
-                             now: Date) -> DashboardColumn {
+                             now: Date,
+                             ledgerCostByAccount: [String: [Date: Double]] = [:]) -> DashboardColumn {
     let allCaptures = snapshotsByAccount.values.flatMap { $0 }
     // Aggregate limit "used%" = 1 - tier-weighted remaining fraction.
     let fiveUsed = aggregateFiveHour.total > 0 ? (1 - aggregateFiveHour.fraction) * 100 : 0
@@ -359,11 +412,24 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
                                  usedPercentage: sonnetUsed, resetsAt: sonnetReset,
                                  hasData: aggregateSonnet.total > 0, now: now)
 
-    let mergedDaily = mergeDailyUsage(analyticsByAccount.values.map { $0.daily })
+    // Ledger-correct each account's daily COST before summing, so the overall bar height (cost)
+    // reflects the snapshot-tracked recent days, not the empty transcript days.
+    let mergedDaily = mergeDailyUsage(analyticsByAccount.map { name, a in
+        mergeLedgerCost(a.daily, ledgerCostByDay: ledgerCostByAccount[name] ?? [:])
+    })
     var allSessions: [String: SessionUsage] = [:]
     for (_, a) in analyticsByAccount { for (k, v) in a.sessions { allSessions[k] = v } }
     let today = sumTotals(analyticsByAccount.values.map { $0.today })
     let month = sumTotals(analyticsByAccount.values.map { $0.thisMonth })
+
+    // Sum ledger costs across ALL accounts for the overall column.
+    let allLedgerByDay: [Date: Double] = ledgerCostByAccount.values.reduce(into: [:]) { acc, dict in
+        for (day, cost) in dict { acc[day, default: 0] += cost }
+    }
+    let todayKey = UsageCostLedger.utcCalendar.startOfDay(for: now)
+    let lTodayCost: Double? = allLedgerByDay.isEmpty ? nil : allLedgerByDay[todayKey]
+    let lMonthCost: Double? = allLedgerByDay.isEmpty ? nil
+        : allLedgerByDay.filter { isInSameUTCMonth($0.key, as: now) }.values.reduce(0, +)
 
     return DashboardColumn(
         title: "Overall",
@@ -372,7 +438,8 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
         weeklySonnet: weeklySonnet,
         daily: dailyUsageBars(mergedDaily, now: now),
         models: modelShares(allSessions),
-        tokens: tokenRows(today: today, thisMonth: month),
+        tokens: tokenRows(today: today, thisMonth: month,
+                          ledgerTodayCost: lTodayCost, ledgerMonthCost: lMonthCost),
         costToday: today.cost,
         costMonth: month.cost)
 }
