@@ -179,6 +179,34 @@ final class UsageAnalyticsTests: XCTestCase {
         XCTAssertEqual(acc.thisMonth.inputTokens, 70)           // today + thisweek + thismonth
     }
 
+    /// Regression: usage records also live NESTED under
+    /// projects/<mangled>/<uuid>/subagents/workflows/<wf>/*.jsonl (subagent + workflow
+    /// transcripts hold the bulk of subagent/workflow-driven spend). The scan must recurse
+    /// into them; `journal.jsonl` orchestration logs (no `message.usage`) must still be ignored.
+    func testNestedSubagentTranscriptsAreCountedAndJournalsIgnored() throws {
+        let model = "claude-opus-4-8"
+        let nested = configDir.appendingPathComponent("projects")
+            .appendingPathComponent(ClaudeService.mangle("/ws/x"))
+            .appendingPathComponent("sess-1/subagents/workflows/wf_a")
+        try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+        // A real usage-bearing subagent transcript dated TODAY, nested several levels deep.
+        try assistant(id: "nested-today", model: model, inTok: 100, outTok: 50,
+                      ts: "2025-06-15T09:00:00.000Z")
+            .write(to: nested.appendingPathComponent("agent-1.jsonl"),
+                   atomically: true, encoding: .utf8)
+        // A workflow journal with only orchestration events (NO usage block) — must be ignored.
+        try ["{\"type\":\"started\",\"wf\":\"a\"}", "{\"type\":\"result\",\"wf\":\"a\"}"]
+            .joined(separator: "\n")
+            .write(to: nested.appendingPathComponent("journal.jsonl"),
+                   atomically: true, encoding: .utf8)
+        let acc = analytics.account(configDir: configDir.path, accountName: "a", now: now)
+        // Before the recursive-scan fix this was 0 — the nested file was never read.
+        XCTAssertEqual(acc.today.inputTokens, 100, "nested subagent transcript must be scanned")
+        XCTAssertEqual(acc.today.outputTokens, 50)
+        XCTAssertEqual(acc.daily.last?.totalTokens ?? 0, 150,
+                       "today's daily bar must include the nested usage; the journal adds nothing")
+    }
+
     // MARK: - per-session output
 
     func testPerSessionTotalsAndModelBreakdown() throws {
@@ -243,6 +271,61 @@ final class UsageAnalyticsTests: XCTestCase {
         XCTAssertEqual(acc.daily[4].inputTokens, 20)
         // The out-of-window record leaked into nothing.
         XCTAssertEqual(acc.daily.reduce(0) { $0 + $1.inputTokens }, 30)
+    }
+
+    // MARK: - dailyByCwd: per-cwd per-day token totals (Phase 5D)
+
+    /// A human-turn record that sets the cwd field in the JSONL, which parseFile reads
+    /// as fileCwd. The assistant records carry no cwd key themselves; the first record
+    /// with a "cwd" field wins (the real Claude CLI emits this on the human turn).
+    private func cwdRecord(_ cwd: String) -> String {
+        "{\"type\":\"human\",\"cwd\":\"\(cwd)\"}"
+    }
+
+    /// Two cwds, three days of records → `dailyByCwd` buckets each record on (cwd, startOfDay)
+    /// with NO 7-day cap (unlike `daily`). The day-totals for each cwd are independent.
+    func testDailyByCwdBucketsRecordsByCwdAndDay() throws {
+        let m = "claude-opus-4-8"
+        // cwd A: day1 has 10 input; day3 has 20 input (two records).
+        try writeTranscript(cwd: "/ws/alpha", id: "s1", lines: [
+            cwdRecord("/ws/alpha"),
+            assistant(id: "a1", model: m, inTok: 10, outTok: 0, ts: "2025-06-10T10:00:00.000Z"),
+            assistant(id: "a2", model: m, inTok: 5,  outTok: 5,  ts: "2025-06-12T08:00:00.000Z"),
+            assistant(id: "a3", model: m, inTok: 15, outTok: 0, ts: "2025-06-12T22:00:00.000Z"),
+        ])
+        // cwd B: day2 only.
+        try writeTranscript(cwd: "/ws/beta", id: "s2", lines: [
+            cwdRecord("/ws/beta"),
+            assistant(id: "b1", model: m, inTok: 100, outTok: 50, ts: "2025-06-11T12:00:00.000Z"),
+        ])
+        let acc = analytics.account(configDir: configDir.path, accountName: "test", now: now)
+
+        // Alpha: expect two day entries.
+        let alphaDaily = (acc.dailyByCwd["/ws/alpha"] ?? []).sorted(by: { $0.day < $1.day })
+        XCTAssertEqual(alphaDaily.count, 2, "alpha should have entries for day1 and day3")
+        // Day 1 (June 10): 10 input only.
+        XCTAssertEqual(alphaDaily[0].inputTokens, 10)
+        XCTAssertEqual(alphaDaily[0].outputTokens, 0)
+        // Day 3 (June 12): two records merged → 5+15=20 input, 5 output.
+        XCTAssertEqual(alphaDaily[1].inputTokens, 20)
+        XCTAssertEqual(alphaDaily[1].outputTokens, 5)
+
+        // Beta: one entry for day 2 (June 11).
+        let betaDaily = acc.dailyByCwd["/ws/beta"] ?? []
+        XCTAssertEqual(betaDaily.count, 1)
+        XCTAssertEqual(betaDaily[0].inputTokens, 100)
+        XCTAssertEqual(betaDaily[0].outputTokens, 50)
+    }
+
+    /// Records with no timestamp are excluded from dailyByCwd (can't be bucketed on a day).
+    func testDailyByCwdExcludesTimestamplessRecords() throws {
+        let m = "claude-opus-4-8"
+        let noTs = """
+        {"type":"assistant","cwd":"/ws/gamma","message":{"id":"x","model":"\(m)","usage":{"input_tokens":99,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+        """
+        try writeTranscript(cwd: "/ws/gamma", id: "s1", lines: [noTs])
+        let acc = analytics.account(configDir: configDir.path, accountName: "test", now: now)
+        XCTAssertNil(acc.dailyByCwd["/ws/gamma"], "no daily entry when records lack timestamps")
     }
 
     // MARK: - mtime cache: a re-read with an unchanged file does not re-parse

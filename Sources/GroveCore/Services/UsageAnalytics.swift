@@ -84,13 +84,21 @@ public struct AccountUsageAnalytics: Sendable, Equatable {
     public var costByModel: [String: Double]
     /// per-workspace (cwd) aggregate tokens, for richer workspace rows (Task 11).
     public var byCwd: [String: UsageTotals]
+    /// Per-cwd per-day token totals across ALL dates (no 7-day cap) — for the
+    /// Phase 5D "Tokens per 100 net lines" cumulative chart. Keyed by cwd; each
+    /// value is the ordered series of per-day DayUsage buckets (UTC start-of-day),
+    /// covering every day that cwd had at least one token record. The `cacheTokens`
+    /// field sums both cache-read and cache-write (totalTokens = input+output+cache).
+    public var dailyByCwd: [String: [DayUsage]]
     /// models seen with no price (e.g. "<synthetic>") -> surfaced, never crash.
     public var unpricedModels: [String]
     public var unpricedCost: Double   // always 0 by definition; kept explicit for the UI
 
     public init(accountName: String, today: UsageTotals, thisMonth: UsageTotals,
-                last7d: UsageTotals, daily: [DayUsage] = [], sessions: [String: SessionUsage],
+                last7d: UsageTotals, daily: [DayUsage] = [],
+                sessions: [String: SessionUsage],
                 costByModel: [String: Double], byCwd: [String: UsageTotals],
+                dailyByCwd: [String: [DayUsage]] = [:],
                 unpricedModels: [String], unpricedCost: Double) {
         self.accountName = accountName
         self.today = today
@@ -100,6 +108,7 @@ public struct AccountUsageAnalytics: Sendable, Equatable {
         self.sessions = sessions
         self.costByModel = costByModel
         self.byCwd = byCwd
+        self.dailyByCwd = dailyByCwd
         self.unpricedModels = unpricedModels
         self.unpricedCost = unpricedCost
     }
@@ -167,6 +176,7 @@ public final class UsageAnalytics: @unchecked Sendable {
         var last7d = UsageTotals()
         var sessions: [String: SessionUsage] = [:]
         var byCwd: [String: UsageTotals] = [:]
+        var dailyByCwdMap: [String: [Date: UsageTotals]] = [:]
         var costByModel: [String: Double] = [:]
         var unpricedSet = Set<String>()
 
@@ -233,6 +243,17 @@ public final class UsageAnalytics: @unchecked Sendable {
             add(&cwdTotals, record, cost: recordCost)
             byCwd[record.cwd] = cwdTotals
 
+            // Per-cwd per-day rollup (Phase 5D): bucket on (cwd, startOfDay) with NO
+            // 7-day cap — the "Tokens per 100 net lines" chart needs full history.
+            if let ts = record.timestamp {
+                let dayKey = cal.startOfDay(for: ts)
+                var cwdDays = dailyByCwdMap[record.cwd] ?? [:]
+                var dayTotals = cwdDays[dayKey] ?? UsageTotals()
+                add(&dayTotals, record, cost: recordCost)
+                cwdDays[dayKey] = dayTotals
+                dailyByCwdMap[record.cwd] = cwdDays
+            }
+
             // Computed per-model cost (may be overridden below).
             costByModel[record.model, default: 0] += recordCost
         }
@@ -265,10 +286,22 @@ public final class UsageAnalytics: @unchecked Sendable {
                             cacheTokens: t.cacheReadTokens + t.cacheWriteTokens, cost: t.cost)
         }
 
+        // Flatten dailyByCwdMap: per-cwd dictionary of sorted DayUsage arrays.
+        var dailyByCwd: [String: [DayUsage]] = [:]
+        for (cwd, dayMap) in dailyByCwdMap {
+            let sorted = dayMap.keys.sorted().map { key -> DayUsage in
+                let t = dayMap[key]!
+                return DayUsage(day: key, inputTokens: t.inputTokens, outputTokens: t.outputTokens,
+                                cacheTokens: t.cacheReadTokens + t.cacheWriteTokens, cost: t.cost)
+            }
+            dailyByCwd[cwd] = sorted
+        }
+
         return AccountUsageAnalytics(
             accountName: accountName,
             today: today, thisMonth: thisMonth, last7d: last7d, daily: daily,
             sessions: sessions, costByModel: costByModel, byCwd: byCwd,
+            dailyByCwd: dailyByCwd,
             unpricedModels: unpricedSet.sorted(), unpricedCost: 0)
     }
 
@@ -281,28 +314,30 @@ public final class UsageAnalytics: @unchecked Sendable {
         totals.cost += cost
     }
 
-    /// All parsed usage records across every transcript file under
-    /// `<configDir>/projects/<mangled>/*.jsonl` (regular files only).
+    /// All parsed usage records across every transcript file under `<configDir>/projects`,
+    /// scanned RECURSIVELY. Usage-bearing transcripts also live NESTED under
+    /// `<mangled>/<uuid>/subagents/*.jsonl` and `.../subagents/workflows/<wf>/*.jsonl` — and
+    /// those nested files hold the bulk of the spend for subagent/workflow-driven work (a
+    /// one-level glob saw only ~10% of the real per-day records, blanking/undercounting the
+    /// heaviest days). `journal.jsonl` orchestration logs carry no `message.usage` block, so
+    /// `parseFile` drops them; scanning them is harmless.
     private func parseAllRecords(configDir: String) -> [ParsedRecord] {
         let fm = FileManager.default
-        let projectsDir = configDir + "/projects"
-        guard let mangledDirs = try? fm.contentsOfDirectory(atPath: projectsDir) else { return [] }
+        let projectsURL = URL(fileURLWithPath: configDir + "/projects", isDirectory: true)
+        guard let enumerator = fm.enumerator(
+            at: projectsURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
         var all: [ParsedRecord] = []
-        for mangled in mangledDirs {
-            let dir = projectsDir + "/" + mangled
-            guard let names = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for name in names where name.hasSuffix(".jsonl") {
-                let path = dir + "/" + name
-                var isDirectory: ObjCBool = false
-                guard fm.fileExists(atPath: path, isDirectory: &isDirectory),
-                      !isDirectory.boolValue else { continue }
-                guard
-                    let attributes = try? fm.attributesOfItem(atPath: path),
-                    let mtime = attributes[.modificationDate] as? Date
-                else { continue }
-                let sessionId = (name as NSString).deletingPathExtension
-                all.append(contentsOf: cachedParse(path: path, mtime: mtime, sessionId: sessionId))
-            }
+        for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+            guard
+                let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
+                values.isRegularFile == true,
+                let mtime = values.contentModificationDate
+            else { continue }
+            let sessionId = url.deletingPathExtension().lastPathComponent
+            all.append(contentsOf: cachedParse(path: url.path, mtime: mtime, sessionId: sessionId))
         }
         return all
     }

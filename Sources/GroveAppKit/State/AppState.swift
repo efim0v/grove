@@ -1623,4 +1623,44 @@ extension AppState {
         let scanner = statsScanner
         return await Task.detached(priority: .utility) { scanner.directoryTree(projectPath: path) }.value
     }
+
+    /// Builds the "Tokens per 100 net lines" cumulative series for a project (Phase 5D).
+    ///
+    /// Resolves the project's canonical cwd roots (its `path` and `workspacesRoot` plus
+    /// any cwds seen in `codeStatsHistory`), collects `dailyByCwd` from every account in
+    /// `usageByAccount`, and delegates the join + cumulative math to the pure presentation
+    /// function `tokensPerNetLine`. Returns `[]` when the project is unknown.
+    public func tokensPerLineSeries(projectID: UUID) -> [RatioPoint] {
+        guard let project = config.projects.first(where: { $0.id == projectID }) else { return [] }
+
+        // Canonical cwd roots for this project.
+        var projectCwds: [String] = []
+        if !project.path.isEmpty {
+            projectCwds.append(expandTilde(project.path))
+        }
+        if let root = project.workspacesRoot, !root.isEmpty {
+            projectCwds.append(expandTilde(root))
+        }
+        // Also include any cwds seen in the code-stats history (worktrees may differ from path).
+        if let history = codeStatsHistory[projectID] {
+            for point in history {
+                // codeStatsHistory points don't carry cwd; the project roots above cover it.
+                // This no-op loop is left as extension point for future per-worktree series.
+                _ = point
+            }
+        }
+
+        // Gather dailyByCwd from every account.
+        let tokensByAccount: [[String: [DayUsage]]] = config.accounts.compactMap { account in
+            usageByAccount[account.name]?.dailyByCwd
+        }
+
+        let history = codeStatsHistory[projectID] ?? []
+        return tokensPerNetLine(
+            tokenDailyByCwdPerAccount: tokensByAccount,
+            projectCwds: projectCwds,
+            codeHistory: history,
+            now: Date()
+        )
+    }
 }

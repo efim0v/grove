@@ -902,3 +902,113 @@ final class RepoCellsCache {
         return result
     }
 }
+
+// MARK: - Tokens per 100 net lines (Phase 5D)
+
+/// The last calendar day (UTC) for which transcript data is reliable.
+/// After the 2026-06-20 transcript-loss incident, local JSONL files are incomplete,
+/// so cumulative token totals computed past this date undercount and trend flat/down.
+/// Points with `degraded == true` are rendered with a visual distinction in the chart
+/// (greyed/dashed) so the flat tail is not misread as a real efficiency improvement.
+/// A future version may derive this dynamically from "last day with any token record",
+/// but a documented constant is acceptable for v1 (Phase 5D spec).
+public let tokenDataDegradedAfter: Date = {
+    // 2026-06-20T23:59:59Z — the end of the last fully-reliable day.
+    var comps = DateComponents()
+    comps.year = 2026; comps.month = 6; comps.day = 20
+    comps.hour = 23; comps.minute = 59; comps.second = 59
+    comps.timeZone = TimeZone(identifier: "UTC")
+    return Calendar(identifier: .gregorian).date(from: comps)!
+}()
+
+/// One point on the "Tokens per 100 net lines" cumulative trend chart.
+public struct RatioPoint: Sendable, Equatable {
+    /// The calendar day (UTC start-of-day) this point represents.
+    public let date: Date
+    /// Cumulative tokens spent on the project through this day, divided by
+    /// cumulative net lines added through this day, × 100. Zero when cumLines == 0.
+    public let tokensPer100Lines: Double
+    /// True when `date` is after `tokenDataDegradedAfter`: token data is incomplete
+    /// and the ratio is unreliable. The view renders degraded points with a visual
+    /// distinction (greyed/dashed segment + caption).
+    public let degraded: Bool
+
+    public init(date: Date, tokensPer100Lines: Double, degraded: Bool) {
+        self.date = date
+        self.tokensPer100Lines = tokensPer100Lines
+        self.degraded = degraded
+    }
+}
+
+/// Builds the cumulative "Tokens per 100 net lines" series for a project.
+///
+/// - Parameters:
+///   - tokenDailyByCwdPerAccount: One element per account; each element maps cwd → per-day
+///     DayUsage. Comes from `AccountUsageAnalytics.dailyByCwd` for each account.
+///   - projectCwds: The canonical cwd paths belonging to the project (its `path` and
+///     `workspacesRoot`, plus any cwds seen in `codeStatsHistory`). A record's cwd
+///     contributes tokens when `recordCwd == projectCwd || recordCwd.hasPrefix(projectCwd + "/")`.
+///   - codeHistory: The project's `CodeStatsPoint` series (from `AppState.codeStatsHistory`).
+///     `dayAdded` on each point is the per-day net-lines addition (NOT cumulative); the
+///     function accumulates them into a running sum as the cumulative net-lines axis.
+///   - now: The current instant; points are limited to days ≤ today.
+///
+/// Algorithm (pure, no I/O):
+/// 1. Build the union day-axis of all token days (for matching cwds) ∪ code-history days.
+/// 2. For each day D in ascending order:
+///    - cumTokens(D) += tokens from all accounts for all matching cwds on day D.
+///    - cumLines(D) += `dayAdded` from the code-history point whose date == D (if any).
+///    - ratio = cumLines > 0 ? cumTokens / cumLines × 100 : 0 (no divide-by-zero).
+///    - degraded = D > tokenDataDegradedAfter.
+/// 3. Return the array of `RatioPoint`, oldest first.
+public func tokensPerNetLine(
+    tokenDailyByCwdPerAccount: [[String: [DayUsage]]],
+    projectCwds: [String],
+    codeHistory: [CodeStatsPoint],
+    now: Date
+) -> [RatioPoint] {
+    var utcCal = Calendar(identifier: .gregorian)
+    utcCal.timeZone = TimeZone(identifier: "UTC")!
+    let endOfToday = utcCal.startOfDay(for: now).addingTimeInterval(86_400 - 1)
+
+    // Build a map: day → total tokens from all accounts for matching cwds.
+    var tokensByDay: [Date: Double] = [:]
+    for accountMap in tokenDailyByCwdPerAccount {
+        for (cwd, days) in accountMap {
+            // Prefix-match: this cwd contributes if it equals any projectCwd or is nested
+            // under one. Mirrors workspaceUsage's join rule (AppState/AccountUsage.swift).
+            let matches = projectCwds.contains { proj in
+                cwd == proj || cwd.hasPrefix(proj + "/")
+            }
+            guard matches else { continue }
+            for dayUsage in days where dayUsage.day <= endOfToday {
+                let key = utcCal.startOfDay(for: dayUsage.day)
+                tokensByDay[key, default: 0] += Double(dayUsage.totalTokens)
+            }
+        }
+    }
+
+    // Build a map: day → dayAdded from the code history (per-day, NOT cumulative).
+    var linesByDay: [Date: Int] = [:]
+    for point in codeHistory {
+        let key = utcCal.startOfDay(for: point.date)
+        guard key <= endOfToday else { continue }
+        linesByDay[key, default: 0] += point.dayAdded
+    }
+
+    // Union day axis, sorted ascending.
+    let allDays = Set(tokensByDay.keys).union(linesByDay.keys).sorted()
+    guard !allDays.isEmpty else { return [] }
+
+    var cumTokens: Double = 0
+    var cumLines: Int = 0
+    var result: [RatioPoint] = []
+    for day in allDays {
+        cumTokens += tokensByDay[day] ?? 0
+        cumLines += linesByDay[day] ?? 0
+        let ratio = cumLines > 0 ? cumTokens / Double(cumLines) * 100.0 : 0.0
+        let degraded = day > tokenDataDegradedAfter
+        result.append(RatioPoint(date: day, tokensPer100Lines: ratio, degraded: degraded))
+    }
+    return result
+}
