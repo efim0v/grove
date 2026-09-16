@@ -90,7 +90,11 @@ public enum OAuthUsageError: Error, Equatable {
 public actor OAuthUsageClient {
     private let fetcher: UsageFetching
     private let credentials: CredentialsReading
-    private let appVersion: String
+    /// `User-Agent` for every request, or nil to send none. Grove identifies as
+    /// Claude Code, as it always has; Brow sends no `claude-code/…` header at all
+    /// (spec, Risks: "Brow does not send a claude-code/… User-Agent") — a
+    /// third-party app must not claim to be Anthropic's own client.
+    private let userAgent: String?
     private let cacheSeconds: TimeInterval
     /// Longest 429 suppression. Grove polls slowly and keeps the hour; Brow polls
     /// every minute or two and passes 300 s so a burst never freezes its readout.
@@ -99,12 +103,24 @@ public actor OAuthUsageClient {
     private var cache: [String: (at: Date, value: OAuthUsage)] = [:]
     private var backoff: [String: (until: Date, attempts: Int)] = [:]
 
+    /// Identifies as `claude-code/<appVersion>` — Grove's long-standing behaviour.
     public init(fetcher: UsageFetching, appVersion: String, cacheSeconds: TimeInterval = 180,
                 backoffCap: TimeInterval = 3600,
                 credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
         self.credentials = credentials
-        self.appVersion = appVersion
+        self.userAgent = "claude-code/\(appVersion)"
+        self.cacheSeconds = cacheSeconds
+        self.backoffCap = backoffCap
+    }
+
+    /// Explicit `User-Agent`; `nil` omits the header entirely. Brow passes nil.
+    public init(fetcher: UsageFetching, userAgent: String?, cacheSeconds: TimeInterval = 180,
+                backoffCap: TimeInterval = 3600,
+                credentials: CredentialsReading = KeychainCredentialsReader()) {
+        self.fetcher = fetcher
+        self.credentials = credentials
+        self.userAgent = userAgent
         self.cacheSeconds = cacheSeconds
         self.backoffCap = backoffCap
     }
@@ -167,7 +183,7 @@ public actor OAuthUsageClient {
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("claude-code/\(appVersion)", forHTTPHeaderField: "User-Agent")
+        if let userAgent { request.setValue(userAgent, forHTTPHeaderField: "User-Agent") }
         return request
     }
 
