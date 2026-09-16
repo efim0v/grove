@@ -30,6 +30,28 @@ plain files in `~/.claude*`. Rebuilds/reinstalls are therefore prompt-free.
     .build/release/grove scan ~/Desktop/acme.shop
     .build/release/grove --help         # scan/workspaces/sessions/create/graph
 
+## Brow
+
+A second, minimal app in this package: it shows every Claude account's rate
+limits from the notch (readouts beside the notch, hover for a per-account
+panel). Build with `Scripts/build-brow.sh` → `dist/Brow.app`.
+
+- Accounts are discovered from `~/.claude` and `~/.claude-accounts/*`; dirs that
+  belong to the same organisation are shown once.
+- On first launch macOS asks once per account for access to Claude Code's
+  Keychain item — choose "Always Allow".
+- Idle accounts' tokens are kept fresh by running `claude doctor` in that
+  account (no model call). If that ever stops working, the optional
+  `claude -p` fallback (Settings → Accounts) spends a little limit and starts
+  the account's 5-hour window.
+- Add an account from Settings: Brow opens Terminal with `claude auth login`;
+  sign-in happens in Anthropic's own flow.
+- Design: `docs/design/specs/2026-09-16-brow-design.md`.
+
+Toolchain note: if `swift`/`git` abort with the Xcode license message, either
+accept it (`sudo xcodebuild -license accept`) or `source Scripts/xcode-env.sh`
+and run tests with `Scripts/test.sh` (see the comments in both scripts).
+
 ## Troubleshooting
 
 ### "cmux unavailable" although cmux is running
