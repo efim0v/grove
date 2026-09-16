@@ -49,16 +49,30 @@ public struct OAuthUsage: Sendable, Equatable {
     /// This is the PRIMARY source for the per-model bar. Contains the model display
     /// name (e.g. "Fable", "Opus") from `scope.model.display_name`.
     public let weeklyScoped: OAuthScopedWindow?
+    /// When this reading was REALLY fetched from the API. A cache hit carries the
+    /// instant of the original request, not the moment it was served — the panel's
+    /// "Updated …" line would otherwise claim three-minute-old numbers are current.
+    /// nil means "unknown" (canned values in tests); callers substitute their own now.
+    public let fetchedAt: Date?
     public init(fiveHour: OAuthWindow?, sevenDay: OAuthWindow?,
                 sevenDaySonnet: OAuthWindow?, sevenDayOpus: OAuthWindow?,
                 sevenDayFable: OAuthWindow? = nil,
-                weeklyScoped: OAuthScopedWindow? = nil) {
+                weeklyScoped: OAuthScopedWindow? = nil,
+                fetchedAt: Date? = nil) {
         self.fiveHour = fiveHour
         self.sevenDay = sevenDay
         self.sevenDaySonnet = sevenDaySonnet
         self.sevenDayOpus = sevenDayOpus
         self.sevenDayFable = sevenDayFable
         self.weeklyScoped = weeklyScoped
+        self.fetchedAt = fetchedAt
+    }
+
+    /// A copy stamped with the instant it was fetched.
+    func stamped(fetchedAt: Date) -> OAuthUsage {
+        OAuthUsage(fiveHour: fiveHour, sevenDay: sevenDay, sevenDaySonnet: sevenDaySonnet,
+                   sevenDayOpus: sevenDayOpus, sevenDayFable: sevenDayFable,
+                   weeklyScoped: weeklyScoped, fetchedAt: fetchedAt)
     }
 }
 
@@ -78,25 +92,33 @@ public actor OAuthUsageClient {
     private let credentials: CredentialsReading
     private let appVersion: String
     private let cacheSeconds: TimeInterval
-    private let backoffCap: TimeInterval = 3600
+    /// Longest 429 suppression. Grove polls slowly and keeps the hour; Brow polls
+    /// every minute or two and passes 300 s so a burst never freezes its readout.
+    private let backoffCap: TimeInterval
 
     private var cache: [String: (at: Date, value: OAuthUsage)] = [:]
     private var backoff: [String: (until: Date, attempts: Int)] = [:]
 
     public init(fetcher: UsageFetching, appVersion: String, cacheSeconds: TimeInterval = 180,
+                backoffCap: TimeInterval = 3600,
                 credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
         self.credentials = credentials
         self.appVersion = appVersion
         self.cacheSeconds = cacheSeconds
+        self.backoffCap = backoffCap
     }
 
     /// Returns cached usage when fresh (within cacheSeconds of the last success),
     /// is suppressed during a 429 backoff window, else fetches. Throws on 429,
     /// missing credentials, non-2xx, or malformed JSON.
-    public func usage(configDir: String, now: Date) async throws -> OAuthUsage {
+    ///
+    /// `force` (the manual refresh button) skips the cache ONLY. The 429 backoff still
+    /// applies: a user tapping refresh repeatedly must not be able to punch through a
+    /// rate-limit window and earn a longer ban.
+    public func usage(configDir: String, now: Date, force: Bool = false) async throws -> OAuthUsage {
         // 1. Fresh cache hit.
-        if let entry = cache[configDir], now.timeIntervalSince(entry.at) < cacheSeconds {
+        if !force, let entry = cache[configDir], now.timeIntervalSince(entry.at) < cacheSeconds {
             return entry.value
         }
 
@@ -105,20 +127,22 @@ public actor OAuthUsageClient {
             throw OAuthUsageError.backoff
         }
 
-        // 3. Read the bearer token (Keychain, then legacy .credentials.json).
-        guard let token = credentials.accessToken(configDir: configDir) else {
-            throw OAuthUsageError.noCredentials
-        }
-
-        // 4. Build the request.
-        let request = makeRequest(token: token)
-
-        // 5. Fetch and handle status.
-        let (data, status): (Data, Int)
-        do {
-            (data, status) = try await fetcher.fetch(request)
-        } catch {
-            throw error
+        // 3-5. Read the bearer, fetch, and — if the endpoint rejects the credential —
+        //      drop the cached copy and try ONCE more with a freshly read one. Claude
+        //      Code rotates its access token on its own schedule (~8h), so a long-lived
+        //      cached bearer eventually 401s; without this retry the panel silently
+        //      served its last good capture forever.
+        var data = Data()
+        var status = 0
+        for attempt in 0...1 {
+            guard let token = credentials.accessToken(configDir: configDir) else {
+                throw OAuthUsageError.noCredentials
+            }
+            (data, status) = try await fetcher.fetch(makeRequest(token: token))
+            guard status == 401 || status == 403, attempt == 0 else { break }
+            // The bearer was refused: it is stale or revoked. Force the next read past
+            // any in-memory cache so the retry carries the current credential.
+            credentials.invalidate(configDir: configDir)
         }
 
         if status == 429 {
@@ -131,8 +155,9 @@ public actor OAuthUsageClient {
             throw OAuthUsageError.http(status)
         }
 
-        // 6. Parse, cache, reset backoff.
-        let usage = try parse(data)
+        // 6. Parse, cache, reset backoff. The cached value carries the fetch instant, so
+        //    a later cache hit still reports when the data was really obtained.
+        let usage = try parse(data).stamped(fetchedAt: now)
         cache[configDir] = (at: now, value: usage)
         backoff[configDir] = nil
         return usage
