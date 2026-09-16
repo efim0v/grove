@@ -144,11 +144,20 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
     /// Refresh this long BEFORE the stated expiry, so a token can't die in flight
     /// between the cache read and the endpoint receiving it.
     private static let skew: TimeInterval = 60
+    /// Floor between two Keychain reads of an ALREADY-EXPIRED token. Such a token is
+    /// never "live", so without this every caller in a cycle (the account scan, the
+    /// TokenKeeper read, the post-CLI re-read, the usage fetch) goes back to the
+    /// Keychain — a modal prompt every two minutes if the ACL grant is ever lost, for
+    /// a value that cannot have changed. `invalidate(configDir:)` still bypasses it,
+    /// so a token the CLI just refreshed is picked up immediately.
+    private static let expiredReadFloor: TimeInterval = 60
+
+    private struct Entry { let token: ClaudeToken; let readAt: Date }
 
     private let base: CredentialsReading
     private let now: @Sendable () -> Date
     private let lock = NSLock()
-    private var cache: [String: ClaudeToken] = [:]   // configDir → token (successful reads only)
+    private var cache: [String: Entry] = [:]   // configDir → token (successful reads only)
 
     public init(base: CredentialsReading = KeychainCredentialsReader(),
                 now: @escaping @Sendable () -> Date = { Date() }) {
@@ -159,13 +168,13 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
     public func token(configDir: String) -> ClaudeToken? {
         let at = now()
         lock.lock()
-        if let cached = cache[configDir], Self.isLive(cached, at: at) {
+        if let cached = cache[configDir], Self.isLive(cached.token, at: at) || Self.withinExpiredFloor(cached, at: at) {
             lock.unlock()
-            return cached
+            return cached.token
         }
         lock.unlock()
         guard let fresh = base.token(configDir: configDir) else { return nil }
-        lock.lock(); cache[configDir] = fresh; lock.unlock()
+        lock.lock(); cache[configDir] = Entry(token: fresh, readAt: at); lock.unlock()
         return fresh
     }
 
@@ -180,5 +189,13 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
     private static func isLive(_ token: ClaudeToken, at instant: Date) -> Bool {
         guard let expiresAt = token.expiresAt else { return true }
         return instant.addingTimeInterval(skew) < expiresAt
+    }
+
+    /// Applies ONLY once the token is past its own expiry — a token merely inside the
+    /// 60 s skew is still valid and a re-read may pick up a just-rotated one, so that
+    /// case keeps going to the base reader.
+    private static func withinExpiredFloor(_ entry: Entry, at instant: Date) -> Bool {
+        guard let expiresAt = entry.token.expiresAt, expiresAt <= instant else { return false }
+        return instant.timeIntervalSince(entry.readAt) < expiredReadFloor
     }
 }

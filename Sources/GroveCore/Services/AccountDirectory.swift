@@ -45,16 +45,18 @@ public struct AccountDirectory: Sendable {
     /// position, with `configDir` = the dir whose token expires latest.
     public func scan(extraDirs: [String] = []) -> [DiscoveredAccount] {
         var order: [String] = []                       // org uuids, first-seen order
-        var members: [String: [(dir: String, expiry: Date?)]] = [:]
-        var meta: [String: (email: String?, tier: String?)] = [:]
+        // The identity travels WITH each member dir: `configDir` comes from the
+        // freshest-token dir, so its email/tier must come from the same dir. Taking
+        // them from the first-seen dir instead labelled an account with one
+        // directory's metadata while fetching with another's token — and a `tier`
+        // read from a dir written by an older CLI silently weighs the account at
+        // 1/20th of its real capacity in the tier-weighted aggregate.
+        var members: [String: [(dir: String, expiry: Date?, email: String?, tier: String?)]] = [:]
         for dir in Self.candidateDirs(home: home, extraDirs: extraDirs) {
             guard let id = Self.identity(configDir: dir, home: home) else { continue }
             let expiry = credentials.token(configDir: dir)?.expiresAt
-            if members[id.org] == nil {
-                order.append(id.org)
-                meta[id.org] = (id.email, id.tier)
-            }
-            members[id.org, default: []].append((dir, expiry))
+            if members[id.org] == nil { order.append(id.org) }
+            members[id.org, default: []].append((dir, expiry, id.email, id.tier))
         }
         return order.compactMap { org in
             let dirs = members[org] ?? []
@@ -68,8 +70,13 @@ public struct AccountDirectory: Sendable {
                 }
             }.map(\.element)
             guard let primary = ranked.first else { return nil }
+            // Primary first; a member that still carries the field is the fallback,
+            // so a primary dir whose `.claude.json` predates `organizationRateLimitTier`
+            // does not erase a tier another dir of the same org knows.
+            let email = primary.email ?? ranked.first { $0.email != nil }?.email
+            let tier = primary.tier ?? ranked.first { $0.tier != nil }?.tier
             return DiscoveredAccount(organizationUuid: org,
-                                     email: meta[org]?.email, tier: meta[org]?.tier,
+                                     email: email, tier: tier,
                                      configDir: primary.dir,
                                      aliasDirs: ranked.dropFirst().map(\.dir),
                                      tokenExpiresAt: primary.expiry)
@@ -100,7 +107,7 @@ public struct AccountDirectory: Sendable {
     /// Reads `oauthAccount` from the dir's `.claude.json`. The default account
     /// keeps that file in `$HOME`, custom dirs keep it inside the dir — same rule
     /// as `AppState.claudeJSONPath(for:)`.
-    static func identity(configDir: String, home: String) -> (org: String, email: String?, tier: String?)? {
+    public static func identity(configDir: String, home: String) -> (org: String, email: String?, tier: String?)? {
         let path = configDir == home + "/.claude" ? home + "/.claude.json" : configDir + "/.claude.json"
         guard let data = FileManager.default.contents(atPath: path),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],

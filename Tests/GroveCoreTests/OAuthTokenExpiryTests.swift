@@ -76,6 +76,31 @@ final class OAuthTokenExpiryTests: XCTestCase {
                        "a token about to expire must be refreshed before it is used")
     }
 
+    /// An EXPIRED token is never "live", so every caller in a Brow cycle (the account
+    /// scan, TokenKeeper's read, the post-CLI re-read, the usage fetch) used to go back
+    /// to the Keychain — four `SecItemCopyMatching` hits every two minutes, forever, for
+    /// a value that cannot have changed in between. Re-reading it at most once a minute
+    /// is enough; `invalidate` still bypasses the floor.
+    func testExpiredTokenIsNotRereadOnEveryCallWithinTheFloor() {
+        let t0 = Date()
+        let base = RotatingReader(ClaudeToken(value: "dead", expiresAt: t0.addingTimeInterval(-86_400)))
+        var clock = t0
+        let caching = CachingCredentialsReader(base: base, now: { clock })
+
+        XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "dead")
+        clock = t0.addingTimeInterval(30)
+        _ = caching.accessToken(configDir: "~/.claude")
+        XCTAssertEqual(base.calls["~/.claude"], 1, "no second Keychain hit inside the floor")
+
+        caching.invalidate(configDir: "~/.claude")
+        _ = caching.accessToken(configDir: "~/.claude")
+        XCTAssertEqual(base.calls["~/.claude"], 2, "invalidate still forces a re-read immediately")
+
+        clock = t0.addingTimeInterval(30 + 61)
+        _ = caching.accessToken(configDir: "~/.claude")
+        XCTAssertEqual(base.calls["~/.claude"], 3, "past the floor the expired token is re-read again")
+    }
+
     func testTokenWithoutExpiryIsStillCachedForTheProcess() {
         let base = RotatingReader(ClaudeToken(value: "tok", expiresAt: nil))
         let caching = CachingCredentialsReader(base: base, now: { Date() })

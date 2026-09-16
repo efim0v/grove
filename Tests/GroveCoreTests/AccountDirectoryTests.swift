@@ -84,6 +84,37 @@ final class AccountDirectoryTests: XCTestCase {
         XCTAssertEqual(found2.count, 1)
     }
 
+    /// `configDir` comes from the freshest-token dir, so the label must come from the
+    /// SAME dir: a tier read from another dir of the org (written by an older CLI, or
+    /// after a plan change) silently reweights the account in the tier-weighted
+    /// aggregate — an unknown tier counts as weight 1, i.e. 1/20th of a Max 20x.
+    func testEmailAndTierComeFromTheDirWhoseTokenIsFreshest() throws {
+        let stale = try makeDir(".claude-accounts/apple", org: "org-1", email: "old@x", tier: "default_claude_pro")
+        let fresh = try makeDir(".claude-accounts/me@x", org: "org-1", email: "me@x", tier: "default_claude_max_20x")
+        let creds = TokenTable()
+        creds.expiry[stale] = Date(timeIntervalSince1970: 100)
+        creds.expiry[fresh] = Date(timeIntervalSince1970: 200)
+        let found = AccountDirectory(home: home.path, credentials: creds).scan()
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found[0].configDir, fresh)
+        XCTAssertEqual(found[0].tier, "default_claude_max_20x", "the tier of the dir we actually fetch with")
+        XCTAssertEqual(found[0].email, "me@x")
+    }
+
+    /// …but a primary dir written before `organizationRateLimitTier` existed must not
+    /// erase a tier another dir of the same org still carries.
+    func testTierFallsBackToAMemberThatStillCarriesOne() throws {
+        let known = try makeDir(".claude-accounts/apple", org: "org-1", email: "me@x", tier: "default_claude_max_20x")
+        let primary = try makeDir(".claude-accounts/me@x", org: "org-1", email: nil, tier: nil)
+        let creds = TokenTable()
+        creds.expiry[known] = Date(timeIntervalSince1970: 100)
+        creds.expiry[primary] = Date(timeIntervalSince1970: 200)
+        let found = AccountDirectory(home: home.path, credentials: creds).scan()
+        XCTAssertEqual(found[0].configDir, primary)
+        XCTAssertEqual(found[0].tier, "default_claude_max_20x")
+        XCTAssertEqual(found[0].email, "me@x")
+    }
+
     func testDedupKeepsFirstPositionInOrder() throws {
         try makeDir(".claude", org: "org-A")
         try makeDir(".claude-accounts/z", org: "org-B")
