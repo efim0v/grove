@@ -211,6 +211,46 @@ final class TokenKeeperTests: XCTestCase {
         XCTAssertEqual(fourth, .failed("sign in again"))
     }
 
+    /// The breaker must not outlive the trouble. `succeed` runs only when THIS keeper
+    /// moved the expiry, and `ensureFresh` returns `.fresh` before it, so an account
+    /// refreshed OUT OF BAND — Claude Code itself, a `claude` run in a terminal, a new
+    /// sign-in — used to keep its failure count forever; and because the count is
+    /// persisted, "forever" survived every relaunch: `-p` stayed dropped and the retry
+    /// gap stayed at hours for an account that had been healthy for weeks.
+    func testTokenObservedFreshResetsTheBreakerAndPersistsTheReset() async throws {
+        let dir = try Fixture.tempDir("keeper-reset").path
+        let creds = MovableCreds(); creds.expiry = t0.addingTimeInterval(60)
+        let runner = FakeCLI()                        // nothing this keeper runs moves the expiry
+        let clock = Clock(t0)
+        let keeper = TokenKeeper(runner: runner, credentials: creds, claudePath: "/x/claude",
+                                 allowPromptFallback: { true }, now: { clock.date }, stateDirectory: dir)
+        _ = await keeper.ensureFresh(configDir: "/d")                       // attempt 1
+        clock.date = t0.addingTimeInterval(31 * 60)
+        _ = await keeper.ensureFresh(configDir: "/d")                       // attempt 2
+        clock.date = t0.addingTimeInterval(92 * 60)
+        _ = await keeper.ensureFresh(configDir: "/d")                       // attempt 3 → -p is spent
+        XCTAssertEqual(runner.invocations.filter { $0.args.first == "-p" }.count, 3)
+
+        // The CLI (or Claude Code) refreshes the token elsewhere; Brow only observes it.
+        clock.date = t0.addingTimeInterval(100 * 60)
+        creds.expiry = clock.date.addingTimeInterval(8 * 3600)
+        let observed = await keeper.ensureFresh(configDir: "/d")
+        XCTAssertEqual(observed, .fresh)
+        let state = try XCTUnwrap(FileManager.default.contents(atPath: dir + "/token-attempts.json"))
+        XCTAssertEqual(try JSONDecoder().decode([String: TokenKeeper.Attempt].self, from: state)["/d"]?.failures, 0,
+                       "the reset is persisted, not just held in memory until the next relaunch")
+
+        // …and the next expiry is handled like any other account's: doctor runs, and
+        // the `-p` leg is back on the table.
+        clock.date = t0.addingTimeInterval(9 * 3600)
+        creds.expiry = clock.date.addingTimeInterval(60)
+        let out = await keeper.ensureFresh(configDir: "/d")
+        XCTAssertEqual(runner.invocations.suffix(2).map(\.args),
+                       [["doctor"], ["-p", ".", "--model", "haiku", "--max-turns", "1"]],
+                       "doctor runs again and -p is no longer gated by the old failures")
+        XCTAssertEqual(out, .failed("neither claude doctor nor claude -p refreshed the token"))
+    }
+
     func testRetryIntervalDoublesFromThirtyMinutesAndIsCappedAtTwelveHours() {
         XCTAssertEqual(TokenKeeper.retryInterval(failures: 0), 30 * 60)
         XCTAssertEqual(TokenKeeper.retryInterval(failures: 1), 30 * 60, "the spec's 30 min floor survives")

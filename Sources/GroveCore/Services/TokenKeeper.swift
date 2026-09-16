@@ -89,7 +89,7 @@ public actor TokenKeeper {
         guard let before = credentials.token(configDir: configDir)?.expiresAt else {
             return fail("no readable token", configDir: configDir)
         }
-        if before.timeIntervalSince(at) > Self.threshold { return .fresh }
+        if before.timeIntervalSince(at) > Self.threshold { return observedFresh(configDir: configDir) }
         let failures = attempts[configDir]?.failures ?? 0
         if let last = attempts[configDir]?.at,
            at.timeIntervalSince(last) < Self.retryInterval(failures: failures) {
@@ -168,6 +168,27 @@ public actor TokenKeeper {
 
     private static func suffix(_ details: [String]) -> String {
         details.isEmpty ? "" : " (\(details.joined(separator: "; ")))"
+    }
+
+    /// A token with more than `threshold` of life left is proof this account is
+    /// healthy again — whoever moved it: a later `doctor`, Claude Code itself running
+    /// in that config dir, a fresh sign-in. The breaker has to be reset HERE, because
+    /// nothing else on this path ever does: `succeed` runs only when THIS keeper moved
+    /// the expiry, and `ensureFresh` returns before it. With the count persisted to
+    /// `token-attempts.json` a spell of three failures otherwise survived every
+    /// relaunch, permanently disabling the `-p` leg and holding the retry gap at 12 h —
+    /// the opposite of the spec's "always current".
+    ///
+    /// The attempt TIMESTAMP is deliberately kept: the spec's floor is "one
+    /// token-refresh attempt per account per 30 min", and a token that was refreshed
+    /// out of band is no reason to spawn the CLI sooner than that.
+    private func observedFresh(configDir: String) -> TokenRefreshOutcome {
+        if var attempt = attempts[configDir], attempt.failures != 0 {
+            attempt.failures = 0
+            attempts[configDir] = attempt
+            saveState()
+        }
+        return .fresh
     }
 
     private func succeed(_ outcome: TokenRefreshOutcome, configDir: String) -> TokenRefreshOutcome {
