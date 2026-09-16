@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "GroveCore", targets: ["GroveCore"]),
         .executable(name: "grove", targets: ["grove-cli"]),
         .executable(name: "GroveApp", targets: ["GroveApp"]),
+        .executable(name: "BrowApp", targets: ["BrowApp"]),
     ],
     targets: [
         .target(
@@ -29,6 +30,16 @@ let package = Package(
             dependencies: ["GroveAppKit"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .target(
+            name: "BrowKit",
+            dependencies: ["GroveCore"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .executableTarget(
+            name: "BrowApp",
+            dependencies: ["BrowKit"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .testTarget(
             name: "GroveCoreTests",
             dependencies: ["GroveCore"],
@@ -37,6 +48,11 @@ let package = Package(
         .testTarget(
             name: "GroveAppKitTests",
             dependencies: ["GroveAppKit"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .testTarget(
+            name: "BrowKitTests",
+            dependencies: ["BrowKit"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]
