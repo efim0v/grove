@@ -15,7 +15,7 @@ source Scripts/xcode-env.sh
 BUNDLE="${1:-}"
 FILTER="${2:-}"
 
-swift build --build-tests 2>&1 | grep -E "error:|warning: unable|Build complete" || true
+swift build --build-tests 2>&1 | grep -E "error:|warning:|Build complete" | awk '!seen[$0]++' || true
 if [[ ${pipestatus[1]} -ne 0 ]]; then
     echo "BUILD FAILED" >&2
     exit 1
@@ -56,7 +56,7 @@ for b in "${bundles[@]}"; do
     echo "$name (xctest exit $rc): ${summary:-no summary}"
     # xctest's exit code is not a reliable pass/fail signal (a skipped test can make it
     # non-zero); the outermost summary line is.
-    if [[ -z "$summary" ]] || ! echo "$summary" | grep -qE "with 0 failures"; then
+    if [[ -z "$summary" ]] || ! echo "$summary" | grep -qE "(with|and) 0 failures"; then
         failed=1
     fi
 done
