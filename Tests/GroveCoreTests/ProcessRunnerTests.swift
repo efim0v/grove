@@ -59,6 +59,48 @@ final class ProcessRunnerTests: XCTestCase {
         )
     }
 
+    /// `sleep 6 &` is a grandchild: it inherits the shell's fd 1 and fd 2, which are
+    /// the pipes' write ends, and keeps them open for the full six seconds even
+    /// though the child shell exits immediately. `readDataToEndOfFile` returns only
+    /// when the LAST writer closes, so the old drain held the caller for those 6 s.
+    /// The drain must be bounded: return what the child wrote, and stop reading.
+    func testReturnsPromptlyWhenAGrandchildKeepsStdoutOpen() async throws {
+        let start = Date()
+        let result = try await runner.run(
+            "/bin/sh", ["-c", "(sleep 6 &) ; echo out; echo err 1>&2; exit 0"],
+            timeout: 10
+        )
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(
+            elapsed, 4.0,
+            "a grandchild holding the write end must not hold the caller (took \(elapsed) s)"
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(result.stdout.contains("out"), "stdout was \(result.stdout.debugDescription)")
+        XCTAssertTrue(result.stderr.contains("err"), "stderr was \(result.stderr.debugDescription)")
+    }
+
+    /// Same grandchild, but the child itself outlives the timeout: the watchdog
+    /// still wins, and the bounded drain that follows it does not swallow the throw
+    /// or stretch the call out to the grandchild's lifetime.
+    func testTimeoutStillThrowsAndDoesNotHangOnDrain() async throws {
+        let start = Date()
+        do {
+            _ = try await runner.run("/bin/sh", ["-c", "(sleep 6 &); sleep 6"], timeout: 1)
+            XCTFail("expected GroveError.timeout")
+        } catch let error as GroveError {
+            guard case .timeout(let command) = error else {
+                return XCTFail("expected .timeout, got \(error)")
+            }
+            XCTAssertTrue(command.contains("sleep 6"))
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(
+            elapsed, 4.0,
+            "the drain after a timeout must stay bounded (took \(elapsed) s)"
+        )
+    }
+
     func testLargeOutputDoesNotDeadlock() async throws {
         // 200KB >> 64KB pipe buffer; hangs forever if pipes are not drained concurrently.
         let result = try await runner.run("zsh", ["-c", "yes | head -c 200000"])

@@ -46,9 +46,73 @@ private final class TimeoutFlag: @unchecked Sendable {
     func isSet() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 
+/// Thread-safe one-way boolean that tells the pipe readers to stop and return
+/// what they have. Same pattern as `TimeoutFlag`, set from a different place.
+private final class AbandonFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    func isSet() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// Reads one pipe's read end to EOF — or until `abandon` is set — and returns
+/// what it collected.
+///
+/// `poll(2)` with a 100 ms timeout is what makes the read abandonable: the loop
+/// is never parked in the kernel for longer than that, so the flag is honoured
+/// within 100 ms no matter how long a writer keeps the pipe open. The handle is
+/// closed here, on the same thread that reads it, so no one can pull the file
+/// descriptor out from under an in-flight `read(2)` (a closed fd number is
+/// reused immediately, and reading the wrong file is worse than reading late).
+private func drainPipe(_ handle: FileHandle, abandon: AbandonFlag) -> Data {
+    let fd = handle.fileDescriptor
+    var collected = Data()
+    var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+
+    loop: while !abandon.isSet() {
+        var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        let ready = poll(&descriptor, 1, 100)
+        if ready < 0 {
+            if errno == EINTR { continue }
+            break loop                             // poll is broken; stop reading.
+        }
+        if ready == 0 { continue }                 // Idle: re-check the abandon flag.
+
+        let count = buffer.withUnsafeMutableBytes { raw in
+            read(fd, raw.baseAddress, raw.count)
+        }
+        switch count {
+        case 1...:
+            collected.append(contentsOf: buffer[0..<count])
+        case 0:
+            break loop                             // EOF: the last writer closed.
+        default:
+            if errno == EINTR || errno == EAGAIN { continue }
+            break loop                             // Read error; keep what we have.
+        }
+    }
+
+    try? handle.close()
+    return collected
+}
+
 public struct ProcessRunner: CommandRunning, Sendable {
+    /// How long the drain of stdout/stderr may outlive the child. A grandchild
+    /// that inherited fd 1/2 can hold the pipes open long after the child exits;
+    /// past this grace the readers are abandoned and `run` returns what it has.
+    public static let drainGrace: TimeInterval = 2
+
     public init() {}
 
+    /// Runs `executable` and returns its exit code and output.
+    ///
+    /// `run` returns within `timeout + drainGrace` plus scheduling slack in every
+    /// case. The pipes are read by an abandonable `poll`/`read` loop rather than
+    /// `readDataToEndOfFile`, which is unusable here on two counts: it waits for
+    /// the *last* writer to close — any backgrounded grandchild of the child holds
+    /// it open — and it cannot be interrupted, because closing the handle under a
+    /// blocked `readDataToEndOfFile` raises an Objective-C exception rather than
+    /// returning.
     public func run(
         _ executable: String, _ args: [String],
         cwd: String? = nil, env: [String: String]? = nil, timeout: TimeInterval = 10
@@ -101,8 +165,9 @@ public struct ProcessRunner: CommandRunning, Sendable {
         // exit would deadlock once a pipe's 64KB kernel buffer fills up.
         let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
-        let stdoutTask = Task.detached { stdoutHandle.readDataToEndOfFile() }
-        let stderrTask = Task.detached { stderrHandle.readDataToEndOfFile() }
+        let abandon = AbandonFlag()
+        let stdoutTask = Task.detached { drainPipe(stdoutHandle, abandon: abandon) }
+        let stderrTask = Task.detached { drainPipe(stderrHandle, abandon: abandon) }
 
         // Watchdog: SIGTERM at the deadline, escalate to SIGKILL 500ms later.
         let flag = TimeoutFlag()
@@ -121,13 +186,23 @@ public struct ProcessRunner: CommandRunning, Sendable {
         for await code in exitStream { exitCode = code }
         watchdog.cancel()
 
+        // The child is gone, but the write ends may not be: a grandchild that
+        // inherited fd 1/2 outlives it. Give the readers `drainGrace` to reach EOF
+        // on their own, then abandon them — they notice within one poll interval,
+        // close their handles and return what they collected.
+        let graceTimer = Task.detached {
+            try? await Task.sleep(nanoseconds: UInt64(Self.drainGrace * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            abandon.set()
+        }
+        let stdoutData = await stdoutTask.value
+        let stderrData = await stderrTask.value
+        graceTimer.cancel()
+
         if flag.isSet() {
-            // Abandon the drain tasks; they finish on their own once the pipes hit EOF.
             throw GroveError.timeout(command: commandDescription)
         }
 
-        let stdoutData = await stdoutTask.value
-        let stderrData = await stderrTask.value
         return ProcessResult(
             exitCode: exitCode,
             stdout: String(data: stdoutData, encoding: .utf8) ?? "",
