@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 public struct ProcessResult: Sendable {
     public let exitCode: Int32
@@ -55,6 +56,10 @@ private final class AbandonFlag: @unchecked Sendable {
     func isSet() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 
+/// Every failure below truncates the output silently — the caller still sees a
+/// clean exit code — so each one says so here.
+private let processRunnerLog = Logger(subsystem: "dev.artemefimov.brow", category: "ProcessRunner")
+
 /// Reads one pipe's read end to EOF — or until `abandon` is set — and returns
 /// what it collected.
 ///
@@ -64,16 +69,43 @@ private final class AbandonFlag: @unchecked Sendable {
 /// closed here, on the same thread that reads it, so no one can pull the file
 /// descriptor out from under an in-flight `read(2)` (a closed fd number is
 /// reused immediately, and reading the wrong file is worse than reading late).
-private func drainPipe(_ handle: FileHandle, abandon: AbandonFlag) -> Data {
+///
+/// Every exit that is not EOF returns a SHORT read that the caller cannot tell
+/// apart from complete output, so all of them are logged with the byte count
+/// kept: without that, truncation is invisible.
+private func drainPipe(
+    _ handle: FileHandle, stream: String, command: String, abandon: AbandonFlag
+) -> Data {
     let fd = handle.fileDescriptor
     var collected = Data()
     var buffer = [UInt8](repeating: 0, count: 64 * 1024)
 
-    loop: while !abandon.isSet() {
+    loop: while true {
+        if abandon.isSet() {
+            processRunnerLog.error(
+                """
+                \(stream, privacy: .public) drain abandoned after \
+                \(ProcessRunner.drainGrace, format: .fixed(precision: 0), privacy: .public)s \
+                grace — a writer still holds the pipe; '\(command, privacy: .public)' \
+                output truncated at \(collected.count, privacy: .public) bytes
+                """
+            )
+            break loop
+        }
+
         var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         let ready = poll(&descriptor, 1, 100)
         if ready < 0 {
-            if errno == EINTR { continue }
+            let code = errno
+            if code == EINTR { continue }
+            processRunnerLog.error(
+                """
+                poll failed on the \(stream, privacy: .public) pipe of \
+                '\(command, privacy: .public)': errno \(code, privacy: .public) \
+                (\(String(cString: strerror(code)), privacy: .public)); output truncated at \
+                \(collected.count, privacy: .public) bytes
+                """
+            )
             break loop                             // poll is broken; stop reading.
         }
         if ready == 0 { continue }                 // Idle: re-check the abandon flag.
@@ -87,12 +119,33 @@ private func drainPipe(_ handle: FileHandle, abandon: AbandonFlag) -> Data {
         case 0:
             break loop                             // EOF: the last writer closed.
         default:
-            if errno == EINTR || errno == EAGAIN { continue }
+            let code = errno
+            if code == EINTR || code == EAGAIN { continue }
+            processRunnerLog.error(
+                """
+                read failed on the \(stream, privacy: .public) pipe of \
+                '\(command, privacy: .public)': errno \(code, privacy: .public) \
+                (\(String(cString: strerror(code)), privacy: .public)); output truncated at \
+                \(collected.count, privacy: .public) bytes
+                """
+            )
             break loop                             // Read error; keep what we have.
         }
     }
 
-    try? handle.close()
+    do {
+        try handle.close()
+    } catch {
+        // Not a truncation — the bytes are already collected — but a leaked file
+        // descriptor, which is fatal in aggregate for a process that runs forever.
+        processRunnerLog.error(
+            """
+            closing the \(stream, privacy: .public) read end of \
+            '\(command, privacy: .public)' failed: \
+            \(error.localizedDescription, privacy: .public)
+            """
+        )
+    }
     return collected
 }
 
@@ -166,8 +219,12 @@ public struct ProcessRunner: CommandRunning, Sendable {
         let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
         let abandon = AbandonFlag()
-        let stdoutTask = Task.detached { drainPipe(stdoutHandle, abandon: abandon) }
-        let stderrTask = Task.detached { drainPipe(stderrHandle, abandon: abandon) }
+        let stdoutTask = Task.detached {
+            drainPipe(stdoutHandle, stream: "stdout", command: commandDescription, abandon: abandon)
+        }
+        let stderrTask = Task.detached {
+            drainPipe(stderrHandle, stream: "stderr", command: commandDescription, abandon: abandon)
+        }
 
         // Watchdog: SIGTERM at the deadline, escalate to SIGKILL 500ms later.
         let flag = TimeoutFlag()
@@ -203,10 +260,14 @@ public struct ProcessRunner: CommandRunning, Sendable {
             throw GroveError.timeout(command: commandDescription)
         }
 
+        // Lossy on purpose: an abandoned drain stops at an arbitrary byte offset and
+        // can cut a multi-byte UTF-8 sequence in half, and `String(data:encoding:)`
+        // answers nil for the whole stream when it does — a truncated tail must cost
+        // one replacement character, never every byte the child wrote.
         return ProcessResult(
             exitCode: exitCode,
-            stdout: String(data: stdoutData, encoding: .utf8) ?? "",
-            stderr: String(data: stderrData, encoding: .utf8) ?? ""
+            stdout: String(decoding: stdoutData, as: UTF8.self),
+            stderr: String(decoding: stderrData, as: UTF8.self)
         )
     }
 }

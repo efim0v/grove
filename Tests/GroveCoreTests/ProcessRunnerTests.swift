@@ -101,6 +101,22 @@ final class ProcessRunnerTests: XCTestCase {
         )
     }
 
+    /// An abandoned drain stops at an arbitrary byte offset, which can cut a
+    /// multi-byte UTF-8 sequence in half. `String(data:encoding:.utf8)` answers nil
+    /// for a stream like that, and the `?? ""` behind it would throw the WHOLE
+    /// stream away — silent total data loss reported as a clean exit 0. The lossy
+    /// decoder costs one replacement character instead. 0xC3 followed by `a` is
+    /// exactly such a half sequence.
+    func testInvalidUTF8KeepsTheRestOfTheStream() async throws {
+        let result = try await runner.run(
+            "/bin/sh", ["-c", "printf 'before'; printf '\\303'; printf 'after'; printf 'bad' 1>&2; printf '\\303' 1>&2"]
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(result.stdout.hasPrefix("before"), "stdout was \(result.stdout.debugDescription)")
+        XCTAssertTrue(result.stdout.hasSuffix("after"), "stdout was \(result.stdout.debugDescription)")
+        XCTAssertTrue(result.stderr.hasPrefix("bad"), "stderr was \(result.stderr.debugDescription)")
+    }
+
     func testLargeOutputDoesNotDeadlock() async throws {
         // 200KB >> 64KB pipe buffer; hangs forever if pipes are not drained concurrently.
         let result = try await runner.run("zsh", ["-c", "yes | head -c 200000"])
