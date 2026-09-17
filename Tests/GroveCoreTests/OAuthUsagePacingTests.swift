@@ -96,6 +96,101 @@ final class OAuthUsagePacingTests: XCTestCase {
         XCTAssertEqual(f.calls, 3)
     }
 
+    /// Inside a backoff window a background poll that holds a reading gets that
+    /// reading, not an error: being told to wait says nothing about the account. A
+    /// forced request still throws, so the UI can queue and count down.
+    func testBackgroundPollInsideBackoffIsServedFromTheCache() async throws {
+        let f = Fetcher()
+        let c = client(f)
+        _ = try await c.usage(configDir: "d", now: t0)
+        f.status = 429
+        _ = try? await c.usage(configDir: "d", now: t0.addingTimeInterval(10), force: true)   // the 429
+        f.status = 200
+        let served = try await c.usage(configDir: "d", now: t0.addingTimeInterval(40))
+        XCTAssertEqual(served.fetchedAt, t0, "the old reading, silently")
+        XCTAssertEqual(f.calls, 2)
+        do {
+            _ = try await c.usage(configDir: "d", now: t0.addingTimeInterval(41), force: true)
+            XCTFail("a forced request inside the window must throw")
+        } catch {
+            XCTAssertEqual(error as? OAuthUsageError, .backoff)
+        }
+    }
+
+    /// A relaunch must not spend a request on every account inside the window the
+    /// previous run already used.
+    func testSeededLastSuccessHoldsTheFirstPollAndRefillsTheBucket() async throws {
+        let f = Fetcher()
+        let c = client(f)
+        await c.seedLastSuccess(configDir: "d", at: t0.addingTimeInterval(-40))
+        do {
+            _ = try await c.usage(configDir: "d", now: t0)
+            XCTFail("no cache and the window is closed: nothing to serve")
+        } catch {
+            XCTAssertEqual(error as? OAuthUsageError, .backoff)
+        }
+        XCTAssertEqual(f.calls, 0)
+        _ = try await c.usage(configDir: "d", now: t0.addingTimeInterval(61))
+        XCTAssertEqual(f.calls, 1, "the window re-opens 100 s after the persisted reading")
+    }
+
+    /// A relaunch knows the reading's age but not the bucket: assume it empty and
+    /// let it refill, so a ⟳ right after launch waits instead of earning a 429.
+    func testSeededBucketStartsEmptyAndRefills() async throws {
+        let f = Fetcher()
+        let c = client(f)
+        await c.seedLastSuccess(configDir: "d", at: t0.addingTimeInterval(-40))
+        do {
+            _ = try await c.usage(configDir: "d", now: t0, force: true)
+            XCTFail("no burst on relaunch")
+        } catch {
+            XCTAssertEqual(error as? OAuthUsageError, .backoff)
+        }
+        let next = await c.nextAllowedAt(configDir: "d", force: true, now: t0)
+        XCTAssertEqual(next, t0.addingTimeInterval(60), "one token lands 100 s after the reading")
+        _ = try await c.usage(configDir: "d", now: t0.addingTimeInterval(60), force: true)
+        XCTAssertEqual(f.calls, 1)
+    }
+
+    /// Grove and Brow poll the same token. Through the ledger the second app serves
+    /// the first app's reading instead of spending a request, spends only the burst
+    /// the first app left, and honours a 429 window the first app earned.
+    func testTwoClientsShareOneBucketThroughTheLedger() async throws {
+        let ledger = InMemoryUsagePacingLedger()
+        let f = Fetcher()
+        let grove = OAuthUsageClient(fetcher: f, userAgent: nil, cacheSeconds: 30, backoffCap: 300,
+                                     minInterval: 100, burstCapacity: 5, ledger: ledger, credentials: Creds())
+        let brow = OAuthUsageClient(fetcher: f, userAgent: nil, cacheSeconds: 30, backoffCap: 300,
+                                    minInterval: 100, burstCapacity: 5, ledger: ledger, credentials: Creds())
+        _ = try await grove.usage(configDir: "d", now: t0)
+        XCTAssertEqual(f.calls, 1)
+        let served = try await brow.usage(configDir: "d", now: t0.addingTimeInterval(10))
+        XCTAssertEqual(f.calls, 1, "Brow's background poll is answered with Grove's reading")
+        XCTAssertEqual(served.fetchedAt, t0)
+        let next = await brow.nextAllowedAt(configDir: "d", force: false, now: t0.addingTimeInterval(10))
+        XCTAssertEqual(next, t0.addingTimeInterval(100), "Brow's window runs from Grove's success")
+
+        // Grove spends the rest of the burst; Brow's refresh button must not overdraw.
+        for i in 1...4 { _ = try await grove.usage(configDir: "d", now: t0.addingTimeInterval(Double(i)), force: true) }
+        XCTAssertEqual(f.calls, 5)
+        do {
+            _ = try await brow.usage(configDir: "d", now: t0.addingTimeInterval(5), force: true)
+            XCTFail("the bucket Grove emptied is empty for Brow too")
+        } catch {
+            XCTAssertEqual(error as? OAuthUsageError, .backoff)
+        }
+        XCTAssertEqual(f.calls, 5)
+
+        // Grove earns a 429 at t0+105 (one token refilled, then refused): Brow waits it out.
+        f.status = 429
+        _ = try? await grove.usage(configDir: "d", now: t0.addingTimeInterval(105), force: true)
+        XCTAssertEqual(f.calls, 6)
+        f.status = 200
+        let held = await brow.nextAllowedAt(configDir: "d", force: true, now: t0.addingTimeInterval(106))
+        XCTAssertGreaterThan(held, t0.addingTimeInterval(106), "Grove's 429 window holds Brow as well")
+        XCTAssertEqual(f.calls, 6)
+    }
+
     func testTwoAccountsPaceIndependently() async throws {
         let f = Fetcher()
         let c = client(f)

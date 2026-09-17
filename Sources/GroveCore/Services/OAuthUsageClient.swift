@@ -16,7 +16,7 @@ public struct URLSessionUsageFetcher: UsageFetching {
     }
 }
 
-public struct OAuthWindow: Sendable, Equatable {
+public struct OAuthWindow: Sendable, Equatable, Codable {
     public let utilization: Double
     public let resetsAt: String?
     public init(utilization: Double, resetsAt: String?) {
@@ -26,7 +26,7 @@ public struct OAuthWindow: Sendable, Equatable {
 }
 
 /// A model-scoped weekly window from the `limits[]` `weekly_scoped` entry.
-public struct OAuthScopedWindow: Sendable, Equatable {
+public struct OAuthScopedWindow: Sendable, Equatable, Codable {
     public let utilization: Double
     public let resetsAt: String?
     public let modelDisplayName: String?
@@ -37,7 +37,7 @@ public struct OAuthScopedWindow: Sendable, Equatable {
     }
 }
 
-public struct OAuthUsage: Sendable, Equatable {
+public struct OAuthUsage: Sendable, Equatable, Codable {
     public let fiveHour: OAuthWindow?
     public let sevenDay: OAuthWindow?
     public let sevenDaySonnet: OAuthWindow?
@@ -114,6 +114,9 @@ public actor OAuthUsageClient {
     /// key, so a success for one account is the last success for all of them.
     private let sharedBucket: Bool
     private func pacingKey(_ configDir: String) -> String { sharedBucket ? "*" : configDir }
+    /// Cross-process view of the bucket (see `UsagePacingLedger`). nil = this process
+    /// is the only client of the endpoint, as in tests.
+    private let ledger: UsagePacingLedger?
 
     private var cache: [String: (at: Date, value: OAuthUsage)] = [:]
     private var backoff: [String: (until: Date, attempts: Int)] = [:]
@@ -124,11 +127,12 @@ public actor OAuthUsageClient {
     /// Identifies as `claude-code/<appVersion>` — Grove's long-standing behaviour.
     public init(fetcher: UsageFetching, appVersion: String, cacheSeconds: TimeInterval = 180,
                 backoffCap: TimeInterval = 3600, minInterval: TimeInterval = 100, burstCapacity: Int = 5,
-                sharedBucket: Bool = false,
+                sharedBucket: Bool = false, ledger: UsagePacingLedger? = nil,
                 credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
         self.credentials = credentials
         self.userAgent = "claude-code/\(appVersion)"
+        self.ledger = ledger
         self.cacheSeconds = cacheSeconds
         self.backoffCap = backoffCap
         self.minInterval = minInterval
@@ -139,11 +143,12 @@ public actor OAuthUsageClient {
     /// Explicit `User-Agent`; `nil` omits the header entirely. Brow passes nil.
     public init(fetcher: UsageFetching, userAgent: String?, cacheSeconds: TimeInterval = 180,
                 backoffCap: TimeInterval = 3600, minInterval: TimeInterval = 100, burstCapacity: Int = 5,
-                sharedBucket: Bool = false,
+                sharedBucket: Bool = false, ledger: UsagePacingLedger? = nil,
                 credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
         self.credentials = credentials
         self.userAgent = userAgent
+        self.ledger = ledger
         self.cacheSeconds = cacheSeconds
         self.backoffCap = backoffCap
         self.minInterval = minInterval
@@ -157,6 +162,7 @@ public actor OAuthUsageClient {
     /// refresh button relies on; the button (`force: true`) only needs a token in the
     /// bucket. After a 429 both wait for the backoff window.
     public func nextAllowedAt(configDir: String, force: Bool, now: Date) -> Date {
+        adoptLedger(configDir: configDir)
         var earliest = now
         if let window = backoff[configDir], now < window.until { earliest = max(earliest, window.until) }
         guard let p = pacing[pacingKey(configDir)] else { return earliest }
@@ -176,6 +182,52 @@ public actor OAuthUsageClient {
         min(cap, p.level + max(0, now.timeIntervalSince(p.levelAt)) / refill)
     }
 
+    /// Take whatever another process learned since we last looked: a later success
+    /// (with the bucket it left and the reading it got — that reading is served
+    /// instead of spending a request of our own), or a 429 window still open. Our own
+    /// state wins whenever it is newer, so this never rewinds the clock.
+    private func adoptLedger(configDir: String) {
+        guard let ledger else { return }
+        let records = ledger.load()
+        let key = pacingKey(configDir)
+        let bucket = sharedBucket
+            ? records.values.max(by: { $0.lastSuccessAt < $1.lastSuccessAt })
+            : records[configDir]
+        if let r = bucket, pacing[key].map({ $0.lastSuccessAt < r.lastSuccessAt }) ?? true {
+            pacing[key] = (lastSuccessAt: r.lastSuccessAt, level: r.level, levelAt: r.levelAt)
+        }
+        guard let mine = records[configDir] else { return }
+        if let until = mine.backoffUntil, (backoff[configDir]?.until ?? .distantPast) < until {
+            backoff[configDir] = (until: until, attempts: mine.attempts)
+        }
+        if let reading = mine.reading, let at = reading.fetchedAt,
+           (cache[configDir]?.at ?? .distantPast) < at {
+            cache[configDir] = (at: at, value: reading)
+        }
+    }
+
+    private func publishLedger(configDir: String) {
+        guard let ledger, let p = pacing[pacingKey(configDir)] else { return }
+        let window = backoff[configDir]
+        ledger.store(UsagePacingRecord(lastSuccessAt: p.lastSuccessAt, level: p.level, levelAt: p.levelAt,
+                                       backoffUntil: window?.until, attempts: window?.attempts ?? 0,
+                                       reading: cache[configDir]?.value), for: configDir)
+    }
+
+    /// Tell the client about a reading obtained BEFORE this process started (the
+    /// persisted snapshot), so a relaunch does not spend a fresh request on every
+    /// account inside the window the previous run already used — four relaunches in
+    /// ten minutes drained both buckets and every one of them opened on "rate
+    /// limited". Ignored when the client already knows a later success for the dir.
+    public func seedLastSuccess(configDir: String, at: Date) {
+        let key = pacingKey(configDir)
+        if let p = pacing[key], p.lastSuccessAt >= at { return }
+        // The level is unknown: assume EMPTY as of the reading and let it refill. A
+        // full burst on every launch is what made three relaunches in a row open on
+        // 429 — the real bucket had been drained by the launches before.
+        pacing[key] = (lastSuccessAt: at, level: 0, levelAt: at)
+    }
+
     /// Returns cached usage when fresh (within cacheSeconds of the last success),
     /// is suppressed during a 429 backoff window, else fetches. Throws on 429,
     /// missing credentials, non-2xx, or malformed JSON.
@@ -188,21 +240,28 @@ public actor OAuthUsageClient {
     /// there can be, not an error — and a forced refresh with an empty burst budget
     /// throws `.backoff` so the caller can schedule itself for `nextAllowedAt`.
     public func usage(configDir: String, now: Date, force: Bool = false) async throws -> OAuthUsage {
+        adoptLedger(configDir: configDir)
         // 1. Fresh cache hit.
         if !force, let entry = cache[configDir], now.timeIntervalSince(entry.at) < cacheSeconds {
             return entry.value
         }
 
-        // 2. Inside a backoff window → suppress without calling the fetcher.
+        // 2. Inside a backoff window → suppress without calling the fetcher. A
+        //    background poll that holds a reading is answered with that reading — being
+        //    told to wait is not an error about the account, and a "rate limited" tag on
+        //    every poll for the length of the window was exactly that lie. A FORCED
+        //    request still throws so the caller can queue itself for `nextAllowedAt`.
         if let window = backoff[configDir], now < window.until {
+            if !force, let entry = cache[configDir] { return entry.value }
             throw OAuthUsageError.backoff
         }
 
         // 2b. Endpoint pacing. A background poll inside the refill period is served
         //     from the cache; a forced refresh with nothing left in the bucket waits.
         if let p = pacing[pacingKey(configDir)] {
-            if !force, now.timeIntervalSince(p.lastSuccessAt) < minInterval, let entry = cache[configDir] {
-                return entry.value
+            if !force, now.timeIntervalSince(p.lastSuccessAt) < minInterval {
+                if let entry = cache[configDir] { return entry.value }
+                throw OAuthUsageError.backoff      // seeded from disk, nothing in memory yet
             }
             if force, Self.level(p, now: now, refill: minInterval, cap: burstCapacity) < 1 {
                 throw OAuthUsageError.backoff
@@ -252,6 +311,7 @@ public actor OAuthUsageClient {
                 until = now.addingTimeInterval(min(cacheSeconds * pow(2, Double(attempts)), backoffCap))
             }
             backoff[configDir] = (until: until, attempts: attempts + 1)
+            publishLedger(configDir: configDir)
             throw OAuthUsageError.tooManyRequests
         }
         guard (200..<300).contains(status) else {
@@ -267,6 +327,7 @@ public actor OAuthUsageClient {
         let level = pacing[pacingKey(configDir)].map { Self.level($0, now: now, refill: minInterval, cap: burstCapacity) }
             ?? burstCapacity
         pacing[pacingKey(configDir)] = (lastSuccessAt: now, level: max(0, level - 1), levelAt: now)
+        publishLedger(configDir: configDir)
         return usage
     }
 
