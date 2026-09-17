@@ -82,6 +82,62 @@ final class ClaudeCredentialsTests: XCTestCase {
         XCTAssertEqual(base.calls["~/.claude"], 2)
     }
 
+    /// A base reader that parks inside the read, exactly as `SecItemCopyMatching` parks
+    /// behind a modal prompt: the caller's thread is held and the cache cannot possibly
+    /// have been filled, because nothing has returned.
+    private final class BlockingReader: CredentialsReading, @unchecked Sendable {
+        private let entered = DispatchSemaphore(value: 0)
+        private let release = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var count = 0
+        var calls: Int { lock.withLock { count } }
+
+        func accessToken(configDir: String) -> String? {
+            lock.withLock { count += 1 }
+            entered.signal()
+            release.wait()
+            return "tok"
+        }
+        func waitUntilInside() { entered.wait() }
+        func letGo() { release.signal() }
+    }
+
+    /// Single-flight per config dir. The cache cannot dedupe two SIMULTANEOUS reads — it
+    /// is filled when a read RETURNS, and a read parked on a modal prompt has not
+    /// returned — so the Brow cycle's account scan, `TokenKeeper.ensureFresh` and the
+    /// usage fetch could each raise their own prompt for the same Keychain item. That is
+    /// the multi-prompt first run the store's single-flight discovery exists to prevent,
+    /// reachable around it: the 5 s Keychain patience releases the cycle to fetch for the
+    /// SEEDED accounts while the scan is still parked on those very items.
+    func testTwoConcurrentReadsOfOneDirAskTheKeychainOnce() {
+        let base = BlockingReader()
+        let caching = CachingCredentialsReader(base: base)
+        let done = expectation(description: "both reads answered")
+        done.expectedFulfillmentCount = 2
+
+        let first = Thread {
+            XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "tok")
+            done.fulfill()
+        }
+        first.start()
+        base.waitUntilInside()                  // the first read is parked in the "prompt"
+
+        let second = Thread {
+            XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "tok",
+                           "the second caller gets the first one's answer")
+            done.fulfill()
+        }
+        second.start()
+        // Give the second thread time to reach the gate and (under the old code) to
+        // raise its own prompt.
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(base.calls, 1, "one Keychain read, one prompt")
+
+        base.letGo()
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(base.calls, 1, "and still one after both callers are served")
+    }
+
     func testSuffixedServiceShapeForAnArbitraryDir() {
         let name = K.serviceName(configDir: "/tmp/some-account")
         XCTAssertTrue(name.hasPrefix("Claude Code-credentials-"))

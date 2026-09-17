@@ -45,8 +45,17 @@ public actor TokenKeeper {
     /// good: `doctor` is free, `-p` spends the account's limit and starts its
     /// 5-hour window, and by now we know it does not help.
     public static let promptGiveUpAfter = 3
-    static let doctorTimeout: TimeInterval = 90
-    static let promptTimeout: TimeInterval = 120
+    /// Quiet period after a CLI that could not run at all. The attempt floor is
+    /// deliberately NOT consumed by `.couldNotAttempt` (the spec: no evidence, no
+    /// charge) — but "not charged" turned into "not bounded by anything": a wrong
+    /// "Path to claude" spawned a process per account per poll, and a `claude doctor`
+    /// that hangs means a 90 s watchdog kill re-spawned every 60 s, forever, in an app
+    /// that runs for weeks. This gate is separate from the floor and from the breaker:
+    /// it holds neither, counts nothing, and hands back the SAME `.couldNotAttempt`
+    /// reason, so the account row's text does not change while it is in force.
+    public static let couldNotAttemptInterval: TimeInterval = 300
+    public static let doctorTimeout: TimeInterval = 90
+    public static let promptTimeout: TimeInterval = 120
 
     private static let log = Logger(subsystem: "dev.artemefimov.brow", category: "TokenKeeper")
 
@@ -92,6 +101,10 @@ public actor TokenKeeper {
     /// nil → attempts live in memory only (tests, and any caller that wants no file).
     private let stateDirectory: String?
     private var attempts: [String: Attempt] = [:]
+    /// When the CLI last failed to run at all for a dir, and why. In memory only: the
+    /// attempt record on disk is what must survive a relaunch, and this one is a
+    /// spawn-rate gate, not evidence about the account.
+    private var couldNotAttemptAt: [String: (at: Date, reason: String)] = [:]
     private var loadedState = false
 
     public init(runner: CommandRunning, credentials: CredentialsReading,
@@ -141,6 +154,19 @@ public actor TokenKeeper {
         if !authRejected, before.timeIntervalSince(at) > Self.threshold {
             return observedFresh(configDir: configDir)
         }
+        // The spawn-rate gate. Checked AFTER the "still fresh" shortcut, so a CLI that
+        // cannot run costs nothing at all for an account that does not need it, and
+        // BEFORE the floor, because the floor is the thing a could-not-attempt leaves
+        // untouched by design.
+        if let last = couldNotAttemptAt[configDir],
+           at.timeIntervalSince(last.at) < Self.couldNotAttemptInterval {
+            Self.log.info("""
+                token refresh not attempted for \(configDir, privacy: .public): \
+                still inside the \(Self.couldNotAttemptInterval, privacy: .public) s quiet period \
+                after "\(last.reason, privacy: .public)"
+                """)
+            return .couldNotAttempt(last.reason)
+        }
         let failures = attempts[configDir]?.failures ?? 0
         let forcesThroughTheFloor = authRejected && !(attempts[configDir]?.forced ?? false)
         if !forcesThroughTheFloor, let last = attempts[configDir]?.at,
@@ -175,7 +201,13 @@ public actor TokenKeeper {
             return fail("claude doctor failed: \(error)", configDir: configDir, counts: true)
         }
 
-        guard allowPromptFallback() else {
+        // `-p` spends the account's limit and starts its 5-hour window, so it runs only
+        // when `doctor` failing is real evidence about the TOKEN. After a 401/403 it is
+        // not: the server rejected the bearer, which a token with hours of nominal life
+        // left can do for reasons no CLI can fix (a revoked session, an org change), and
+        // the account is then charged a fresh 5-hour window on every rejection episode.
+        // Same reasoning the spec already applies to a timed-out `doctor`.
+        guard allowPromptFallback(), !authRejected else {
             return fail("claude doctor did not refresh the token".appending(Self.suffix(details)),
                         configDir: configDir, counts: true)
         }
@@ -307,11 +339,17 @@ public actor TokenKeeper {
     private func couldNotAttempt(_ reason: String, configDir: String, restoring previous: Attempt?) -> TokenRefreshOutcome {
         Self.log.error("token refresh not attempted for \(configDir, privacy: .public): \(reason, privacy: .public)")
         unrecord(configDir: configDir, restoring: previous)
+        // The floor and the breaker stay exactly where they were; only the spawn rate
+        // is bounded. See `couldNotAttemptInterval`.
+        couldNotAttemptAt[configDir] = (at: now(), reason: reason)
         return .couldNotAttempt(reason)
     }
 
     /// Returns what was there before, for `unrecord` to put back.
     private func record(configDir: String, at: Date, failures: Int, forced: Bool) -> Attempt? {
+        // An attempt is about to run, so the quiet period (if any) is over. Whatever
+        // this attempt turns out to be, the gate is re-armed only by `couldNotAttempt`.
+        couldNotAttemptAt.removeValue(forKey: configDir)
         let previous = attempts[configDir]
         attempts[configDir] = Attempt(at: at, failures: failures, forced: forced)
         saveState()

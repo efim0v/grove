@@ -143,7 +143,17 @@ public struct KeychainCredentialsReader: CredentialsReading {
 /// much as a successful one: once the Keychain ACL grant is missing or denied, every
 /// `SecItemCopyMatching` raises the modal again, and the Brow cycle runs every 60 s —
 /// an uncached nil is a prompt a minute, forever. `invalidate(configDir:)` clears the
-/// record, so granting access takes effect at once. Thread-safe via a lock.
+/// record, and `LimitsStore` calls it for every known dir at the top of every FORCED
+/// cycle — ⟳, wake, the network returning, the end of "Add account…" — so granting
+/// access (or finishing `claude auth login`) takes effect on the user's next gesture
+/// rather than whenever the ten minutes happen to run out. Thread-safe via a lock.
+///
+/// Reads are also SINGLE-FLIGHT per config dir: a second caller that arrives while a
+/// read is out waits for that read's answer instead of issuing its own. The cache alone
+/// cannot dedupe them — it is filled when a read RETURNS, and a read parked on a modal
+/// prompt has not returned — so the Brow cycle's scan, `TokenKeeper` and the usage fetch
+/// could each raise their own prompt for the same account, which is precisely the
+/// multi-prompt first run that single-flight discovery exists to prevent.
 public final class CachingCredentialsReader: CredentialsReading, @unchecked Sendable {
     /// Refresh this long BEFORE the stated expiry, so a token can't die in flight
     /// between the cache read and the endpoint receiving it.
@@ -167,9 +177,13 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
 
     private let base: CredentialsReading
     private let now: @Sendable () -> Date
-    private let lock = NSLock()
+    /// Guards the three maps below AND is the condition followers wait on. One object,
+    /// because a follower has to re-read the cache the moment the winner publishes.
+    private let gate = NSCondition()
     private var cache: [String: Entry] = [:]   // configDir → token (successful reads only)
     private var nilReadAt: [String: Date] = [:]  // configDir → when the base last gave nothing
+    /// Config dirs with a base read out right now.
+    private var inFlight: Set<String> = []
 
     public init(base: CredentialsReading = KeychainCredentialsReader(),
                 now: @escaping @Sendable () -> Date = { Date() }) {
@@ -179,24 +193,41 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
 
     public func token(configDir: String) -> ClaudeToken? {
         let at = now()
-        lock.lock()
-        if let cached = cache[configDir], Self.isLive(cached.token, at: at) || Self.withinExpiredFloor(cached, at: at) {
-            lock.unlock()
-            return cached.token
+        gate.lock()
+        while true {
+            if let cached = cache[configDir],
+               Self.isLive(cached.token, at: at) || Self.withinExpiredFloor(cached, at: at) {
+                gate.unlock()
+                return cached.token
+            }
+            if let failedAt = nilReadAt[configDir], at.timeIntervalSince(failedAt) < Self.nilReadFloor {
+                gate.unlock()
+                return nil
+            }
+            // Someone is already asking the Keychain for this dir: wait for THEIR
+            // answer and then re-run the two checks above against it, rather than
+            // raising a second modal prompt for the same item.
+            guard inFlight.contains(configDir) else { break }
+            gate.wait()
         }
-        if let failedAt = nilReadAt[configDir], at.timeIntervalSince(failedAt) < Self.nilReadFloor {
-            lock.unlock()
-            return nil
+        inFlight.insert(configDir)
+        gate.unlock()
+
+        let fresh = base.token(configDir: configDir)
+        // Stamped when the read RETURNED, not when it started. A read parked on a modal
+        // prompt can sit for minutes, and dating the floor from the start of it burns
+        // part of the window on the wait — the opposite of what the floor is for.
+        let returnedAt = now()
+        gate.lock()
+        if let fresh {
+            cache[configDir] = Entry(token: fresh, readAt: returnedAt)
+            nilReadAt.removeValue(forKey: configDir)
+        } else {
+            nilReadAt[configDir] = returnedAt
         }
-        lock.unlock()
-        guard let fresh = base.token(configDir: configDir) else {
-            lock.lock(); nilReadAt[configDir] = at; lock.unlock()
-            return nil
-        }
-        lock.lock()
-        cache[configDir] = Entry(token: fresh, readAt: at)
-        nilReadAt.removeValue(forKey: configDir)
-        lock.unlock()
+        inFlight.remove(configDir)
+        gate.broadcast()
+        gate.unlock()
         return fresh
     }
 
@@ -204,10 +235,10 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
     /// back to the Keychain. Called when an OAuth request fails auth (the token may
     /// have been rotated early) and whenever the user may have just granted access.
     public func invalidate(configDir: String) {
-        lock.lock()
+        gate.lock()
         cache.removeValue(forKey: configDir)
         nilReadAt.removeValue(forKey: configDir)
-        lock.unlock()
+        gate.unlock()
     }
 
     /// A token is usable while it is more than `skew` away from its own expiry. No

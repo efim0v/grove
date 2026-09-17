@@ -41,9 +41,11 @@ panel). Build with `Scripts/build-brow.sh` → `dist/Brow.app`.
 - On first launch macOS asks once per account for access to Claude Code's
   Keychain item — choose "Always Allow".
 - Idle accounts' tokens are kept fresh by running `claude doctor` in that
-  account (no model call). If that ever stops working, the optional
-  `claude -p` fallback (Settings → Accounts) spends a little limit and starts
-  the account's 5-hour window.
+  account (no model call). If that ever stops working, the `claude -p` fallback
+  (Settings → Accounts, **on by default**) spends a little limit and starts the
+  account's 5-hour window. It is never used after a 401/403 or a `doctor` that
+  timed out — neither is evidence the token itself can be fixed — and it is
+  dropped for good after three ineffective rounds.
 - Add an account from Settings: Brow opens Terminal with `claude auth login`;
   sign-in happens in Anthropic's own flow.
 - Limits are re-fetched every **60 s** by one timer that keeps running whether the

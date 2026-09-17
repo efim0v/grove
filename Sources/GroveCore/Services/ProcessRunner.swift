@@ -49,7 +49,8 @@ private final class TimeoutFlag: @unchecked Sendable {
 
 /// Thread-safe one-way boolean that tells the pipe readers to stop and return
 /// what they have. Same pattern as `TimeoutFlag`, set from a different place.
-private final class AbandonFlag: @unchecked Sendable {
+/// Internal, not private, so `drainPipe` can be exercised directly.
+final class AbandonFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
     func set() { lock.lock(); value = true; lock.unlock() }
@@ -73,7 +74,7 @@ private let processRunnerLog = Logger(subsystem: "dev.artemefimov.brow", categor
 /// Every exit that is not EOF returns a SHORT read that the caller cannot tell
 /// apart from complete output, so all of them are logged with the byte count
 /// kept: without that, truncation is invisible.
-private func drainPipe(
+func drainPipe(
     _ handle: FileHandle, stream: String, command: String, abandon: AbandonFlag
 ) -> Data {
     let fd = handle.fileDescriptor
@@ -133,6 +134,42 @@ private func drainPipe(
         }
     }
 
+    // One last NON-BLOCKING sweep before the descriptor goes. Every exit above can
+    // leave bytes already sitting in the kernel pipe buffer, and the abandon check at
+    // the top of the loop runs BEFORE the first poll: a reader task that has not been
+    // scheduled at all by the time the 2 s grace expires (cooperative-pool saturation
+    // under a wide fan-out — `WorkspaceService` starts an unbounded group of 300 s hook
+    // processes) otherwise returns an EMPTY Data for a child whose output has been
+    // waiting in the pipe since long before it exited, and the caller sees exit 0 with
+    // no stdout: indistinguishable from a command that printed nothing. The old
+    // `readDataToEndOfFile` was late in that situation; it was never empty.
+    // Bounded, so a writer that keeps producing cannot turn the sweep into the loop we
+    // just left: `poll` with a 0 ms timeout never waits, and 64 buffers is 4 MB.
+    var recovered = 0
+    sweep: for _ in 0..<64 {
+        var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        guard poll(&descriptor, 1, 0) > 0 else { break sweep }
+        let count = buffer.withUnsafeMutableBytes { raw in
+            read(fd, raw.baseAddress, raw.count)
+        }
+        if count > 0 {
+            collected.append(contentsOf: buffer[0..<count])
+            recovered += count
+            continue sweep
+        }
+        if count < 0 && errno == EINTR { continue sweep }
+        break sweep                                // EOF, EAGAIN, or a read error.
+    }
+    if recovered > 0 {
+        processRunnerLog.error(
+            """
+            recovered \(recovered, privacy: .public) buffered bytes from the \
+            \(stream, privacy: .public) pipe of '\(command, privacy: .public)' \
+            after the drain stopped
+            """
+        )
+    }
+
     do {
         try handle.close()
     } catch {
@@ -154,6 +191,9 @@ public struct ProcessRunner: CommandRunning, Sendable {
     /// that inherited fd 1/2 can hold the pipes open long after the child exits;
     /// past this grace the readers are abandoned and `run` returns what it has.
     public static let drainGrace: TimeInterval = 2
+    /// How long a child gets between SIGTERM and SIGKILL once the timeout fires. Named
+    /// because it is part of every caller's real worst case, not just the timeout.
+    public static let killGrace: TimeInterval = 0.5
 
     public init() {}
 
@@ -233,7 +273,7 @@ public struct ProcessRunner: CommandRunning, Sendable {
             guard !Task.isCancelled, process.isRunning else { return }
             flag.set()
             process.terminate()
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(Self.killGrace * 1_000_000_000))
             if process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
             }

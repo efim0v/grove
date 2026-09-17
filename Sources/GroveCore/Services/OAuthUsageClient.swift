@@ -179,8 +179,16 @@ public actor OAuthUsageClient {
         return usage
     }
 
+    /// Budget for ONE usage request. `URLRequest`'s default is 60 s and `usage` makes up
+    /// to two requests, so an endpoint that accepts the connection and then says nothing
+    /// could hold a refresh cycle for two minutes on its own — past the cycle watchdog,
+    /// which then abandons a cycle that was only slow, every time, forever. Anthropic
+    /// answers this endpoint in well under a second.
+    public static let requestTimeout: TimeInterval = 15
+
     private func makeRequest(token: String) -> URLRequest {
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
+        request.timeoutInterval = Self.requestTimeout
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         if let userAgent { request.setValue(userAgent, forHTTPHeaderField: "User-Agent") }

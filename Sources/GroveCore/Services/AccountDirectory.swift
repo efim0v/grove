@@ -83,6 +83,28 @@ public struct AccountDirectory: Sendable {
         }
     }
 
+    /// Drop whatever the credentials reader has cached for `configDir` — including any
+    /// record of a read that returned NOTHING, which is floored for ten minutes.
+    ///
+    /// The directory owns the only reader every consumer shares, so this is the seam a
+    /// forced refresh uses to make "grant access in Keychain Access" (or `claude auth
+    /// login`) take effect NOW. Without it the app's own advice did not work for up to
+    /// 600 s: the nil floor is consulted before any request, so no 401 ever fires and
+    /// the two existing `invalidate` call sites — the OAuth retry and the post-CLI
+    /// re-read — are both downstream of a token that was already readable.
+    public func invalidate(configDir: String) {
+        credentials.invalidate(configDir: configDir)
+    }
+
+    /// The same, for every dir the next `scan(extraDirs:)` will walk — including dirs no
+    /// account was ever built from, which is exactly the shape a floored nil read
+    /// leaves behind.
+    public func invalidateCandidates(extraDirs: [String] = []) {
+        for dir in Self.candidateDirs(home: home, extraDirs: extraDirs) {
+            credentials.invalidate(configDir: dir)
+        }
+    }
+
     /// Existing directories only, tilde-expanded, in the documented order.
     static func candidateDirs(home: String, extraDirs: [String]) -> [String] {
         let fm = FileManager.default

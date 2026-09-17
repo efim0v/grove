@@ -374,10 +374,20 @@ final class TokenKeeperTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode([String: TokenKeeper.Attempt].self, from: state)["/d"],
                      "the attempt is unrecorded, not merely uncounted")
 
-        clock.date = t0.addingTimeInterval(60)    // one minute later, deep inside the floor
+        // The next poll (60 s) is inside the quiet period: nothing is spawned and the
+        // row keeps the SAME sentence, because the state has not changed. Without this
+        // gate a `doctor` the watchdog kills at 90 s was re-spawned every 60 s forever —
+        // ~1.5 live processes per account, in an app that runs for weeks.
+        clock.date = t0.addingTimeInterval(60)
+        let quiet = await keeper.ensureFresh(configDir: "/d")
+        guard case .couldNotAttempt(let quietReason) = quiet else { return XCTFail("\(quiet)") }
+        XCTAssertEqual(quietReason, reason, "the quiet period reports the same reason, not a new state")
+        XCTAssertEqual(runner.invocations.map(\.args), [["doctor"]], "nothing is re-spawned inside it")
+
+        clock.date = t0.addingTimeInterval(TokenKeeper.couldNotAttemptInterval + 1)
         _ = await keeper.ensureFresh(configDir: "/d")
         XCTAssertEqual(runner.invocations.map(\.args), [["doctor"], ["doctor"]],
-                       "the next cycle tries again instead of sitting out 30 min")
+                       "and once it is over the cycle tries again instead of sitting out the 30 min floor")
     }
 
     /// 127 is the shell's "command not found": a wrong "Path to claude", or a GUI app's
@@ -398,7 +408,63 @@ final class TokenKeeperTests: XCTestCase {
 
         clock.date = t0.addingTimeInterval(60)
         _ = await keeper.ensureFresh(configDir: "/d")
-        XCTAssertEqual(runner.invocations.count, 2, "a CLI that never ran consumed no floor")
+        XCTAssertEqual(runner.invocations.count, 1,
+                       "a wrong 'Path to claude' must not spawn a process every poll for weeks")
+
+        clock.date = t0.addingTimeInterval(TokenKeeper.couldNotAttemptInterval + 1)
+        _ = await keeper.ensureFresh(configDir: "/d")
+        XCTAssertEqual(runner.invocations.count, 2,
+                       "a CLI that never ran consumed no floor — only the short quiet period")
+    }
+
+    /// The quiet period bounds the spawn rate and NOTHING else: it holds no floor and
+    /// counts no failure, so a CLI that starts working again is used at once.
+    func testTheQuietPeriodIsLiftedByAnAttemptThatRuns() async {
+        let creds = MovableCreds(); creds.expiry = t0.addingTimeInterval(60)
+        let broken = Flag(true)
+        let runner = FakeCLI(sideEffect: { _ in creds.expiry = self.t0.addingTimeInterval(8 * 3600) },
+                             reply: { _ in
+                                 if broken.value { return ProcessResult(exitCode: 127, stdout: "", stderr: "not found") }
+                                 return ProcessResult(exitCode: 0, stdout: "", stderr: "")
+                             })
+        let clock = Clock(t0)
+        let keeper = TokenKeeper(runner: runner, credentials: creds, claudePath: "claude",
+                                 allowPromptFallback: { false }, now: { clock.date })
+        // A 127 arms the quiet period…
+        creds.expiry = t0.addingTimeInterval(60)
+        _ = await keeper.ensureFresh(configDir: "/d")
+        XCTAssertEqual(runner.invocations.count, 1)
+
+        // …the user fixes the path; the next attempt after the period runs and succeeds…
+        broken.value = false
+        clock.date = t0.addingTimeInterval(TokenKeeper.couldNotAttemptInterval + 1)
+        creds.expiry = clock.date.addingTimeInterval(60)
+        let fixed = await keeper.ensureFresh(configDir: "/d")
+        XCTAssertEqual(fixed, .refreshedByDoctor)
+
+        // …and the period is gone with it: the next expiry is handled on the ordinary
+        // 30 min floor, not on a stale quiet period.
+        clock.date = t0.addingTimeInterval(TokenKeeper.couldNotAttemptInterval + 31 * 60)
+        creds.expiry = clock.date.addingTimeInterval(60)
+        _ = await keeper.ensureFresh(configDir: "/d")
+        XCTAssertEqual(runner.invocations.count, 3)
+    }
+
+    /// A 401/403 is the SERVER refusing the bearer. `claude -p` spends the account's
+    /// limit and starts its 5-hour window, and it cannot fix a revoked session — so the
+    /// forced attempt a rejection buys stops at `doctor`, exactly as a timed-out
+    /// `doctor` does. Every other authRejected test runs with the fallback OFF, which
+    /// left the one leg that costs money untested on the path that reaches it — and
+    /// `BrowSettings.allowPromptFallback` defaults to TRUE.
+    func testAuthRejectedNeverSpendsLimitOnThePromptLeg() async {
+        let creds = MovableCreds(); creds.expiry = t0.addingTimeInterval(5 * 3600)
+        let runner = FakeCLI()                    // doctor runs and changes nothing
+        let keeper = TokenKeeper(runner: runner, credentials: creds, claudePath: "/x/claude",
+                                 allowPromptFallback: { true }, now: { self.t0 })
+        let out = await keeper.ensureFresh(configDir: "/d", authRejected: true)
+        XCTAssertEqual(out, .failed("claude doctor did not refresh the token"))
+        XCTAssertEqual(runner.invocations.map(\.args), [["doctor"]],
+                       "-p must not run on a token the server has already rejected")
     }
 
     /// A 401 is the authoritative answer about a token, and it outranks both gates:
