@@ -6,6 +6,13 @@ public enum TokenRefreshOutcome: Sendable, Equatable {
     case fresh
     /// An attempt ran less than the current retry interval ago; nothing was run.
     case skippedRateLimited
+    /// The network is down. Nothing was run and nothing was recorded: the CLI could not
+    /// have refreshed anything, so this must not cost the account its one attempt.
+    case skippedOffline
+    /// The CLI could not run at all — the spawn failed, the watchdog fired, or it exited
+    /// 127. No evidence about the token, so the floor is not consumed, the breaker does
+    /// not count it, and `-p` is not tried.
+    case couldNotAttempt(String)
     case refreshedByDoctor
     case refreshedByPrompt
     case failed(String)
@@ -22,9 +29,10 @@ public enum TokenRefreshOutcome: Sendable, Equatable {
 /// sliver of limit and starts the window) exists behind a user setting.
 ///
 /// Success is judged by the ONLY thing that matters: did `expiresAt` move
-/// forward. Exit codes are not trusted as success — but they ARE reported, so a
-/// `claude` that exits 127 says so instead of hiding behind "neither … refreshed
-/// the token".
+/// forward. Exit codes are not trusted as success — but they ARE reported, and a
+/// `claude` that never ran at all (exit 127, a failed spawn, a fired watchdog) is
+/// `.couldNotAttempt`: it says so instead of hiding behind "neither … refreshed
+/// the token", and it is charged neither the attempt floor nor the breaker.
 public actor TokenKeeper {
     public static let threshold: TimeInterval = 30 * 60
     /// Floor between two attempts for one account — the spec's "one token-refresh
@@ -47,6 +55,28 @@ public actor TokenKeeper {
     struct Attempt: Codable, Sendable, Equatable {
         var at: Date
         var failures: Int
+        /// This attempt was forced by a rejected token (`authRejected: true`). It is what
+        /// makes that bypass happen ONCE: the next rejection sees it and obeys the floor
+        /// like anyone else, so a permanently rejected account is not handed a `doctor`
+        /// on every cycle. Persisted with the rest for the same reason the rest is — a
+        /// relaunch must not reopen the bypass.
+        var forced: Bool
+
+        init(at: Date, failures: Int, forced: Bool = false) {
+            self.at = at
+            self.failures = failures
+            self.forced = forced
+        }
+
+        /// Hand-written because the synthesised decoder throws `keyNotFound` on a
+        /// `token-attempts.json` written before `forced` existed — which would discard
+        /// every account's gate on the first launch after an update.
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            at = try container.decode(Date.self, forKey: .at)
+            failures = try container.decode(Int.self, forKey: .failures)
+            forced = try container.decodeIfPresent(Bool.self, forKey: .forced) ?? false
+        }
     }
 
     private let runner: CommandRunning
@@ -55,6 +85,9 @@ public actor TokenKeeper {
     /// wrong "Path to claude" at any time and the next cycle must use the new one.
     private let claudePath: @Sendable () -> String
     private let allowPromptFallback: @Sendable () -> Bool
+    /// Network reachability, fed by the controller from `NWPathMonitor`. Read per call
+    /// for the same reason `claudePath` is: the answer changes while the app runs.
+    private let isOnline: @Sendable () -> Bool
     private let now: @Sendable () -> Date
     /// nil → attempts live in memory only (tests, and any caller that wants no file).
     private let stateDirectory: String?
@@ -64,12 +97,14 @@ public actor TokenKeeper {
     public init(runner: CommandRunning, credentials: CredentialsReading,
                 claudePath: @escaping @Sendable () -> String,
                 allowPromptFallback: @escaping @Sendable () -> Bool,
+                isOnline: @escaping @Sendable () -> Bool = { true },
                 now: @escaping @Sendable () -> Date = { Date() },
                 stateDirectory: String? = nil) {
         self.runner = runner
         self.credentials = credentials
         self.claudePath = claudePath
         self.allowPromptFallback = allowPromptFallback
+        self.isOnline = isOnline
         self.now = now
         self.stateDirectory = stateDirectory
     }
@@ -77,35 +112,65 @@ public actor TokenKeeper {
     /// Fixed-path convenience (tests and any caller whose path cannot change).
     public init(runner: CommandRunning, credentials: CredentialsReading, claudePath: String,
                 allowPromptFallback: @escaping @Sendable () -> Bool,
+                isOnline: @escaping @Sendable () -> Bool = { true },
                 now: @escaping @Sendable () -> Date = { Date() },
                 stateDirectory: String? = nil) {
         self.init(runner: runner, credentials: credentials, claudePath: { claudePath },
-                  allowPromptFallback: allowPromptFallback, now: now, stateDirectory: stateDirectory)
+                  allowPromptFallback: allowPromptFallback, isOnline: isOnline, now: now,
+                  stateDirectory: stateDirectory)
     }
 
-    public func ensureFresh(configDir: String) async -> TokenRefreshOutcome {
+    /// - Parameter authRejected: the server answered 401/403 for this account. That is
+    ///   the authoritative word on the token and it outranks `expiresAt`, so the "still
+    ///   fresh" shortcut is skipped for as long as the rejection stands; the attempt
+    ///   floor is bypassed ONCE (see `Attempt.forced`).
+    public func ensureFresh(configDir: String, authRejected: Bool = false) async -> TokenRefreshOutcome {
         loadStateIfNeeded()
         let at = now()
+        // First, before the Keychain and before any bookkeeping: with no network the CLI
+        // cannot refresh anything, so this cycle is not evidence about the account and
+        // must leave no trace — otherwise a flight's worth of offline cycles walks the
+        // breaker up to its 12 h gap for an account that was never broken.
+        guard isOnline() else {
+            Self.log.info("token refresh skipped for \(configDir, privacy: .public): offline")
+            return .skippedOffline
+        }
         guard let before = credentials.token(configDir: configDir)?.expiresAt else {
             return fail("no readable token", configDir: configDir)
         }
-        if before.timeIntervalSince(at) > Self.threshold { return observedFresh(configDir: configDir) }
+        if !authRejected, before.timeIntervalSince(at) > Self.threshold {
+            return observedFresh(configDir: configDir)
+        }
         let failures = attempts[configDir]?.failures ?? 0
-        if let last = attempts[configDir]?.at,
+        let forcesThroughTheFloor = authRejected && !(attempts[configDir]?.forced ?? false)
+        if !forcesThroughTheFloor, let last = attempts[configDir]?.at,
            at.timeIntervalSince(last) < Self.retryInterval(failures: failures) {
             return .skippedRateLimited
         }
-        record(configDir: configDir, at: at, failures: failures)
+        // Recorded BEFORE the attempt, so a crash mid-`doctor` still leaves a floor;
+        // `previous` is what the could-not-attempt paths roll back to.
+        let previous = record(configDir: configDir, at: at, failures: failures, forced: authRejected)
 
         let env = ["CLAUDE_CONFIG_DIR": configDir]
         var details: [String] = []
         do {
             let result = try await runner.run(claudePath(), ["doctor"], cwd: nil, env: env, timeout: Self.doctorTimeout)
+            // 127 is the shell's "command not found": a wrong "Path to claude", or a GUI
+            // app's PATH without the CLI on it. The binary never ran.
+            if result.exitCode == 127 {
+                return couldNotAttempt(Self.detail("doctor", result) ?? "doctor exit 127",
+                                       configDir: configDir, restoring: previous)
+            }
             switch reread(after: before, configDir: configDir) {
             case .advanced:   return succeed(.refreshedByDoctor, configDir: configDir)
             case .unreadable: return fail("token became unreadable after claude doctor", configDir: configDir, counts: true)
             case .unchanged:  if let d = Self.detail("doctor", result) { details.append(d) }
             }
+        } catch let error as GroveError where Self.cliNeverRan(error) {
+            // A spawn failure or a fired watchdog says nothing about the token — and a
+            // timeout is far likelier to be the network than the token, so `-p` (which
+            // spends the account's limit and starts its 5-hour window) is not tried.
+            return couldNotAttempt(String(describing: error), configDir: configDir, restoring: previous)
         } catch {
             return fail("claude doctor failed: \(error)", configDir: configDir, counts: true)
         }
@@ -132,6 +197,16 @@ public actor TokenKeeper {
         }
         return fail("neither claude doctor nor claude -p refreshed the token".appending(Self.suffix(details)),
                     configDir: configDir, counts: true)
+    }
+
+    /// A CLI that never ran: the spawn failed, or the watchdog killed it before it could
+    /// say anything. Distinct from `processFailed`, which is a CLI that DID run and
+    /// reported something — real evidence about the account, and counted as such.
+    private static func cliNeverRan(_ error: GroveError) -> Bool {
+        switch error {
+        case .timeout, .io: return true
+        default: return false
+        }
     }
 
     /// 30 min, doubling with each consecutive ineffective attempt, capped at 12 h.
@@ -183,8 +258,9 @@ public actor TokenKeeper {
     /// token-refresh attempt per account per 30 min", and a token that was refreshed
     /// out of band is no reason to spawn the CLI sooner than that.
     private func observedFresh(configDir: String) -> TokenRefreshOutcome {
-        if var attempt = attempts[configDir], attempt.failures != 0 {
+        if var attempt = attempts[configDir], attempt.failures != 0 || attempt.forced {
             attempt.failures = 0
+            attempt.forced = false
             attempts[configDir] = attempt
             saveState()
         }
@@ -194,6 +270,9 @@ public actor TokenKeeper {
     private func succeed(_ outcome: TokenRefreshOutcome, configDir: String) -> TokenRefreshOutcome {
         if var attempt = attempts[configDir] {
             attempt.failures = 0
+            // A healthy token ends the rejection episode too: the NEXT 401 is a new one
+            // and deserves its own bypass, not the leftovers of this one.
+            attempt.forced = false
             attempts[configDir] = attempt
             saveState()
         }
@@ -212,8 +291,25 @@ public actor TokenKeeper {
         return .failed(reason)
     }
 
-    private func record(configDir: String, at: Date, failures: Int) {
-        attempts[configDir] = Attempt(at: at, failures: failures)
+    /// Nothing is swallowed here either: the CLI's silence is logged and travels back to
+    /// the account row. Nothing is charged for it, though — the attempt record is rolled
+    /// back, so the floor and the breaker are exactly where they were.
+    private func couldNotAttempt(_ reason: String, configDir: String, restoring previous: Attempt?) -> TokenRefreshOutcome {
+        Self.log.error("token refresh not attempted for \(configDir, privacy: .public): \(reason, privacy: .public)")
+        unrecord(configDir: configDir, restoring: previous)
+        return .couldNotAttempt(reason)
+    }
+
+    /// Returns what was there before, for `unrecord` to put back.
+    private func record(configDir: String, at: Date, failures: Int, forced: Bool) -> Attempt? {
+        let previous = attempts[configDir]
+        attempts[configDir] = Attempt(at: at, failures: failures, forced: forced)
+        saveState()
+        return previous
+    }
+
+    private func unrecord(configDir: String, restoring previous: Attempt?) {
+        if let previous { attempts[configDir] = previous } else { attempts.removeValue(forKey: configDir) }
         saveState()
     }
 
