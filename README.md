@@ -46,7 +46,18 @@ panel). Build with `Scripts/build-brow.sh` → `dist/Brow.app`.
   account's 5-hour window. It is never used after a 401/403 or a `doctor` that
   timed out — neither is evidence the token itself can be fixed — and it is
   dropped for good after three ineffective rounds.
-- Add an account from Settings: Brow opens Terminal with `claude auth login`;
+- The usage endpoint is rate-limited server-side (measured: a small token bucket
+  refilled at roughly one request per 100 s, `retry-after: 0`, and 429s that do
+  not extend the window). Brow paces itself to it: background polls that arrive
+  before the window re-opens are served from the last reading, the ⟳ button
+  spends a small burst budget and otherwise queues itself for the moment a
+  request will go through (`Updated 2 min ago · retrying in 47 s`). Claude Code's
+  own usage numbers come from response headers, which is why it never "hits" this.
+- In the panel, every account carries two buttons: copy the command that runs
+  Claude Code as that account (`CLAUDE_CONFIG_DIR='…' claude`) and open it in
+  Terminal. The same command sits in each account's Settings card.
+- Add an account from Settings with one click (**Sign in…**): Brow creates
+  `~/.claude-accounts/account-N` itself and opens Terminal with `claude auth login`;
   sign-in happens in Anthropic's own flow.
 - Limits are re-fetched every **60 s** by one timer that keeps running whether the
   panel is open or shut, plus on wake, on the network returning, and on hover when

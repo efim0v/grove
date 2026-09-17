@@ -109,6 +109,11 @@ public actor OAuthUsageClient {
     /// how many manual refreshes a rested account can absorb before it has to wait.
     private let minInterval: TimeInterval
     private let burstCapacity: Double
+    /// True when every config dir draws on ONE bucket (the limit is per user or per
+    /// machine rather than per token): the pacing state is then kept under a single
+    /// key, so a success for one account is the last success for all of them.
+    private let sharedBucket: Bool
+    private func pacingKey(_ configDir: String) -> String { sharedBucket ? "*" : configDir }
 
     private var cache: [String: (at: Date, value: OAuthUsage)] = [:]
     private var backoff: [String: (until: Date, attempts: Int)] = [:]
@@ -119,6 +124,7 @@ public actor OAuthUsageClient {
     /// Identifies as `claude-code/<appVersion>` — Grove's long-standing behaviour.
     public init(fetcher: UsageFetching, appVersion: String, cacheSeconds: TimeInterval = 180,
                 backoffCap: TimeInterval = 3600, minInterval: TimeInterval = 100, burstCapacity: Int = 5,
+                sharedBucket: Bool = false,
                 credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
         self.credentials = credentials
@@ -127,11 +133,13 @@ public actor OAuthUsageClient {
         self.backoffCap = backoffCap
         self.minInterval = minInterval
         self.burstCapacity = Double(max(1, burstCapacity))
+        self.sharedBucket = sharedBucket
     }
 
     /// Explicit `User-Agent`; `nil` omits the header entirely. Brow passes nil.
     public init(fetcher: UsageFetching, userAgent: String?, cacheSeconds: TimeInterval = 180,
                 backoffCap: TimeInterval = 3600, minInterval: TimeInterval = 100, burstCapacity: Int = 5,
+                sharedBucket: Bool = false,
                 credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
         self.credentials = credentials
@@ -140,6 +148,7 @@ public actor OAuthUsageClient {
         self.backoffCap = backoffCap
         self.minInterval = minInterval
         self.burstCapacity = Double(max(1, burstCapacity))
+        self.sharedBucket = sharedBucket
     }
 
     /// The earliest instant a request for `configDir` would actually be sent. `now`
@@ -150,7 +159,7 @@ public actor OAuthUsageClient {
     public func nextAllowedAt(configDir: String, force: Bool, now: Date) -> Date {
         var earliest = now
         if let window = backoff[configDir], now < window.until { earliest = max(earliest, window.until) }
-        guard let p = pacing[configDir] else { return earliest }
+        guard let p = pacing[pacingKey(configDir)] else { return earliest }
         if !force {
             earliest = max(earliest, p.lastSuccessAt.addingTimeInterval(minInterval))
         } else if Self.level(p, now: now, refill: minInterval, cap: burstCapacity) < 1 {
@@ -191,7 +200,7 @@ public actor OAuthUsageClient {
 
         // 2b. Endpoint pacing. A background poll inside the refill period is served
         //     from the cache; a forced refresh with nothing left in the bucket waits.
-        if let p = pacing[configDir] {
+        if let p = pacing[pacingKey(configDir)] {
             if !force, now.timeIntervalSince(p.lastSuccessAt) < minInterval, let entry = cache[configDir] {
                 return entry.value
             }
@@ -221,16 +230,23 @@ public actor OAuthUsageClient {
         if status == 429 {
             let attempts = backoff[configDir]?.attempts ?? 0
             let until: Date
-            if let p = pacing[configDir] {
-                // The server said the bucket is empty: the next token lands one refill
-                // period after the last success, and never sooner than 30 s from now.
-                until = max(p.lastSuccessAt.addingTimeInterval(minInterval), now.addingTimeInterval(30))
+            if let p = pacing[pacingKey(configDir)] {
+                if now.timeIntervalSince(p.lastSuccessAt) < minInterval {
+                    // Asked too early: the next token lands one refill period after the
+                    // last success, and never sooner than 30 s from now.
+                    until = max(p.lastSuccessAt.addingTimeInterval(minInterval), now.addingTimeInterval(30))
+                } else {
+                    // Refused AFTER a full refill period: our picture of the bucket is
+                    // wrong (something else drains it — another client, a shared limit).
+                    // Back off exponentially from 30 s instead of knocking every 30 s.
+                    until = now.addingTimeInterval(min(30 * pow(2, Double(attempts)), backoffCap))
+                }
                 // Empty as of the LAST SUCCESS, not as of now: the server's refill clock
                 // runs from the 200 it gave us, and the 429s in between do not reset it
                 // (measured: the next 200 arrived 88 s after the previous one through
                 // thirteen refusals). Dating the empty bucket from the 429 would push
                 // `nextAllowedAt` a full period past the moment the window really opens.
-                pacing[configDir] = (lastSuccessAt: p.lastSuccessAt, level: 0, levelAt: p.lastSuccessAt)
+                pacing[pacingKey(configDir)] = (lastSuccessAt: p.lastSuccessAt, level: 0, levelAt: p.lastSuccessAt)
             } else {
                 // Nothing known yet: exponential from the cache period, capped.
                 until = now.addingTimeInterval(min(cacheSeconds * pow(2, Double(attempts)), backoffCap))
@@ -248,9 +264,9 @@ public actor OAuthUsageClient {
         let usage = try parse(data).stamped(fetchedAt: now)
         cache[configDir] = (at: now, value: usage)
         backoff[configDir] = nil
-        let level = pacing[configDir].map { Self.level($0, now: now, refill: minInterval, cap: burstCapacity) }
+        let level = pacing[pacingKey(configDir)].map { Self.level($0, now: now, refill: minInterval, cap: burstCapacity) }
             ?? burstCapacity
-        pacing[configDir] = (lastSuccessAt: now, level: max(0, level - 1), levelAt: now)
+        pacing[pacingKey(configDir)] = (lastSuccessAt: now, level: max(0, level - 1), levelAt: now)
         return usage
     }
 
