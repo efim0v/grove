@@ -46,7 +46,21 @@ panel). Build with `Scripts/build-brow.sh` → `dist/Brow.app`.
   the account's 5-hour window.
 - Add an account from Settings: Brow opens Terminal with `claude auth login`;
   sign-in happens in Anthropic's own flow.
-- Design: `docs/design/specs/2026-09-16-brow-design.md`.
+- Limits are re-fetched every **60 s** by one timer that keeps running whether the
+  panel is open or shut, plus on wake, on the network returning, and on hover when
+  the data on screen is more than 60 s old. The footer always leads with the age
+  (`Updated 3 h ago`), so a number you can see is a number you can date.
+- **Settings → General → Ears** chooses where the two readouts sit on a built-in
+  display: `Beside the notch` (default — one wing each side, the notch itself left
+  clear) or `Below the notch` (one centred row in a 22 pt strip under it). It takes
+  effect as you click; an external display always shows the pill.
+- The strip is drawn as the notch outline (`NotchShape`), not a rectangle. Its
+  tuning knobs are constants in `Sources/BrowKit/Panel/NotchGeometry.swift` —
+  `flare` (concave top corners, 6), `collapsedBottomRadius` (12),
+  `expandedBottomRadius` (18), `wingWidth` (96), `belowStripHeight` (22). They are
+  meant to be tuned by eye against the physical bezel; no screenshot can show it.
+- Design: `docs/design/specs/2026-09-16-brow-design.md`, and
+  `docs/design/specs/2026-09-17-brow-freshness-and-notch-design.md`.
 
 Toolchain note: if `swift`/`git` abort with the Xcode license message, either
 accept it (`sudo xcodebuild -license accept`) or `source Scripts/xcode-env.sh`
