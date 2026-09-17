@@ -428,6 +428,58 @@ final class TokenKeeperTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1)
     }
 
+    /// The rejection episode does NOT end because `expiresAt` says the token is fine —
+    /// that is the very signal `authRejected` exists to distrust, since a server-revoked
+    /// token still carries hours of nominal life. So the keeper's own proactive cycle,
+    /// which takes the "still fresh" shortcut, must leave the spent bypass spent; only a
+    /// refresh that verifiably moved the expiry re-arms it. Otherwise every proactive
+    /// tick between two rejections hands the next 401 a free `doctor`, forever.
+    func testObservedFreshDoesNotReopenTheAuthRejectedBypass() async throws {
+        let dir = try Fixture.tempDir("keeper-401-episode").path
+        // Revoked by the server, but with 5 h of life on the record — the shape that
+        // makes `expiresAt` worthless as evidence.
+        let creds = MovableCreds(); creds.expiry = t0.addingTimeInterval(5 * 3600)
+        let runner = FakeCLI()                    // doctor runs and fixes nothing
+        let clock = Clock(t0)
+        let keeper = TokenKeeper(runner: runner, credentials: creds, claudePath: "/x/claude",
+                                 allowPromptFallback: { false }, now: { clock.date }, stateDirectory: dir)
+        let first = await keeper.ensureFresh(configDir: "/d", authRejected: true)
+        XCTAssertEqual(first, .failed("claude doctor did not refresh the token"))
+        XCTAssertEqual(runner.invocations.count, 1, "the rejection spends the bypass")
+
+        clock.date = t0.addingTimeInterval(60)
+        let proactive = await keeper.ensureFresh(configDir: "/d")
+        XCTAssertEqual(proactive, .fresh, "the proactive cycle still believes the expiry — that is the point")
+
+        clock.date = t0.addingTimeInterval(120)
+        let next = await keeper.ensureFresh(configDir: "/d", authRejected: true)
+        XCTAssertEqual(next, .skippedRateLimited, "the bypass stays spent across an observed-fresh cycle")
+        XCTAssertEqual(runner.invocations.count, 1, "one doctor per episode, not one per rejection")
+    }
+
+    /// The other side of that: a refresh this keeper WATCHED land is real evidence, so it
+    /// ends the episode and re-arms the bypass. A 401 on the brand-new token is a new
+    /// episode and gets its own immediate `doctor`, floor or no floor.
+    func testARefreshThatLandedReArmsTheAuthRejectedBypass() async throws {
+        let dir = try Fixture.tempDir("keeper-401-rearm").path
+        let creds = MovableCreds(); creds.expiry = t0.addingTimeInterval(5 * 3600)
+        let clock = Clock(t0)
+        // The first doctor really moves the expiry; the second does not.
+        let runner = FakeCLI(sideEffect: { call in
+            if call == 1 { creds.expiry = self.t0.addingTimeInterval(9 * 3600) }
+        })
+        let keeper = TokenKeeper(runner: runner, credentials: creds, claudePath: "/x/claude",
+                                 allowPromptFallback: { false }, now: { clock.date }, stateDirectory: dir)
+        let first = await keeper.ensureFresh(configDir: "/d", authRejected: true)
+        XCTAssertEqual(first, .refreshedByDoctor)
+
+        clock.date = t0.addingTimeInterval(60)
+        let next = await keeper.ensureFresh(configDir: "/d", authRejected: true)
+        XCTAssertEqual(next, .failed("claude doctor did not refresh the token"),
+                       "a 401 on a token the CLI just minted is a new episode, not the tail of the old one")
+        XCTAssertEqual(runner.invocations.count, 2, "the landed refresh re-armed the bypass")
+    }
+
     /// The other half of the floor rule, pinned so the could-not-attempt rollback can
     /// never widen into it: a `doctor` and a `-p` that BOTH ran and verifiably did not
     /// move the expiry are real evidence — they consume the floor and count toward the

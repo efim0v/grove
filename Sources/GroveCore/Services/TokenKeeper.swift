@@ -257,10 +257,18 @@ public actor TokenKeeper {
     /// The attempt TIMESTAMP is deliberately kept: the spec's floor is "one
     /// token-refresh attempt per account per 30 min", and a token that was refreshed
     /// out of band is no reason to spawn the CLI sooner than that.
+    ///
+    /// `forced` is deliberately kept too. Getting here means `expiresAt > threshold` —
+    /// which is exactly the signal `authRejected` exists to distrust, because a
+    /// server-revoked token still carries hours of nominal life. Re-arming the bypass on
+    /// it would hand every subsequent 401 its own `doctor`, forever. Only `succeed`
+    /// clears it: there the CLI verifiably MOVED the expiry, which no revoked token can
+    /// fake. A `forced` left standing cannot lock out a later genuine 401 either — by
+    /// then the recorded attempt is old and the ordinary floor check lets the call
+    /// through anyway.
     private func observedFresh(configDir: String) -> TokenRefreshOutcome {
-        if var attempt = attempts[configDir], attempt.failures != 0 || attempt.forced {
+        if var attempt = attempts[configDir], attempt.failures != 0 {
             attempt.failures = 0
-            attempt.forced = false
             attempts[configDir] = attempt
             saveState()
         }
@@ -270,8 +278,10 @@ public actor TokenKeeper {
     private func succeed(_ outcome: TokenRefreshOutcome, configDir: String) -> TokenRefreshOutcome {
         if var attempt = attempts[configDir] {
             attempt.failures = 0
-            // A healthy token ends the rejection episode too: the NEXT 401 is a new one
-            // and deserves its own bypass, not the leftovers of this one.
+            // A refresh this keeper watched land ends the rejection episode: the NEXT 401
+            // is a new one and deserves its own bypass, not the leftovers of this one.
+            // This is the ONLY place `forced` is cleared — see `observedFresh` for why a
+            // merely plausible `expiresAt` does not qualify.
             attempt.forced = false
             attempts[configDir] = attempt
             saveState()
