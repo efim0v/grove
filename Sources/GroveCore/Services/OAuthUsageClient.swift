@@ -100,29 +100,71 @@ public actor OAuthUsageClient {
     /// every minute or two and passes 300 s so a burst never freezes its readout.
     private let backoffCap: TimeInterval
 
+    /// What the endpoint really enforces, measured on 2026-09-17 against a Max account
+    /// (single token, curl, ~30 requests): a token bucket PER TOKEN — one 200 per
+    /// ~90–100 s of refill, a burst of five after a long rest, `retry-after: 0` on every
+    /// 429, and 429s that do not extend the penalty (the next 200 arrived 88 s after the
+    /// previous one through thirteen refusals). Two accounts are two independent buckets.
+    /// `minInterval` is the refill period the pacing is built on; `burstCapacity` is
+    /// how many manual refreshes a rested account can absorb before it has to wait.
+    private let minInterval: TimeInterval
+    private let burstCapacity: Double
+
     private var cache: [String: (at: Date, value: OAuthUsage)] = [:]
     private var backoff: [String: (until: Date, attempts: Int)] = [:]
+    /// Per-dir pacing state: when the endpoint last answered 200, and the estimated
+    /// bucket level (refilled at 1 per `minInterval`, capped at `burstCapacity`).
+    private var pacing: [String: (lastSuccessAt: Date, level: Double, levelAt: Date)] = [:]
 
     /// Identifies as `claude-code/<appVersion>` — Grove's long-standing behaviour.
     public init(fetcher: UsageFetching, appVersion: String, cacheSeconds: TimeInterval = 180,
-                backoffCap: TimeInterval = 3600,
+                backoffCap: TimeInterval = 3600, minInterval: TimeInterval = 100, burstCapacity: Int = 5,
                 credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
         self.credentials = credentials
         self.userAgent = "claude-code/\(appVersion)"
         self.cacheSeconds = cacheSeconds
         self.backoffCap = backoffCap
+        self.minInterval = minInterval
+        self.burstCapacity = Double(max(1, burstCapacity))
     }
 
     /// Explicit `User-Agent`; `nil` omits the header entirely. Brow passes nil.
     public init(fetcher: UsageFetching, userAgent: String?, cacheSeconds: TimeInterval = 180,
-                backoffCap: TimeInterval = 3600,
+                backoffCap: TimeInterval = 3600, minInterval: TimeInterval = 100, burstCapacity: Int = 5,
                 credentials: CredentialsReading = KeychainCredentialsReader()) {
         self.fetcher = fetcher
         self.credentials = credentials
         self.userAgent = userAgent
         self.cacheSeconds = cacheSeconds
         self.backoffCap = backoffCap
+        self.minInterval = minInterval
+        self.burstCapacity = Double(max(1, burstCapacity))
+    }
+
+    /// The earliest instant a request for `configDir` would actually be sent. `now`
+    /// when one would go out right away. A background poll (`force: false`) also waits
+    /// for `minInterval` since the last success so it never drains the burst budget the
+    /// refresh button relies on; the button (`force: true`) only needs a token in the
+    /// bucket. After a 429 both wait for the backoff window.
+    public func nextAllowedAt(configDir: String, force: Bool, now: Date) -> Date {
+        var earliest = now
+        if let window = backoff[configDir], now < window.until { earliest = max(earliest, window.until) }
+        guard let p = pacing[configDir] else { return earliest }
+        if !force {
+            earliest = max(earliest, p.lastSuccessAt.addingTimeInterval(minInterval))
+        } else if Self.level(p, now: now, refill: minInterval, cap: burstCapacity) < 1 {
+            // Empty bucket: the next token lands one refill period after the level was
+            // last measured, minus what has already accrued.
+            let accrued = Self.level(p, now: now, refill: minInterval, cap: burstCapacity)
+            earliest = max(earliest, now.addingTimeInterval((1 - accrued) * minInterval))
+        }
+        return earliest
+    }
+
+    private static func level(_ p: (lastSuccessAt: Date, level: Double, levelAt: Date),
+                              now: Date, refill: TimeInterval, cap: Double) -> Double {
+        min(cap, p.level + max(0, now.timeIntervalSince(p.levelAt)) / refill)
     }
 
     /// Returns cached usage when fresh (within cacheSeconds of the last success),
@@ -131,7 +173,11 @@ public actor OAuthUsageClient {
     ///
     /// `force` (the manual refresh button) skips the cache ONLY. The 429 backoff still
     /// applies: a user tapping refresh repeatedly must not be able to punch through a
-    /// rate-limit window and earn a longer ban.
+    /// rate-limit window and earn a longer ban. Between backoffs the endpoint's own
+    /// pacing applies (see `minInterval`): a background poll that arrives before the
+    /// window has re-opened is answered from the cache — it is the freshest reading
+    /// there can be, not an error — and a forced refresh with an empty burst budget
+    /// throws `.backoff` so the caller can schedule itself for `nextAllowedAt`.
     public func usage(configDir: String, now: Date, force: Bool = false) async throws -> OAuthUsage {
         // 1. Fresh cache hit.
         if !force, let entry = cache[configDir], now.timeIntervalSince(entry.at) < cacheSeconds {
@@ -141,6 +187,17 @@ public actor OAuthUsageClient {
         // 2. Inside a backoff window → suppress without calling the fetcher.
         if let window = backoff[configDir], now < window.until {
             throw OAuthUsageError.backoff
+        }
+
+        // 2b. Endpoint pacing. A background poll inside the refill period is served
+        //     from the cache; a forced refresh with nothing left in the bucket waits.
+        if let p = pacing[configDir] {
+            if !force, now.timeIntervalSince(p.lastSuccessAt) < minInterval, let entry = cache[configDir] {
+                return entry.value
+            }
+            if force, Self.level(p, now: now, refill: minInterval, cap: burstCapacity) < 1 {
+                throw OAuthUsageError.backoff
+            }
         }
 
         // 3-5. Read the bearer, fetch, and — if the endpoint rejects the credential —
@@ -163,19 +220,37 @@ public actor OAuthUsageClient {
 
         if status == 429 {
             let attempts = backoff[configDir]?.attempts ?? 0
-            let delay = min(cacheSeconds * pow(2, Double(attempts)), backoffCap)
-            backoff[configDir] = (until: now.addingTimeInterval(delay), attempts: attempts + 1)
+            let until: Date
+            if let p = pacing[configDir] {
+                // The server said the bucket is empty: the next token lands one refill
+                // period after the last success, and never sooner than 30 s from now.
+                until = max(p.lastSuccessAt.addingTimeInterval(minInterval), now.addingTimeInterval(30))
+                // Empty as of the LAST SUCCESS, not as of now: the server's refill clock
+                // runs from the 200 it gave us, and the 429s in between do not reset it
+                // (measured: the next 200 arrived 88 s after the previous one through
+                // thirteen refusals). Dating the empty bucket from the 429 would push
+                // `nextAllowedAt` a full period past the moment the window really opens.
+                pacing[configDir] = (lastSuccessAt: p.lastSuccessAt, level: 0, levelAt: p.lastSuccessAt)
+            } else {
+                // Nothing known yet: exponential from the cache period, capped.
+                until = now.addingTimeInterval(min(cacheSeconds * pow(2, Double(attempts)), backoffCap))
+            }
+            backoff[configDir] = (until: until, attempts: attempts + 1)
             throw OAuthUsageError.tooManyRequests
         }
         guard (200..<300).contains(status) else {
             throw OAuthUsageError.http(status)
         }
 
-        // 6. Parse, cache, reset backoff. The cached value carries the fetch instant, so
-        //    a later cache hit still reports when the data was really obtained.
+        // 6. Parse, cache, reset backoff, spend one bucket token. The cached value
+        //    carries the fetch instant, so a later cache hit still reports when the
+        //    data was really obtained.
         let usage = try parse(data).stamped(fetchedAt: now)
         cache[configDir] = (at: now, value: usage)
         backoff[configDir] = nil
+        let level = pacing[configDir].map { Self.level($0, now: now, refill: minInterval, cap: burstCapacity) }
+            ?? burstCapacity
+        pacing[configDir] = (lastSuccessAt: now, level: max(0, level - 1), levelAt: now)
         return usage
     }
 
