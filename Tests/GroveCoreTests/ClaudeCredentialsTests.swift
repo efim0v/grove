@@ -60,13 +60,25 @@ final class ClaudeCredentialsTests: XCTestCase {
         XCTAssertEqual(base.calls["~/.claude"], 2, "invalidate re-reads (e.g. after a refreshed token)")
     }
 
-    func testCachingReaderDoesNotCacheNil() {
+    /// A failed read is REMEMBERED for `nilReadFloor`, not retried on the next call:
+    /// once the Keychain has refused, asking again only re-raises the same modal, and
+    /// the poll cycle runs every 60 s. `invalidate` — called when the user may have
+    /// just granted access — is what forces the retry, and it takes effect at once.
+    /// (The floor's expiry is covered with an injected clock in `OAuthTokenExpiryTests`.)
+    func testCachingReaderRemembersANilReadUntilInvalidated() {
         let base = CountingReader()
         base.token = nil   // first read fails (e.g. the user dismissed the prompt)
         let caching = CachingCredentialsReader(base: base)
         XCTAssertNil(caching.accessToken(configDir: "~/.claude"))
+
         base.token = "tok"
-        XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "tok", "a failed read is retried, not cached as nil")
+        XCTAssertNil(caching.accessToken(configDir: "~/.claude"),
+                     "inside the floor the base must not be asked — that is the prompt we are avoiding")
+        XCTAssertEqual(base.calls["~/.claude"], 1)
+
+        caching.invalidate(configDir: "~/.claude")
+        XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "tok",
+                       "invalidate clears the nil record, so a granted credential is picked up at once")
         XCTAssertEqual(base.calls["~/.claude"], 2)
     }
 

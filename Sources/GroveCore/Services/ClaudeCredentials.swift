@@ -137,9 +137,13 @@ public struct KeychainCredentialsReader: CredentialsReading {
 ///
 /// `expiresAt == nil` (legacy credential files) keeps the old cache-for-the-process
 /// behaviour — there is no better bound available — and `invalidate(configDir:)` is the
-/// backstop for a token revoked before its stated expiry. Only SUCCESSFUL reads are
-/// cached, so a transient nil (e.g. the user dismissing the first prompt) is retried on
-/// the next poll. Thread-safe via a lock.
+/// backstop for a token revoked before its stated expiry.
+///
+/// A FAILED read is remembered too, for `nilReadFloor`. It costs the user exactly as
+/// much as a successful one: once the Keychain ACL grant is missing or denied, every
+/// `SecItemCopyMatching` raises the modal again, and the Brow cycle runs every 60 s —
+/// an uncached nil is a prompt a minute, forever. `invalidate(configDir:)` clears the
+/// record, so granting access takes effect at once. Thread-safe via a lock.
 public final class CachingCredentialsReader: CredentialsReading, @unchecked Sendable {
     /// Refresh this long BEFORE the stated expiry, so a token can't die in flight
     /// between the cache read and the endpoint receiving it.
@@ -151,6 +155,13 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
     /// a value that cannot have changed. `invalidate(configDir:)` still bypasses it,
     /// so a token the CLI just refreshed is picked up immediately.
     private static let expiredReadFloor: TimeInterval = 60
+    /// Floor between two base reads that returned NOTHING. A denied — or merely
+    /// dismissed — Keychain prompt makes the next read prompt again, so without this
+    /// the user is asked once per poll cycle for a credential Grove has already been
+    /// told it cannot have. Ten minutes is long enough to stop being a nuisance and
+    /// short enough that a credential appearing on its own is picked up unprompted;
+    /// `invalidate(configDir:)` bypasses it entirely.
+    public static let nilReadFloor: TimeInterval = 600
 
     private struct Entry { let token: ClaudeToken; let readAt: Date }
 
@@ -158,6 +169,7 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
     private let now: @Sendable () -> Date
     private let lock = NSLock()
     private var cache: [String: Entry] = [:]   // configDir → token (successful reads only)
+    private var nilReadAt: [String: Date] = [:]  // configDir → when the base last gave nothing
 
     public init(base: CredentialsReading = KeychainCredentialsReader(),
                 now: @escaping @Sendable () -> Date = { Date() }) {
@@ -172,16 +184,30 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
             lock.unlock()
             return cached.token
         }
+        if let failedAt = nilReadAt[configDir], at.timeIntervalSince(failedAt) < Self.nilReadFloor {
+            lock.unlock()
+            return nil
+        }
         lock.unlock()
-        guard let fresh = base.token(configDir: configDir) else { return nil }
-        lock.lock(); cache[configDir] = Entry(token: fresh, readAt: at); lock.unlock()
+        guard let fresh = base.token(configDir: configDir) else {
+            lock.lock(); nilReadAt[configDir] = at; lock.unlock()
+            return nil
+        }
+        lock.lock()
+        cache[configDir] = Entry(token: fresh, readAt: at)
+        nilReadAt.removeValue(forKey: configDir)
+        lock.unlock()
         return fresh
     }
 
-    /// Drop a cached token so the next read re-fetches from the Keychain — called when
-    /// an OAuth request fails auth (the token may have been rotated early).
+    /// Drop a cached token — and any record of a failed read — so the next call goes
+    /// back to the Keychain. Called when an OAuth request fails auth (the token may
+    /// have been rotated early) and whenever the user may have just granted access.
     public func invalidate(configDir: String) {
-        lock.lock(); cache.removeValue(forKey: configDir); lock.unlock()
+        lock.lock()
+        cache.removeValue(forKey: configDir)
+        nilReadAt.removeValue(forKey: configDir)
+        lock.unlock()
     }
 
     /// A token is usable while it is more than `skew` away from its own expiry. No

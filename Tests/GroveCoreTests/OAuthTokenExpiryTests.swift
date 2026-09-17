@@ -108,6 +108,59 @@ final class OAuthTokenExpiryTests: XCTestCase {
         XCTAssertEqual(base.calls["~/.claude"], 1, "unknown lifetime keeps the old prompt-once behaviour")
     }
 
+    // MARK: - a nil read is remembered too
+
+    /// A FAILED read costs the user exactly as much as a successful one: when the
+    /// Keychain ACL grant is missing, every `SecItemCopyMatching` raises the modal
+    /// again. The Brow cycle runs every 60 s, so an uncached nil is a prompt every
+    /// minute, forever. Remembering the nil for 10 min turns that into six a day.
+    func testNilReadIsNotRepeatedWithinTenMinutes() {
+        let t0 = Date()
+        let base = RotatingReader(nil)
+        var clock = t0
+        let caching = CachingCredentialsReader(base: base, now: { clock })
+
+        XCTAssertNil(caching.token(configDir: "~/.claude"))
+        clock = t0.addingTimeInterval(30)
+        XCTAssertNil(caching.token(configDir: "~/.claude"))
+        clock = t0.addingTimeInterval(599)
+        XCTAssertNil(caching.token(configDir: "~/.claude"))
+        XCTAssertEqual(base.calls["~/.claude"], 1,
+                       "a denied Keychain prompt must not be re-raised on every cycle")
+
+        clock = t0.addingTimeInterval(601)
+        XCTAssertNil(caching.token(configDir: "~/.claude"))
+        XCTAssertEqual(base.calls["~/.claude"], 2, "past the floor the read is attempted again")
+    }
+
+    /// The user granting access (or Claude Code writing the credential) has to take
+    /// effect at once — the nil record is a politeness floor, not a lockout.
+    func testInvalidateClearsTheNilCache() {
+        let t0 = Date()
+        let base = RotatingReader(nil)
+        let caching = CachingCredentialsReader(base: base, now: { t0 })
+
+        XCTAssertNil(caching.token(configDir: "~/.claude"))
+        caching.invalidate(configDir: "~/.claude")
+        XCTAssertNil(caching.token(configDir: "~/.claude"))
+        XCTAssertEqual(base.calls["~/.claude"], 2, "invalidate must clear the nil record immediately")
+    }
+
+    func testASuccessfulReadAfterANilReadIsCached() {
+        let t0 = Date()
+        let base = RotatingReader(nil)
+        let caching = CachingCredentialsReader(base: base, now: { t0 })
+
+        XCTAssertNil(caching.token(configDir: "~/.claude"))
+        caching.invalidate(configDir: "~/.claude")
+        base.next = ClaudeToken(value: "tok", expiresAt: t0.addingTimeInterval(3600))
+
+        XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "tok")
+        XCTAssertEqual(caching.accessToken(configDir: "~/.claude"), "tok")
+        XCTAssertEqual(base.calls["~/.claude"], 2,
+                       "the token read after a nil is cached like any other — no third prompt")
+    }
+
     // MARK: - defense in depth: a 401 re-reads the credential and retries once
 
     /// Credentials that hand out a stale token until `invalidate` is called.
