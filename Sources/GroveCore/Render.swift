@@ -23,6 +23,7 @@ public func renderSnapshotTree(_ snapshot: ProjectSnapshot) -> String {
         let dirty = workspace.repos.compactMap { $0.meta?.dirtyCount }.reduce(0, +)
         let dirtyMark = dirty > 0 ? "✎\(dirty)" : "✓"
         var label = "● \(workspace.name) (\(branch)) \(dirtyMark) · \(workspace.repos.count) repo(s)"
+        if !workspace.nestedWorktrees.isEmpty { label += " (+\(workspace.nestedWorktrees.count) nested)" }
         if !workspace.liveProcesses.isEmpty { label += " · \(workspace.liveProcesses.count) live" }
         if !workspace.sessions.isEmpty { label += " · \(workspace.sessions.count) session(s)" }
         return label

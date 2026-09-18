@@ -18,6 +18,9 @@ struct WorkspaceRowCard: View {
     /// and `.buttonStyle(.link)` render as yellow/crossed placeholders
     /// offscreen — snapshot mode swaps in static lookalikes.
     @Environment(\.isSnapshotRender) private var isSnapshotRender
+    /// The nested-worktree fold; closed by default so a workspace with 28 of them
+    /// opens to its four real repos and a one-line count.
+    @State private var nestedExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -25,6 +28,9 @@ struct WorkspaceRowCard: View {
             if isExpanded {
                 Divider()
                 repoChips
+                if !workspace.nestedWorktrees.isEmpty {
+                    nestedWorktreeList
+                }
                 if !workspace.sessions.isEmpty {
                     sessionRows
                 }
@@ -165,6 +171,54 @@ struct WorkspaceRowCard: View {
         // Size the row to the tallest chip's intrinsic height so every chip
         // stretches to match (see the `maxHeight: .infinity` frame above).
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: - Nested worktrees — parked inside the workspace by agent runs or by hand
+
+    private var nestedWorktreeList: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                nestedExpanded.toggle()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: nestedExpanded ? "chevron.down" : "chevron.right").font(.caption2)
+                    Image(systemName: "square.stack.3d.down.right").font(.caption2)
+                    Text("Nested worktrees").font(.caption.weight(.semibold))
+                    Text("\(workspace.nestedWorktrees.count)").font(.caption2).foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if nestedExpanded {
+                ForEach(workspace.nestedWorktrees, id: \.entry.path) { state in
+                    HStack(spacing: 6) {
+                        Text(relativeNestedPath(state.entry.path))
+                            .fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                        Text(state.entry.branch ?? "detached")
+                            .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        if let meta = state.meta {
+                            Text("+\(meta.ahead)").foregroundStyle(Palette.primary)
+                            Text("−\(meta.behind)").foregroundStyle(Palette.negative)
+                            Text(meta.dirtyCount > 0 ? "✎\(meta.dirtyCount)" : "✓")
+                                .foregroundStyle(meta.dirtyCount > 0 ? Palette.mid : .secondary)
+                        }
+                    }
+                    .font(.caption)
+                    .help(state.entry.path)
+                }
+            }
+        }
+        .padding(8)
+        .background(sessionTableBackground)
+    }
+
+    /// `wt/panel-live` for `<umbrella>/wt/panel-live`.
+    private func relativeNestedPath(_ path: String) -> String {
+        let prefix = workspace.umbrellaPath + "/"
+        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : (path as NSString).lastPathComponent
     }
 
     // MARK: - Sessions — a distinct, detailed sub-table (its OWN entity, set apart

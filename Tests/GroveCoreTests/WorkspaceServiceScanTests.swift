@@ -84,6 +84,11 @@ final class WorkspaceServiceScanTests: XCTestCase {
         try Fixture.commit(repo: betaUmbrella.appendingPathComponent("r1"),
                            file: "beta2.txt", content: "b2", message: "beta: two")
 
+        // -- a worktree parked DEEPER inside alpha (what agent workflows leave):
+        //    alpha/wt/r1-extra — part of alpha's area, not one of its repo checkouts.
+        try Fixture.addWorktree(repo: r1, branch: "feat/alpha-extra", from: "feat/alpha",
+                                at: alphaUmbrella.appendingPathComponent("wt").appendingPathComponent("r1-extra"))
+
         // -- loose worktree gamma under r1/.worktrees/gamma (outside workspaces root)
         try Fixture.addWorktree(repo: r1, branch: "gamma", from: "main",
                                 at: r1.appendingPathComponent(".worktrees").appendingPathComponent("gamma"))
@@ -133,6 +138,10 @@ final class WorkspaceServiceScanTests: XCTestCase {
         XCTAssertEqual(alpha.umbrellaPath, umbrella)
         XCTAssertEqual(Set(alpha.repos.map(\.repo.dirName)), ["r1", "r2"])
         XCTAssertEqual(beta.repos.map(\.repo.dirName), ["r1"])
+        // -- the parked worktree is listed under alpha's fold, not among its repos
+        XCTAssertEqual(alpha.nestedWorktrees.map(\.entry.branch), ["feat/alpha-extra"])
+        XCTAssertTrue(alpha.nestedWorktrees[0].entry.path.hasSuffix("/alpha/wt/r1-extra"))
+        XCTAssertEqual(beta.nestedWorktrees, [])
 
         // -- stacking: alpha is a root, beta is stacked on alpha
         XCTAssertNil(alpha.parentName)

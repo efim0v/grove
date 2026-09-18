@@ -19,7 +19,15 @@ public struct WorkspaceRepoState: Sendable {
 public struct FeatureWorkspace: Sendable {
     public let name: String
     public let umbrellaPath: String
+    /// The workspace's own checkouts: one worktree per repo, DIRECTLY under the
+    /// umbrella (`<umbrella>/<repo>`).
     public let repos: [WorkspaceRepoState]
+    /// Worktrees registered DEEPER under the umbrella — `<umbrella>/wt/<x>`,
+    /// `<umbrella>/wt-spec/<y>` — the ones agent workflows and hand-made `git
+    /// worktree add` leave behind. They belong to the workspace's area, not to its
+    /// repo row: one workspace here carried 28 of them, and drawn as repo chips they
+    /// were 32 unreadable slivers on one line. Listed under their own fold.
+    public let nestedWorktrees: [WorkspaceRepoState]
     /// Stacking parent; nil = forked from base. DERIVED from git, never stored.
     public let parentName: String?
     public let sessions: [ClaudeSession]
@@ -27,11 +35,13 @@ public struct FeatureWorkspace: Sendable {
     public let cmuxWorkspaces: [CmuxWorkspace]
 
     public init(name: String, umbrellaPath: String, repos: [WorkspaceRepoState],
+                nestedWorktrees: [WorkspaceRepoState] = [],
                 parentName: String?, sessions: [ClaudeSession],
                 liveProcesses: [LiveProcess], cmuxWorkspaces: [CmuxWorkspace]) {
         self.name = name
         self.umbrellaPath = umbrellaPath
         self.repos = repos
+        self.nestedWorktrees = nestedWorktrees
         self.parentName = parentName
         self.sessions = sessions
         self.liveProcesses = liveProcesses
@@ -217,6 +227,8 @@ public struct WorkspaceService {
         struct Member {
             let repo: RepoInfo
             let entry: WorktreeEntry
+            /// Deeper than `<umbrella>/<dir>`: a worktree parked inside the workspace.
+            let nested: Bool
         }
         var membersByName: [String: [Member]] = [:]
         var looseMembers: [Member] = []
@@ -224,11 +236,13 @@ public struct WorkspaceService {
             for entry in worktreesByRepo[repo] ?? [] where !entry.isMain {
                 let path = canonical(entry.path)
                 if path.hasPrefix(rootPrefix) {
-                    let name = path.dropFirst(rootPrefix.count).split(separator: "/").first.map(String.init) ?? ""
+                    let components = path.dropFirst(rootPrefix.count).split(separator: "/")
+                    let name = components.first.map(String.init) ?? ""
                     if name.isEmpty { continue }
-                    membersByName[name, default: []].append(Member(repo: repo, entry: entry))
+                    membersByName[name, default: []].append(Member(repo: repo, entry: entry,
+                                                                  nested: components.count > 2))
                 } else {
-                    looseMembers.append(Member(repo: repo, entry: entry))
+                    looseMembers.append(Member(repo: repo, entry: entry, nested: false))
                 }
             }
         }
@@ -250,10 +264,10 @@ public struct WorkspaceService {
         for childName in names {
             var candidates: [(name: String, depth: Int)] = []
             for candidateName in names where candidateName != childName {
-                for member in membersByName[childName] ?? [] {
+                for member in membersByName[childName] ?? [] where !member.nested {
                     guard let childBranch = member.entry.branch,
                           let candidateMember = (membersByName[candidateName] ?? [])
-                              .first(where: { $0.repo == member.repo }),
+                              .first(where: { $0.repo == member.repo && !$0.nested }),
                           let candidateBranch = candidateMember.entry.branch
                     else { continue }
                     let repoPath = member.repo.path
@@ -292,17 +306,21 @@ public struct WorkspaceService {
             let umbrella = rootPrefix + name
             let parent = parentByName[name]
             var repoStates: [WorkspaceRepoState] = []
-            for member in (membersByName[name] ?? []).sorted(by: { $0.repo.dirName < $1.repo.dirName }) {
+            var nestedStates: [WorkspaceRepoState] = []
+            let members = (membersByName[name] ?? []).sorted {
+                ($0.repo.dirName, $0.entry.path) < ($1.repo.dirName, $1.entry.path)
+            }
+            for member in members {
                 let base = baseByRepo[member.repo.path] ?? "main"
                 var relativeTo = base
-                if let parent,
-                   let parentMember = (membersByName[parent] ?? []).first(where: { $0.repo == member.repo }),
+                if !member.nested, let parent,
+                   let parentMember = (membersByName[parent] ?? []).first(where: { $0.repo == member.repo && !$0.nested }),
                    let parentBranch = parentMember.entry.branch {
                     relativeTo = parentBranch
                 }
                 let meta = await git.meta(repoPath: member.repo.path, worktree: member.entry, relativeTo: relativeTo)
-                repoStates.append(WorkspaceRepoState(repo: member.repo, entry: member.entry,
-                                                     meta: meta, scanError: nil))
+                let state = WorkspaceRepoState(repo: member.repo, entry: member.entry, meta: meta, scanError: nil)
+                if member.nested { nestedStates.append(state) } else { repoStates.append(state) }
             }
             let sessions = config.accounts
                 .flatMap { claude.sessions(for: umbrella, account: $0) }
@@ -320,6 +338,7 @@ public struct WorkspaceService {
             workspaces.append(FeatureWorkspace(name: name,
                                                umbrellaPath: umbrella,
                                                repos: repoStates,
+                                               nestedWorktrees: nestedStates,
                                                parentName: parent,
                                                sessions: sessions,
                                                liveProcesses: live,
