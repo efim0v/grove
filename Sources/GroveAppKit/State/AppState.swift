@@ -1268,9 +1268,14 @@ extension AppState {
                 let dir = expandTilde(account.configDir)
                 try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
                 let installer = StatuslineInstaller(scriptDir: scriptDir)
-                if let saved = try? installer.install(configDir: dir) {
+                // `install` returns the ORIGINAL statusline command, nil when the
+                // account had none — `if let saved = try? …` read that nil as a failed
+                // install, so a fresh account got its wrapper on every launch and its
+                // `monitoring` flag never turned true.
+                do {
+                    let saved = try installer.install(configDir: dir)
                     installed.append((name: account.name, savedStatusline: saved))
-                }
+                } catch { continue }
             }
             // Hop back to main actor to persist config changes.
             await MainActor.run { [weak self] in

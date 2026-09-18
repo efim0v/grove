@@ -128,6 +128,32 @@ final class AppStateGapTests: XCTestCase {
                        "an already-monitored account must not be re-installed by reconcile")
     }
 
+    /// A fresh account (no statusline of its own — every account Brow's one-click
+    /// sign-in creates) must come out of the launch reconcile MONITORED, with no
+    /// original to save. It used to be re-installed on every launch instead.
+    func testReconcileMonitoringMarksAnAccountWithNoPriorStatusline() async throws {
+        let s = state()
+        s.statuslineScriptDirOverride = root.appendingPathComponent("reconcile-bin-2").path
+        let dir = root.appendingPathComponent("recon-fresh")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        s.config.accounts = [AccountConfig(name: "fresh", configDir: dir.path)]
+
+        s.reconcileMonitoring()
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            await Task.yield()
+            if s.config.accounts.first?.monitoring == true { break }
+        }
+
+        let fresh = try XCTUnwrap(s.config.accounts.first)
+        XCTAssertTrue(fresh.monitoring, "installed → monitored, even with nothing to save")
+        XCTAssertNil(fresh.savedStatusline)
+        let obj = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: dir.appendingPathComponent("settings.json"))) as? [String: Any]
+        XCTAssertTrue(((obj?["statusLine"] as? [String: Any])?["command"] as? String)?
+            .contains("grove-statusline-") == true)
+    }
+
     func testInstallAndDisableMonitoringToggleFlag() throws {
         let s = state()
         s.statuslineScriptDirOverride = root.appendingPathComponent("bin").path
