@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Security
+import os
 
 /// A Claude Code OAuth bearer together with the moment it stops being accepted.
 ///
@@ -166,7 +167,19 @@ public struct KeychainCredentialsReader: CredentialsReading {
 
     private enum Secret { case found(Data), absent, locked }
 
+    /// Two ways in, the tool first. Claude Code writes every item with
+    /// `security add-generic-password`, which puts `apple-tool:` on the item's
+    /// partition list — so `/usr/bin/security`, Apple-signed, reads it back with no
+    /// grant and no dialog; it is how Claude Code itself reads. The API path needs
+    /// this app on the item's own access list, a grant the user gives per item and
+    /// the CLI drops whenever it rewrites one, which is what made an account go
+    /// "Keychain access needed" hours after "Always Allow" was chosen for it.
     private static func keychainSecret(service: String) -> Secret {
+        switch securityTool(service: service) {
+        case .found(let data): return .found(data)
+        case .absent: return .absent
+        case .locked: break                        // the tool could not: ask the API
+        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -174,17 +187,56 @@ public struct KeychainCredentialsReader: CredentialsReading {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        switch status {
         case errSecSuccess:
             return (item as? Data).map(Secret.found) ?? .absent
         // Interaction switched off (the item needs a grant), the grant refused, or the
         // dialog dismissed: the item is there, we may not have it.
         case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
+            log.error("keychain read withheld for \(service, privacy: .public): status \(status, privacy: .public)")
             return .locked
         default:
             return .absent
         }
     }
+
+    /// `security find-generic-password -s <service> -w`: the stored bytes (Claude
+    /// Code's JSON) on stdout, exit 44 for no such item. `.locked` for any other
+    /// failure, including a hang — the tool must never park a read on a dialog of
+    /// its own, so it gets ten seconds.
+    private static func securityTool(service: String) -> Secret {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", service, "-w"]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        do { try process.run() } catch { return .locked }
+        let deadline = DispatchTime.now() + 10
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async { process.waitUntilExit(); done.signal() }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        if done.wait(timeout: deadline) == .timedOut {
+            process.terminate()
+            log.error("security tool timed out reading \(service, privacy: .public)")
+            return .locked
+        }
+        switch process.terminationStatus {
+        case 0:
+            var bytes = data
+            while let last = bytes.last, last == 0x0A || last == 0x0D { bytes.removeLast() }
+            return bytes.isEmpty ? .absent : .found(bytes)
+        case 44:
+            return .absent                          // errSecItemNotFound
+        default:
+            log.error("security tool failed for \(service, privacy: .public): exit \(process.terminationStatus, privacy: .public)")
+            return .locked
+        }
+    }
+
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "grove", category: "keychain")
 }
 
 /// Caches each account's OAuth token in memory so the macOS Keychain — which prompts
