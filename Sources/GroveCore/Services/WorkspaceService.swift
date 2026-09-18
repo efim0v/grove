@@ -233,10 +233,18 @@ public struct WorkspaceService {
             }
         }
 
-        // Stacking: B is stacked on A when, in a shared repo, merge-base(B, A)
-        // differs from merge-base(B, base) AND is not B's own tip (merge-base is
-        // symmetric; the tip check rejects the reverse direction — an ancestor
-        // is not a child). Depth = rev-list --count base..mergeBase.
+        // Stacking: B is stacked on A when, in a shared repo, B's history contains
+        // commits that are A's OWN — merge-base(B, A) lies off `base` (base does not
+        // contain it) and is not B's own tip (merge-base is symmetric; the tip check
+        // rejects the reverse direction — an ancestor is not a child). Depth =
+        // rev-list --count base..mergeBase.
+        //
+        // NOT "merge-base(B, A) differs from merge-base(B, base)": two workspaces
+        // forked from base at different times share a merge-base that IS on base
+        // (the older fork point), and that differs from the younger one's own fork
+        // point — so three siblings read as a staircase, each "stacked" on the one
+        // forked before it. A candidate whose branch has since been merged into
+        // base drops out the same way: nothing of it is off base any more.
         let names = membersByName.keys.sorted()
         var parentByName: [String: String] = [:]
         for childName in names {
@@ -250,10 +258,12 @@ public struct WorkspaceService {
                     else { continue }
                     let repoPath = member.repo.path
                     let base = baseByRepo[repoPath] ?? "main"
-                    guard let mb = await git.mergeBase(repoPath: repoPath, childBranch, candidateBranch) else { continue }
-                    let mbBase = await git.mergeBase(repoPath: repoPath, childBranch, base)
-                    guard mb != mbBase, mb != member.entry.head else { continue }
+                    guard let mb = await git.mergeBase(repoPath: repoPath, childBranch, candidateBranch),
+                          mb != member.entry.head,
+                          !(await git.isAncestor(repoPath: repoPath, mb, of: base))
+                    else { continue }
                     let depth = await git.revListCount(repoPath: repoPath, from: base, to: mb) ?? 0
+                    guard depth > 0 else { continue }
                     candidates.append((name: candidateName, depth: depth))
                 }
             }

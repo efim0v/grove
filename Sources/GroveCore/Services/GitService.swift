@@ -266,6 +266,16 @@ public struct GitService: Sendable {
 // MARK: - Stacking primitives
 
 extension GitService {
+    /// `git merge-base --is-ancestor ancestor descendant`: true when `descendant`
+    /// contains `ancestor`. False on any git failure (unknown ref, timeout).
+    public func isAncestor(repoPath: String, _ ancestor: String, of descendant: String) async -> Bool {
+        guard let result = try? await runner.run(
+            "git", ["-C", repoPath, "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd: nil, env: nil, timeout: 10
+        ) else { return false }
+        return result.exitCode == 0
+    }
+
     /// `git merge-base a b`; nil when either ref is unknown or histories are unrelated.
     public func mergeBase(repoPath: String, _ a: String, _ b: String) async -> String? {
         guard let result = try? await runner.runOK("git", ["-C", repoPath, "merge-base", a, b]) else {

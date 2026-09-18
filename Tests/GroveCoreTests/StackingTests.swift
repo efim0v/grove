@@ -44,6 +44,42 @@ final class StackingTests: XCTestCase {
         XCTAssertEqual(mbCA, mbCMain, "C forked from main: merge-base values must be equal")
     }
 
+    /// The staircase bug: three workspaces forked from `main` at different times.
+    /// merge-base(later, earlier) is the EARLIER fork point — on main — and differs
+    /// from the later one's own fork point, which the old rule read as "stacked".
+    /// What separates a sibling from a stack is whether that merge-base lies off base.
+    func testSiblingsForkedFromAMovingBaseAreNotStacked() async throws {
+        let tmp = try Fixture.tempDir("stacking-siblings")
+        let repo = try Fixture.makeRepo(in: tmp, name: "repo")
+        let wtA = tmp.appendingPathComponent("wt-A")
+        try Fixture.addWorktree(repo: repo, branch: "feat/A", from: "main", at: wtA)
+        try Fixture.commit(repo: wtA, file: "a1.txt", content: "1", message: "A1")
+        // main moves on.
+        try Fixture.commit(repo: repo, file: "m2.txt", content: "2", message: "M2")
+        let wtB = tmp.appendingPathComponent("wt-B")
+        try Fixture.addWorktree(repo: repo, branch: "feat/B", from: "main", at: wtB)
+        try Fixture.commit(repo: wtB, file: "b1.txt", content: "1", message: "B1")
+        // C really is stacked on A.
+        let wtC = tmp.appendingPathComponent("wt-C")
+        try Fixture.addWorktree(repo: repo, branch: "feat/C", from: "feat/A", at: wtC)
+        try Fixture.commit(repo: wtC, file: "c1.txt", content: "1", message: "C1")
+
+        let git = GitService()
+        let mbBAValue = await git.mergeBase(repoPath: repo.path, "feat/B", "feat/A")
+        let mbBMainValue = await git.mergeBase(repoPath: repo.path, "feat/B", "main")
+        let mbBA = try XCTUnwrap(mbBAValue)
+        let mbBMain = try XCTUnwrap(mbBMainValue)
+        XCTAssertNotEqual(mbBA, mbBMain, "the old rule's premise: the two merge-bases differ")
+        let onBase = await git.isAncestor(repoPath: repo.path, mbBA, of: "main")
+        XCTAssertTrue(onBase, "…yet the shared merge-base is on main: B carries nothing of A's")
+        let mbCAValue = await git.mergeBase(repoPath: repo.path, "feat/C", "feat/A")
+        let mbCA = try XCTUnwrap(mbCAValue)
+        let stacked = await git.isAncestor(repoPath: repo.path, mbCA, of: "main")
+        XCTAssertFalse(stacked, "C's merge-base with A is A's own commit, off main: stacked")
+        let unknown = await git.isAncestor(repoPath: repo.path, "no-such-ref", of: "main")
+        XCTAssertFalse(unknown)
+    }
+
     func testMergeBaseReturnsNilForUnknownRef() async throws {
         let tmp = try Fixture.tempDir("stacking-nil")
         let repo = try Fixture.makeRepo(in: tmp, name: "repo")
