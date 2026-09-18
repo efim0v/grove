@@ -18,9 +18,26 @@ public struct ClaudeToken: Sendable, Equatable {
     }
 }
 
+/// What a credentials read came back with. Three answers, not an optional: "there
+/// is no token" and "there is one, but the Keychain will not hand it over without
+/// asking the user" call for different things on screen.
+public enum CredentialsAccess: Sendable, Equatable {
+    case token(ClaudeToken)
+    case missing
+    /// The item exists but reading it needs the user's consent (the app is not on its
+    /// access list, or the request was refused). With Keychain UI switched off for the
+    /// process this is what an ungranted item answers INSTEAD of blocking on a dialog.
+    case locked
+}
+
 /// Supplies a Claude Code OAuth access token for an account's config dir. A
 /// protocol so the OAuth client can be tested with a canned token (no Keychain).
+/// A conformer implements `token` or `accessToken` and gets `access` for free; one
+/// that implements `access` (the two production readers) also implements `token`
+/// from it, since the `token` ↔ `accessToken` bridge cannot know about it.
 public protocol CredentialsReading: Sendable {
+    /// The full answer — see `CredentialsAccess`.
+    func access(configDir: String) -> CredentialsAccess
     /// The bearer for `configDir` with its expiry, or nil when none is available.
     func token(configDir: String) -> ClaudeToken?
     /// The bearer value alone, for callers that don't care about the lifetime.
@@ -29,10 +46,16 @@ public protocol CredentialsReading: Sendable {
     /// source. Called when the endpoint rejects the bearer — the credential may have
     /// been rotated behind our back. A no-op for readers that hold no cache.
     func invalidate(configDir: String)
+    /// A read the USER asked for: allowed to put the Keychain dialog up. The one
+    /// place a `.locked` item becomes readable — "Always Allow" there is permanent.
+    func grant(configDir: String) -> CredentialsAccess
 }
 
 public extension CredentialsReading {
-    /// Default bridge so a conformer only has to implement ONE of the two accessors.
+    /// From `token`, not `accessToken`: the expiry must survive the bridge.
+    func access(configDir: String) -> CredentialsAccess {
+        token(configDir: configDir).map(CredentialsAccess.token) ?? .missing
+    }
     func token(configDir: String) -> ClaudeToken? {
         accessToken(configDir: configDir).map { ClaudeToken(value: $0, expiresAt: nil) }
     }
@@ -40,6 +63,7 @@ public extension CredentialsReading {
         token(configDir: configDir)?.value
     }
     func invalidate(configDir: String) {}
+    func grant(configDir: String) -> CredentialsAccess { access(configDir: configDir) }
 }
 
 /// Production credentials source. Claude Code stores each account's OAuth blob in
@@ -64,18 +88,50 @@ public struct KeychainCredentialsReader: CredentialsReading {
     }
 
     public func token(configDir: String) -> ClaudeToken? {
+        if case .token(let token) = access(configDir: configDir) { return token }
+        return nil
+    }
+
+    public func access(configDir: String) -> CredentialsAccess {
         // 1) Keychain (the modern store).
-        if let blob = Self.keychainSecret(service: Self.serviceName(configDir: configDir)),
-           let token = Self.parseClaudeToken(blob) {
-            return token
+        switch Self.keychainSecret(service: Self.serviceName(configDir: configDir)) {
+        case .found(let blob):
+            if let token = Self.parseClaudeToken(blob) { return .token(token) }
+        case .locked:
+            return .locked
+        case .absent:
+            break
         }
         // 2) Legacy file (older Claude Code installs).
         let path = Self.expandedDir(configDir) + "/.credentials.json"
         if let data = FileManager.default.contents(atPath: path),
            let token = Self.parseClaudeToken(data) {
-            return token
+            return .token(token)
         }
-        return nil
+        return .missing
+    }
+
+    /// The read that may ask. Keychain UI is re-enabled for just this call, so the
+    /// dialog the user chose to see is the only one they ever see.
+    public func grant(configDir: String) -> CredentialsAccess {
+        Self.withUserInteraction { access(configDir: configDir) }
+    }
+
+    /// Whether ANY Keychain read in this process may put a dialog up. Brow switches it
+    /// off at launch: a background poll that hits an ungranted item must come back
+    /// `.locked` at once, not park a whole refresh cycle behind a modal until the
+    /// watchdog throws the cycle — and every reading in it — away. Grove keeps the
+    /// default (on): it reads the Keychain only on the user's own gesture.
+    public static func setUserInteractionAllowed(_ allowed: Bool) {
+        SecKeychainSetUserInteractionAllowed(allowed)
+    }
+
+    static func withUserInteraction<T>(_ body: () -> T) -> T {
+        var was: DarwinBoolean = true
+        SecKeychainGetUserInteractionAllowed(&was)
+        SecKeychainSetUserInteractionAllowed(true)
+        defer { SecKeychainSetUserInteractionAllowed(was.boolValue) }
+        return body()
     }
 
     // MARK: - helpers (internal for tests)
@@ -108,7 +164,9 @@ public struct KeychainCredentialsReader: CredentialsReading {
         return dir
     }
 
-    private static func keychainSecret(service: String) -> Data? {
+    private enum Secret { case found(Data), absent, locked }
+
+    private static func keychainSecret(service: String) -> Secret {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -116,9 +174,16 @@ public struct KeychainCredentialsReader: CredentialsReading {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return data
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess:
+            return (item as? Data).map(Secret.found) ?? .absent
+        // Interaction switched off (the item needs a grant), the grant refused, or the
+        // dialog dismissed: the item is there, we may not have it.
+        case errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled:
+            return .locked
+        default:
+            return .absent
+        }
     }
 }
 
@@ -182,6 +247,9 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
     private let gate = NSCondition()
     private var cache: [String: Entry] = [:]   // configDir → token (successful reads only)
     private var nilReadAt: [String: Date] = [:]  // configDir → when the base last gave nothing
+    /// Dirs whose last empty-handed read was `.locked` rather than `.missing`, so the
+    /// floored answer keeps saying which.
+    private var locked: Set<String> = []
     /// Config dirs with a base read out right now.
     private var inFlight: Set<String> = []
 
@@ -192,17 +260,23 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
     }
 
     public func token(configDir: String) -> ClaudeToken? {
+        if case .token(let token) = access(configDir: configDir) { return token }
+        return nil
+    }
+
+    public func access(configDir: String) -> CredentialsAccess {
         let at = now()
         gate.lock()
         while true {
             if let cached = cache[configDir],
                Self.isLive(cached.token, at: at) || Self.withinExpiredFloor(cached, at: at) {
                 gate.unlock()
-                return cached.token
+                return .token(cached.token)
             }
             if let failedAt = nilReadAt[configDir], at.timeIntervalSince(failedAt) < Self.nilReadFloor {
+                let answer: CredentialsAccess = locked.contains(configDir) ? .locked : .missing
                 gate.unlock()
-                return nil
+                return answer
             }
             // Someone is already asking the Keychain for this dir: wait for THEIR
             // answer and then re-run the two checks above against it, rather than
@@ -213,22 +287,44 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
         inFlight.insert(configDir)
         gate.unlock()
 
-        let fresh = base.token(configDir: configDir)
+        let fresh = base.access(configDir: configDir)
         // Stamped when the read RETURNED, not when it started. A read parked on a modal
         // prompt can sit for minutes, and dating the floor from the start of it burns
         // part of the window on the wait — the opposite of what the floor is for.
         let returnedAt = now()
         gate.lock()
-        if let fresh {
-            cache[configDir] = Entry(token: fresh, readAt: returnedAt)
-            nilReadAt.removeValue(forKey: configDir)
-        } else {
-            nilReadAt[configDir] = returnedAt
-        }
+        record(fresh, for: configDir, at: returnedAt)
         inFlight.remove(configDir)
         gate.broadcast()
         gate.unlock()
         return fresh
+    }
+
+    /// The user's own read: floors and cache dropped first so the base is really asked,
+    /// and whatever it answers is what the next cycle sees.
+    public func grant(configDir: String) -> CredentialsAccess {
+        invalidate(configDir: configDir)
+        let fresh = base.grant(configDir: configDir)
+        gate.lock()
+        record(fresh, for: configDir, at: now())
+        gate.unlock()
+        return fresh
+    }
+
+    /// Caller holds `gate`.
+    private func record(_ answer: CredentialsAccess, for configDir: String, at instant: Date) {
+        switch answer {
+        case .token(let token):
+            cache[configDir] = Entry(token: token, readAt: instant)
+            nilReadAt.removeValue(forKey: configDir)
+            locked.remove(configDir)
+        case .missing:
+            nilReadAt[configDir] = instant
+            locked.remove(configDir)
+        case .locked:
+            nilReadAt[configDir] = instant
+            locked.insert(configDir)
+        }
     }
 
     /// Drop a cached token — and any record of a failed read — so the next call goes
@@ -238,6 +334,7 @@ public final class CachingCredentialsReader: CredentialsReading, @unchecked Send
         gate.lock()
         cache.removeValue(forKey: configDir)
         nilReadAt.removeValue(forKey: configDir)
+        locked.remove(configDir)
         gate.unlock()
     }
 

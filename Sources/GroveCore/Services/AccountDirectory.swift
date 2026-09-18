@@ -16,15 +16,19 @@ public struct DiscoveredAccount: Sendable, Equatable, Identifiable {
     public let aliasDirs: [String]
     /// Expiry of `configDir`'s token; nil when no token is readable at all.
     public let tokenExpiresAt: Date?
+    /// No dir of this account gave a token, and at least one has a Keychain item the
+    /// app may not read without the user's consent — the fix is a grant, not a login.
+    public let keychainLocked: Bool
 
     public init(organizationUuid: String, email: String?, tier: String?, configDir: String,
-                aliasDirs: [String], tokenExpiresAt: Date?) {
+                aliasDirs: [String], tokenExpiresAt: Date?, keychainLocked: Bool = false) {
         self.organizationUuid = organizationUuid
         self.email = email
         self.tier = tier
         self.configDir = configDir
         self.aliasDirs = aliasDirs
         self.tokenExpiresAt = tokenExpiresAt
+        self.keychainLocked = keychainLocked
     }
 }
 
@@ -51,12 +55,14 @@ public struct AccountDirectory: Sendable {
         // directory's metadata while fetching with another's token — and a `tier`
         // read from a dir written by an older CLI silently weighs the account at
         // 1/20th of its real capacity in the tier-weighted aggregate.
-        var members: [String: [(dir: String, expiry: Date?, email: String?, tier: String?)]] = [:]
+        var members: [String: [(dir: String, expiry: Date?, locked: Bool, email: String?, tier: String?)]] = [:]
         for dir in Self.candidateDirs(home: home, extraDirs: extraDirs) {
             guard let id = Self.identity(configDir: dir, home: home) else { continue }
-            let expiry = credentials.token(configDir: dir)?.expiresAt
+            let access = credentials.access(configDir: dir)
+            let expiry: Date?
+            if case .token(let token) = access { expiry = token.expiresAt } else { expiry = nil }
             if members[id.org] == nil { order.append(id.org) }
-            members[id.org, default: []].append((dir, expiry, id.email, id.tier))
+            members[id.org, default: []].append((dir, expiry, access == .locked, id.email, id.tier))
         }
         return order.compactMap { org in
             let dirs = members[org] ?? []
@@ -79,8 +85,20 @@ public struct AccountDirectory: Sendable {
                                      email: email, tier: tier,
                                      configDir: primary.dir,
                                      aliasDirs: ranked.dropFirst().map(\.dir),
-                                     tokenExpiresAt: primary.expiry)
+                                     tokenExpiresAt: primary.expiry,
+                                     keychainLocked: primary.expiry == nil && ranked.contains { $0.locked })
         }
+    }
+
+    /// The user's own read of every dir of an account — the read that may put the
+    /// Keychain dialog up. Returns whether a token came back from any of them.
+    @discardableResult
+    public func grant(configDirs: [String]) -> Bool {
+        var granted = false
+        for dir in configDirs {
+            if case .token = credentials.grant(configDir: dir) { granted = true }
+        }
+        return granted
     }
 
     /// Drop whatever the credentials reader has cached for `configDir` — including any

@@ -45,6 +45,26 @@ final class AccountDirectoryTests: XCTestCase {
         XCTAssertNil(found[0].tokenExpiresAt, "no readable token → nil expiry, account still listed")
     }
 
+    /// A dir whose Keychain item is withheld is still an account — one that needs a
+    /// grant, which the row has to be able to say.
+    func testWithheldKeychainItemMarksTheAccountLocked() throws {
+        final class Locked: CredentialsReading, @unchecked Sendable {
+            var lockedDirs: Set<String> = []
+            func access(configDir: String) -> CredentialsAccess { lockedDirs.contains(configDir) ? .locked : .missing }
+            func token(configDir: String) -> ClaudeToken? { nil }
+        }
+        let dir = try makeDir(".claude-accounts/held", org: "org-H", email: "h@x")
+        let creds = Locked()
+        creds.lockedDirs = [dir]
+        let found = AccountDirectory(home: home.path, credentials: creds).scan()
+        XCTAssertEqual(found.map(\.organizationUuid), ["org-H"])
+        XCTAssertTrue(found[0].keychainLocked)
+        XCTAssertNil(found[0].tokenExpiresAt)
+        try makeDir(".claude-accounts/free", org: "org-F", email: "f@x")
+        let again = AccountDirectory(home: home.path, credentials: creds).scan()
+        XCTAssertEqual(again.first { $0.organizationUuid == "org-F" }?.keychainLocked, false, "missing is not locked")
+    }
+
     func testDirWithoutOrganizationIsIgnored() throws {
         try makeDir(".claude-accounts/broken", org: nil)
         try makeDir(".claude-accounts/ok", org: "org-1")
