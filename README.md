@@ -38,6 +38,11 @@ A second, minimal app in this package: it shows every Claude account's rate
 limits from the notch (readouts beside the notch, hover for a per-account
 panel). Build with `Scripts/build-brow.sh` → `dist/Brow.app`.
 
+Grove and Brow are two related utilities that share one module and a handful of
+on-disk contracts (account folders, the per-account browser router, statusline
+captures). How they fit together, and what must change in lockstep:
+[`docs/grove-and-brow.md`](docs/grove-and-brow.md).
+
 - Accounts are discovered from `~/.claude` and `~/.claude-accounts/*`; dirs that
   belong to the same organisation are shown once.
 - On first launch macOS asks once per account for access to Claude Code's
