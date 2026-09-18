@@ -165,14 +165,22 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         return true
     }
 
-    /// The menu-bar item is a plain text glyph (an SF-symbol image failed to render
-    /// reliably in the menu bar). The weekly-limit percentage that used to sit here
-    /// lives in Brow's notch readouts now.
+    /// The menu-bar item is a tree — the same `tree.fill` symbol as the app icon, as a
+    /// template image so it follows the bar's light/dark tint. If the symbol can't be
+    /// loaded it falls back to a plain text glyph, so there is always something to
+    /// click. The weekly-limit percentage that used to sit here lives in Brow's notch
+    /// readouts now.
     private func updateMenuBarReadout() {
         guard let button = statusItem?.button else { return }
-        button.image = nil
-        button.attributedTitle = NSAttributedString(
-            string: "⌘G", attributes: [.foregroundColor: NSColor.labelColor, .font: NSFont.menuBarFont(ofSize: 0)])
+        if let image = NSImage(systemSymbolName: "tree.fill", accessibilityDescription: "Grove") {
+            image.isTemplate = true
+            button.image = image
+            button.attributedTitle = NSAttributedString(string: "")
+        } else {
+            button.image = nil
+            button.attributedTitle = NSAttributedString(
+                string: "🌳", attributes: [.font: NSFont.menuBarFont(ofSize: 0)])
+        }
     }
 
     // MARK: - Panel lifecycle
