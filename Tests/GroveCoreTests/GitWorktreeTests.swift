@@ -136,6 +136,32 @@ final class GitWorktreeTests: XCTestCase {
         }
     }
 
+    /// Gitflow: origin/HEAD → master, the work forks from dev, which is ahead of
+    /// master. The base is origin/dev; a stale dev BEHIND main does not take over.
+    func testBaseBranchPrefersAnIntegrationBranchAheadOfTheReleaseBranch() async throws {
+        let dir = try Fixture.tempDir("base-gitflow")
+        let upstream = try Fixture.makeRepo(in: dir, name: "upstream", defaultBranch: "master")
+        try Fixture.sh("git -C \(shellQuote(upstream.path)) checkout -q -b dev")
+        try Fixture.commit(repo: upstream, file: "d1.txt", content: "1", message: "dev work")
+        try Fixture.sh("git -C \(shellQuote(upstream.path)) checkout -q master")
+        let bare = dir.appendingPathComponent("upstream.git")
+        try Fixture.sh("git clone -q --bare \(shellQuote(upstream.path)) \(shellQuote(bare.path))")
+        let clone = dir.appendingPathComponent("clone")
+        try Fixture.sh("git clone -q \(shellQuote(bare.path)) \(shellQuote(clone.path))")
+        try Fixture.sh("git -C \(shellQuote(clone.path)) symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master")
+        let base = await git.baseBranch(repo: repoInfo(clone), override: nil)
+        XCTAssertEqual(base, "origin/dev", "dev strictly contains master: it is where the work forks from")
+        let overridden = await git.baseBranch(repo: repoInfo(clone), override: "master")
+        XCTAssertEqual(overridden, "master")
+
+        // A stale dev behind main: main stays the base.
+        let trunk = try Fixture.makeRepo(in: dir, name: "trunk")            // main @ base
+        try Fixture.sh("git -C \(shellQuote(trunk.path)) branch dev")        // dev == main's first commit
+        try Fixture.commit(repo: trunk, file: "m2.txt", content: "2", message: "main moves on")
+        let stale = await git.baseBranch(repo: repoInfo(trunk), override: nil)
+        XCTAssertEqual(stale, "main")
+    }
+
     func testBaseBranchFallbackChain() async throws {
         let dir = try Fixture.tempDir("base-fallback")
         let masterRepo = try Fixture.makeRepo(in: dir, name: "m", defaultBranch: "master")

@@ -174,17 +174,39 @@ public struct GitService: Sendable {
                 // through to the offline (bare-name) path when the remote ref is
                 // absent (no fetch / no remote), preserving offline behavior.
                 if await refExists(repoPath: repo.path, "refs/remotes/origin/\(name)") {
-                    return "origin/\(name)"
+                    return await integrationBranch(repoPath: repo.path, over: "origin/\(name)")
                 }
-                return name
+                return await integrationBranch(repoPath: repo.path, over: name)
             }
         }
         for candidate in ["main", "master", "dev"] {
             if await branchExists(repoPath: repo.path, candidate) {
-                return candidate
+                return await integrationBranch(repoPath: repo.path, over: candidate)
             }
         }
         return "main"
+    }
+
+    /// Gitflow: `origin/HEAD` names the RELEASE branch (master/main) while the work
+    /// forks from `dev`/`develop`, hundreds of commits ahead of it. Measured against
+    /// master every feature branch here was "+180 ahead" and every merge-base between
+    /// two of them lay off base — so three siblings forked from dev rendered as a
+    /// staircase. When an integration branch exists AND strictly contains the
+    /// release branch, it is the base; remote-tracking first, for the same reason
+    /// `origin/<name>` beats the local name above. A stale `dev` behind main stays
+    /// out of the way.
+    func integrationBranch(repoPath: String, over release: String) async -> String {
+        for name in ["dev", "develop"] {
+            for candidate in ["origin/\(name)", name] {
+                guard await refExists(repoPath: repoPath, candidate),
+                      candidate != release,
+                      await isAncestor(repoPath: repoPath, release, of: candidate),
+                      !(await isAncestor(repoPath: repoPath, candidate, of: release))
+                else { continue }
+                return candidate
+            }
+        }
+        return release
     }
 
     /// Returns the symbolic ref name of the currently checked-out branch
