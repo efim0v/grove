@@ -41,9 +41,6 @@ struct ScopeHeader: View {
     /// CreateWorkspaceScreen disables back (and with it Esc) while a creation
     /// run is in flight — leaving mid-run would orphan the progress log.
     var backDisabled = false
-    /// Global remaining-capacity badge for the 5h window. nil = don't show a badge.
-    /// Typed (not AnyView): the header owns the chip rendering + color grade.
-    var aggregate: RateLimitModel.Aggregate? = nil
     let onBack: () -> Void
 
     var body: some View {
@@ -60,51 +57,8 @@ struct ScopeHeader: View {
                     .lineLimit(1)
             }
             Spacer()
-            if let aggregate {
-                AggregateChip(window: "5h", aggregate: aggregate)
-            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-    }
-}
-
-/// Global remaining-capacity chip: "5h 60%" color-graded by AggregateBadge.level.
-/// FIX I4: when there are ZERO usage captures the aggregate has total == 0; render
-/// a NEUTRAL gray "no data" chip ("5h —"), NOT a red .critical chip, so existing
-/// snapshot scenes (no fixture captures) don't all turn red.
-/// Internal (not private) so ProjectScreen's CUSTOM header — which doesn't use
-/// ScopeHeader — can render the same chip directly in its HStack.
-struct AggregateChip: View {
-    let window: String
-    let aggregate: RateLimitModel.Aggregate
-    /// Soonest upcoming reset across accounts (item 4). When present the chip
-    /// appends a countdown ("5h 62% · 2h14m"): the next time headroom returns.
-    var resetsAt: Date? = nil
-    var now: Date = Date()
-
-    var body: some View {
-        let badge = AggregateBadge(aggregate)   // .noData when aggregate.total == 0
-        let color: Color = {
-            switch badge.level {
-            case .noData:   return Palette.neutral
-            case .plenty:   return Palette.primary
-            case .tight:    return Palette.mid
-            case .critical: return Palette.negative
-            }
-        }()
-        let percent = badge.hasData ? "\(Int((aggregate.fraction * 100).rounded()))%" : "—"
-        let countdown = badge.hasData ? resetsAt.map { " · \(LimitCard.shortCountdown($0.timeIntervalSince(now)))" } ?? "" : ""
-        return Text("\(window) \(percent)\(countdown)")
-            .font(.caption.weight(.medium))
-            .monospacedDigit()
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(color.opacity(0.18), in: Capsule())
-            .foregroundStyle(color)
-            .help(badge.hasData
-                  ? "Remaining \(window) capacity across all accounts (tier-weighted) · resets soonest at the time shown"
-                  : "No usage captures yet — enable Monitoring")
     }
 }

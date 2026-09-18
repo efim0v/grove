@@ -19,9 +19,11 @@ First run: click the tree icon in the menu bar, open Settings (gear), press
 while the panel is open. Workspaces live under `~/Workspaces/<project>/<name>`
 by default (template configurable in Settings).
 
-Grant nothing: Grove is ad-hoc signed, uses no Apple Events and no
-TCC-protected APIs — cmux is driven through its CLI, Claude state is read from
-plain files in `~/.claude*`. Rebuilds/reinstalls are therefore prompt-free.
+Grant nothing: Grove uses no Apple Events and no TCC-protected APIs — cmux is
+driven through its CLI, Claude state is read from plain files in `~/.claude*`.
+Rebuilds/reinstalls are therefore prompt-free. Per-account rate limits and
+subscriptions are Brow's (below): it is the only one of the two apps that reads
+Claude Code's credentials.
 
 ## CLI
 
@@ -132,7 +134,7 @@ context-dependent failures like the socket access mode above.
 - `swift test` and `swift test -c release` must both stay green (a Swift -O
   miscompile was once caught only in release mode).
 - Agent-verifiable UI: `swift run GroveApp --snapshot /tmp/grove-snap` renders
-  six fixture PNGs without starting the app — see `docs/snapshot-testing.md`
+  the fixture PNGs (one per `SnapshotScene`) without starting the app — see `docs/snapshot-testing.md`
   for the workflow and the ImageRenderer caveats.
 - Config lives at `~/Library/Application Support/Grove/config.json`
   (atomic writes, corrupt files are quarantined with a banner).

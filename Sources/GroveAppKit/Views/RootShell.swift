@@ -2,12 +2,9 @@ import SwiftUI
 import AppKit
 import GroveCore
 
-/// The root scope (route .projects): the project list with quick session access.
-/// The usage dashboard is no longer a tab here — it's the embedded charts section
-/// (ChartsSideContent) of the merged window, shown to the RIGHT of this shell in
-/// MergedRootView's HStack whenever `state.showCharts` is true. So this shell is
-/// just the add-project row and the Projects content. The footer (Accounts ·
-/// settings · refresh · charts-collapse · version · Quit) is now SHARED chrome
+/// The root scope (route .projects): the project list with quick session access —
+/// the add-project row and the Projects content. The footer (Accounts · settings ·
+/// refresh · version · Quit) is SHARED chrome
 /// hoisted into RootView's `ProjectsFooter`, pinned below BOTH this list and the
 /// per-project tabs so it never disappears when the user drills into a project.
 struct RootShell: View {

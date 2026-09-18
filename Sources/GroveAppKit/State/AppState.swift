@@ -31,42 +31,9 @@ public final class AppState: ObservableObject {
     @Published public var config: GroveConfig
     @Published public var configIssue: String?
     @Published public var snapshots: [UUID: ProjectSnapshot] = [:]
-    /// Per-account analytics (Task 3) + capture snapshots (Task 6), filled by
-    /// refreshUsage on the scan tick. Empty until the first refresh.
-    @Published public var usageByAccount: [String: AccountUsageAnalytics] = [:]
+    /// Per-account statusline captures (model, context %, effort, cost per session),
+    /// filled by refreshUsage on the scan tick. Empty until the first refresh.
     @Published public var snapshotsByAccount: [String: [UsageSnapshot]] = [:]
-    /// When the displayed limits were actually OBTAINED — the newest `capturedAt`
-    /// across every account's captures, not the time the refresh loop last ran. The
-    /// OAuth client caches for 180s, so a tick can pass without the numbers moving;
-    /// the panel's footer must not claim such data is current. nil until first data.
-    @Published public var usageDataAsOf: Date?
-    /// True while a usage FETCH is in flight — the footer swaps its refresh button for
-    /// a loading indicator. Only set by passes that actually go to the network, never
-    /// by the local liveness tick.
-    @Published public var isRefreshingUsage: Bool = false
-    /// Why the last usage FETCH failed, or nil when it succeeded. The OAuth call used to
-    /// be a bare `try?`: an expired bearer, a 429 backoff or a dead network produced a
-    /// silent no-op, the panel kept showing its retained capture, and pressing Refresh
-    /// looked like a broken button. Cleared on the next success. Only fetch passes touch
-    /// it — a local liveness tick makes no request and so can neither set nor clear it.
-    @Published public var usageFetchError: String?
-    /// Newest successful synthetic OAuth capture per account. Nothing persists these
-    /// (only the statusline writes `grove/usage`), and `refreshUsage` rebuilds
-    /// `snapshotsByAccount` from disk every pass — so this is what keeps the
-    /// API-only windows on screen between fetches. See the re-attach step in
-    /// `refreshUsage` for why dropping them made the model bar blink.
-    private var lastOAuthSnapshot: [String: UsageSnapshot] = [:]
-    /// Per-account snapshot-delta cost ledger — the forward-accurate daily-cost source for the
-    /// Daily Usage chart, accumulated from statusline snapshots in refreshUsage and persisted.
-    @Published public var usageLedgerByAccount: [String: UsageCostLedger] = [:]
-    /// Monotonic per-account save generation (bumped on each ledger change on the main actor) +
-    /// the serial writer that uses it to drop out-of-order stale persists.
-    private var ledgerGeneration: [String: Int] = [:]
-    private let ledgerWriter = UsageLedgerWriter()
-    /// Per-account `organizationRateLimitTier`, resolved OFF the main actor in
-    /// refreshUsage. aggregateRemaining (and thus several view bodies, incl. the
-    /// always-visible charts pane) reads this via tier(for:) — it must never hit disk.
-    var tierCache: [String: String] = [:]
     /// Per-account identity (email/org/tier), resolved OFF the main actor in
     /// refreshUsage. AccountsScreen reads this instead of a synchronous .claude.json
     /// read per card per render. Empty until the first refresh (the screen falls back
@@ -82,14 +49,6 @@ public final class AppState: ObservableObject {
     /// Disk-wide recent sessions whose cwd matches NO configured project.
     /// Newest-first. Populated by refreshSessionIndex.
     @Published public var otherSessions: [ClaudeSession] = []
-    /// Which scope the embedded charts section shows (0 = Overall when >1 account, else the
-    /// first account). The ‹ › arrows step this; persisted so it survives panel reopen.
-    @Published public var chartsScopeIndex: Int = 0
-    /// Whether the charts (account-stats) section is shown alongside the projects
-    /// section in the single merged window. The collapse toggle in RootShell flips
-    /// it; when false the window becomes projects-only width. In-memory for now
-    /// (persisting would mutate GroveConfig — a follow-up).
-    @Published public var showCharts: Bool = true
     /// When non-nil, the launch sheet is presented to configure a Resume/New launch
     /// (open-target, account, model, effort) before it runs.
     @Published public var launchRequest: LaunchRequest?
@@ -153,11 +112,10 @@ public final class AppState: ObservableObject {
 
     private let configStore: ConfigStore
 
-    /// Persistent service instances. Their mtime parse-caches MUST survive across
-    /// scans/refreshes — a fresh `ClaudeService()`/`UsageAnalytics()` per tick
-    /// re-parsed every transcript from scratch on the 15s loop (item 2 perf bug).
+    /// Persistent service instance. Its mtime parse-cache MUST survive across
+    /// scans/refreshes — a fresh `ClaudeService()` per tick re-parsed every transcript
+    /// from scratch on the 15s loop (item 2 perf bug).
     private let claude = ClaudeService()
-    private let usageAnalytics = UsageAnalytics()
 
     /// Git-as-source-of-truth code-stats service (per-repo, honors .gitignore via git's
     /// own engine, excludes worktrees). Stateless value type; the per-project/per-repo
@@ -232,38 +190,10 @@ public final class AppState: ObservableObject {
     /// dir so history persistence never writes under the real app-support tree.
     internal var statsStoreDirOverride: String?
 
-    /// Test seam: the directory the per-account usage-cost ledger files live in. nil = the real
-    /// ~/Library/Application Support/Grove/usageledger. TESTS that call refreshUsage MUST set a
-    /// temp dir so the ledger never writes under the real app-support tree.
-    internal var usageLedgerStoreDirOverride: String?
-
-    /// Test seam: account tiers (organizationRateLimitTier). nil = read from each
-    /// account's .claude.json oauthAccount. TESTS inject so aggregate math is hermetic.
-    internal var tierOverride: [String: String]?
-
     /// Test observability: incremented each time `runCodeStatsScan` begins a scan. nil
     /// in production (never read); tests set it to 0 before calling `setStatsBranch`
     /// and assert it equals 1 after the debounce fires to verify coalescing.
     internal var statsRescanStartedCount: Int?
-
-    /// Live OAuth usage client (Anthropic `api/oauth/usage`). Persistent so its
-    /// in-actor cache + 429 backoff survive between ticks. Used ONLY as a fallback
-    /// for accounts whose statusline emits no `rate_limits` (e.g. a lightly-used
-    /// custom account whose limits exist server-side but never reach the local
-    /// statusline) — we read them straight from the source, authenticated with the
-    /// account's own Keychain token.
-    private let oauthClient = OAuthUsageClient(
-        fetcher: URLSessionUsageFetcher(), appVersion: GroveVersion.current,
-        // One bucket picture shared with Brow (the notch utility): see UsagePacingLedger.
-        ledger: FileUsagePacingLedger(),
-        // Cache the Keychain token per launch so reading Claude Code's credentials
-        // prompts the user at most once per account per launch (not every ~3-min poll).
-        credentials: CachingCredentialsReader())
-
-    /// Test seam: supplies OAuth limits for an account's configDir. nil = use the
-    /// real client (network + Keychain). TESTS inject canned values so refresh is
-    /// hermetic; returning nil for an account means "no OAuth limits available".
-    public var oauthLimitsOverride: (@Sendable (_ configDir: String, _ now: Date) async -> OAuthUsage?)?
 
     public init(configStore: ConfigStore) {
         self.configStore = configStore
@@ -413,8 +343,6 @@ public final class AppState: ObservableObject {
     /// Removes the account from Grove's config only — the directory is untouched.
     public func removeAccount(name: String) {
         config.accounts.removeAll { $0.name == name }
-        usageLedgerByAccount.removeValue(forKey: name)
-        usageLedgerStore.delete(account: name)
         persist()
     }
 }
@@ -440,12 +368,11 @@ extension AppState {
     /// with the scan via `async let`, and its heavy file I/O happens off the main
     /// actor (see refreshUsage), so neither freezes the panel (item 2). Both are
     /// awaited before returning so tests and the 15s loop stay deterministic.
-    /// `oauth` defaults to `.skip` because this is the 15s liveness tick: it re-reads
-    /// local captures, sessions and worktrees, and must not touch the rate-limited
-    /// usage API. The panel-open pass passes `.fetch` once.
-    public func refresh(oauth policy: OAuthPolicy = .skip) async {
+    /// Local only: captures, sessions and worktrees. Nothing here touches the
+    /// network — per-account limits are Brow's.
+    public func refresh() async {
         let started = Date()
-        async let usage: Void = refreshUsage(now: started, oauth: policy)
+        async let usage: Void = refreshUsage(now: started)
         async let sessions: Void = refreshSessionIndex()
         // Scan the selected project every tick (its detail view needs fresh data);
         // scan the OTHERS once, when they have no snapshot yet, so EVERY project card
@@ -1222,308 +1149,41 @@ extension AppState {
                 .appendingPathComponent("Grove/bin").path
     }
 
-    public enum LimitWindow { case fiveHour, sevenDay, sevenDaySonnet }
-
-    /// Selects a window from a snapshot for the given `LimitWindow`.
-    static func pick(_ window: LimitWindow) -> (UsageSnapshot) -> CapturedWindow? {
-        switch window {
-        case .fiveHour:       return { $0.fiveHour }
-        case .sevenDay:       return { $0.sevenDay }
-        case .sevenDaySonnet: return { $0.sevenDaySonnet }
-        }
-    }
-
-    /// Reads capture snapshots + analytics across accounts (called on the scan tick).
-    /// `now` injected; defaults to Date() ONLY at the production call site.
+    /// Reads every account's statusline captures and identity (called on the scan
+    /// tick). `now` injected; defaults to Date() ONLY at the production call site.
     ///
     /// The file reads + JSON parsing run OFF the main actor (`Task.detached`) so a
-    /// cold transcript parse never freezes the panel on open (item 2). The shared
-    /// `usageAnalytics` keeps its mtime cache between calls, so steady-state ticks
-    /// only re-parse changed files. Results are assigned back on the main actor.
-    /// Whether THIS refresh may talk to Anthropic's usage API. The caller decides —
-    /// it used to be inferred from `isPanelOpen`, which meant the 15s liveness loop
-    /// re-fetched limits all day, burned rate limit, and (see `lastOAuthSnapshot`)
-    /// made the OAuth-only bars blink.
-    public enum OAuthPolicy: Sendable, Equatable {
-        /// Local statusline captures only. The liveness tick and the background
-        /// menu-bar timer: neither needs the API, and the menu-bar readout is built
-        /// from the statusline weekly window, which costs no keychain access.
-        case skip
-        /// One request per account, served from the client's 180s cache when warm.
-        /// This is what opening the panel means: "show me current limits". Automatic,
-        /// so `config.usage.oauthLiveEnabled` can switch it off.
-        case fetch
-        /// The refresh button: bypass the result cache. Still honours the 429
-        /// backoff — a user holding the button must not earn a longer ban. A direct
-        /// gesture, so it is NOT subject to the automatic-fetch setting; a button that
-        /// silently did nothing would be worse than no button.
-        case force
-    }
-
-    public func refreshUsage(now: Date, oauth policy: OAuthPolicy = .skip) async {
-        let wantsOAuth: Bool
-        switch policy {
-        case .skip:  wantsOAuth = false
-        case .fetch: wantsOAuth = config.usage.oauthLiveEnabled
-        case .force: wantsOAuth = true
-        }
-        // Only a pass that actually goes to the network shows the loading indicator;
-        // otherwise it would flash on every liveness tick.
-        if wantsOAuth { isRefreshingUsage = true }
-        defer { if wantsOAuth { isRefreshingUsage = false } }
-        let analytics = usageAnalytics
+    /// cold read never freezes the panel on open. Results are assigned back on the
+    /// main actor. Per-account limits used to be fetched here too; that is Brow's now.
+    public func refreshUsage(now: Date) async {
         let jobs: [(name: String, dir: String, claudeJSON: String)] = config.accounts.map {
             (name: $0.name, dir: expandTilde($0.configDir), claudeJSON: claudeJSONPath(for: $0))
         }
         let started = Date()
-        let ledgerStore = usageLedgerStore
-        let inLedgers = usageLedgerByAccount
         let result = await Task.detached(priority: .utility) {
-            () -> (snaps: [String: [UsageSnapshot]], byAcc: [String: AccountUsageAnalytics],
-                   tiers: [String: String], ids: [String: AccountIdentity],
-                   baseLedgers: [String: UsageCostLedger]) in
+            () -> (snaps: [String: [UsageSnapshot]], ids: [String: AccountIdentity]) in
             let reader = UsageReader()
             var snaps: [String: [UsageSnapshot]] = [:]
-            var byAcc: [String: AccountUsageAnalytics] = [:]
-            var tiers: [String: String] = [:]
             var ids: [String: AccountIdentity] = [:]
-            var baseLedgers: [String: UsageCostLedger] = [:]
             for job in jobs {
                 snaps[job.name] = reader.read(configDir: job.dir, accountName: job.name)
-                byAcc[job.name] = analytics.account(configDir: job.dir, accountName: job.name,
-                                                    claudeJSONPath: job.claudeJSON, now: now)
                 // .claude.json read off-main here (was a per-render main-thread read via
-                // tier(for:) and AccountsScreen's identity provider).
-                if let t = ClaudeService.organizationRateLimitTier(claudeJSONPath: job.claudeJSON) {
-                    tiers[job.name] = t
-                }
+                // AccountsScreen's identity provider).
                 if let id = ClaudeService.identity(claudeJSONPath: job.claudeJSON) {
                     ids[job.name] = id
                 }
-                // Load the baseline ledger off-main (cold-start disk read). The actual FOLD runs
-                // on the main actor below, from the LIVE ledger, so two concurrent refreshes
-                // (panel + timer) can't race the cumulative cursor.
-                baseLedgers[job.name] = inLedgers[job.name] ?? ledgerStore.load(account: job.name)
             }
-            return (snaps, byAcc, tiers, ids, baseLedgers)
+            return (snaps, ids)
         }.value
-        var snaps = result.snaps
-        // OAuth limits from Anthropic's usage API. It requires a KEYCHAIN read and it is
-        // rate-limited, so it is fetched only when the caller says so (panel opened, or
-        // the refresh button) — never on the liveness tick or the background timer.
-        if wantsOAuth {
-            let bypassCache = policy == .force
-            // Report the FIRST failure across accounts, and only when no account
-            // succeeded — one broken account among several should not label the whole
-            // panel as failing when the bars it drew are current.
-            var firstFailure: String?
-            var anySucceeded = false
-            for job in jobs {
-                let usage: OAuthUsage?
-                if let override = oauthLimitsOverride {
-                    usage = await override(job.dir, now)
-                } else {
-                    do {
-                        usage = try await oauthClient.usage(configDir: job.dir, now: now,
-                                                            force: bypassCache)
-                    } catch {
-                        usage = nil
-                        let text = Self.usageErrorText(error)
-                        GroveLog.perf.error("oauth usage failed for \(job.name, privacy: .public): \(text, privacy: .public)")
-                        if firstFailure == nil { firstFailure = text }
-                    }
-                }
-                guard let usage,
-                      let snap = Self.oauthSnapshot(accountName: job.name, usage: usage, now: now)
-                else { continue }
-                anySucceeded = true
-                lastOAuthSnapshot[job.name] = snap
-            }
-            usageFetchError = anySucceeded ? nil : firstFailure
-        }
-        // Re-attach each account's newest known OAuth capture whether or not THIS pass
-        // fetched. The capture is synthetic — nothing writes it to `grove/usage`, and the
-        // block above rebuilds `snaps` from disk every time — so without this the windows
-        // that ONLY the API supplies would vanish on any pass that didn't fetch: a
-        // liveness tick, a 429 backoff (up to an hour), a transient error. The
-        // model-scoped bar is exactly such a window: the live endpoint returns null for
-        // every top-level per-model key, so `limits[] weekly_scoped` is its only source
-        // and it has nothing to fall back on. Retained captures keep their ORIGINAL
-        // `capturedAt`, so the footer still reports the true age and the staleness checks
-        // in `currentWindow` still fire once a window's reset passes.
-        let liveNames = Set(config.accounts.map(\.name))
-        lastOAuthSnapshot = lastOAuthSnapshot.filter { liveNames.contains($0.key) }
-        for job in jobs where liveNames.contains(job.name) {
-            if let retained = lastOAuthSnapshot[job.name] {
-                snaps[job.name, default: []].append(retained)
-            }
-        }
-        snapshotsByAccount = snaps
-        usageDataAsOf = snaps.values.flatMap { $0 }.compactMap(\.capturedAt).max()
-        usageByAccount = result.byAcc
-        tierCache = result.tiers
+        snapshotsByAccount = result.snaps
         identityByAccount = result.ids
-        // Fold the cost ledger on the MAIN actor (serial — no two refreshes interleave here) from
-        // the LIVE in-memory ledger, falling back to the off-main-loaded baseline only when an
-        // account isn't tracked yet (cold start). Fold the pre-OAuth STATUSLINE snapshots
-        // (`result.snaps`); the synthetic "oauth" capture is excluded by `fold` anyway. Persist
-        // only changed accounts, off-main (fire-and-forget; the in-memory state is the truth).
-        // Live accounts only: an account removed during this refresh's awaits must NOT be
-        // resurrected in memory or have its deleted ledger file re-created.
-        let liveAccounts = Set(config.accounts.map(\.name))
-        var ledgers = usageLedgerByAccount.filter { liveAccounts.contains($0.key) }
-        for job in jobs where liveAccounts.contains(job.name) {
-            var ledger = ledgers[job.name] ?? result.baseLedgers[job.name] ?? UsageCostLedger()
-            if UsageCostLedger.fold(into: &ledger, snapshots: result.snaps[job.name] ?? [], now: now) {
-                // Stamp a monotonic generation (we're on the serialized main actor) and persist
-                // via the serial writer, which skips any out-of-order stale write.
-                ledgerGeneration[job.name, default: 0] += 1
-                let gen = ledgerGeneration[job.name] ?? 0
-                let store = ledgerStore
-                let writer = ledgerWriter
-                let saved = ledger
-                Task { await writer.save(account: job.name, ledger: saved, generation: gen, store: store) }
-            }
-            ledgers[job.name] = ledger
-        }
-        usageLedgerByAccount = ledgers
-        GroveLog.perf.info("usage refresh (\(jobs.count) accts, oauth=\(wantsOAuth)): \(Int(Date().timeIntervalSince(started) * 1000))ms")
-    }
-
-    /// A short, user-facing reason a usage fetch failed. Deliberately actionable: each
-    /// case tells the user whether to wait, to sign in, or that the problem is ours.
-    static func usageErrorText(_ error: Error) -> String {
-        switch error {
-        case OAuthUsageError.noCredentials:   return "No Claude credentials found"
-        case OAuthUsageError.tooManyRequests: return "Rate limited — try again shortly"
-        case OAuthUsageError.backoff:         return "Rate limited — waiting to retry"
-        case OAuthUsageError.malformed:       return "Unexpected response from Anthropic"
-        case OAuthUsageError.http(401), OAuthUsageError.http(403):
-            return "Claude sign-in expired — run `claude` to refresh it"
-        case OAuthUsageError.http(let status): return "Anthropic returned HTTP \(status)"
-        default: return (error as NSError).localizedDescription
-        }
-    }
-
-    /// Builds a synthetic capture from OAuth usage so the dashboard, aggregate, and
-    /// header chip pick up the limits exactly like a statusline capture. The API's
-    /// `utilization` is already a 0–100 used-percentage (verified against the live
-    /// endpoint: e.g. seven_day = 2.0 = 2% used) — we only clamp it. Returns nil
-    /// when neither the 5h nor the 7d window is present.
-    static func oauthSnapshot(accountName: String, usage: OAuthUsage, now: Date) -> UsageSnapshot? {
-        func window(_ w: OAuthWindow?) -> CapturedWindow? {
-            guard let w else { return nil }
-            return CapturedWindow(usedPercentage: min(max(w.utilization, 0), 100), resetsAt: w.resetsAt)
-        }
-        let five = window(usage.fiveHour)
-        let seven = window(usage.sevenDay)
-        let sonnet = window(usage.sevenDaySonnet)
-        let opus = window(usage.sevenDayOpus)
-        let fable = window(usage.sevenDayFable)
-        // Plumb the limits[]-derived model-scoped window. This is the PRIMARY source
-        // for the per-model bar — title and utilization come from the weekly_scoped entry.
-        let scopedWindow: CapturedWindow?
-        if let s = usage.weeklyScoped {
-            scopedWindow = CapturedWindow(usedPercentage: min(max(s.utilization, 0), 100),
-                                          resetsAt: s.resetsAt)
-        } else {
-            scopedWindow = nil
-        }
-        let scopedModel = usage.weeklyScoped?.modelDisplayName
-        guard five != nil || seven != nil || sonnet != nil || opus != nil || fable != nil
-                || scopedWindow != nil else { return nil }
-        // Dated by the FETCH, not by this tick: a 180s cache hit carries the instant of
-        // the original request, so the panel's "Updated …" line can't claim stale numbers
-        // are current. nil (canned test values) falls back to the tick.
-        return UsageSnapshot(accountName: accountName, sessionId: "oauth",
-                             capturedAt: usage.fetchedAt ?? now, cwd: nil,
-                             modelId: nil, modelDisplayName: nil, effort: nil,
-                             contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
-                             fiveHour: five, sevenDay: seven, sevenDaySonnet: sonnet,
-                             sevenDayOpus: opus, sevenDayFable: fable,
-                             weeklyScopedWindow: scopedWindow, weeklyScopedModel: scopedModel)
-    }
-
-    private func tier(for account: AccountConfig) -> String? {
-        if let t = tierOverride?[account.name] { return t }
-        // In-memory only: the canonical organizationRateLimitTier is read from
-        // .claude.json off-main during refreshUsage and cached in tierCache. NEVER
-        // read the file here — tier(for:) runs inside view bodies via aggregateRemaining.
-        return tierCache[account.name]
+        GroveLog.perf.info("capture refresh (\(jobs.count) accts): \(Int(Date().timeIntervalSince(started) * 1000))ms")
     }
 
     private func claudeJSONPath(for account: AccountConfig) -> String {
         let dir = expandTilde(account.configDir)
         return dir == NSHomeDirectory() + "/.claude"
             ? NSHomeDirectory() + "/.claude.json" : dir + "/.claude.json"
-    }
-
-    /// Overall WEEKLY limit for the menu-bar readout: the tier-weighted USED
-    /// percentage across all accounts and its capacity level (drives the colour).
-    /// nil until there's data to show. Same thresholds as the Weekly limit card.
-    public func menuBarWeeklyUsage(now: Date = Date()) -> (percent: Int, level: CapacityLevel)? {
-        let agg = aggregateRemaining(window: .sevenDay, now: now)
-        guard agg.total > 0 else { return nil }
-        let used = (1 - agg.fraction) * 100
-        let remaining = max(0, 1 - used / 100)
-        let level: CapacityLevel = remaining > 0.5 ? .plenty : (remaining > 0.1 ? .tight : .critical)
-        return (Int(used.rounded()), level)
-    }
-
-    /// Every account's resolved limit windows + tier. The SINGLE source the Overall
-    /// column and the menu-bar readout both aggregate from, so the panel and the
-    /// menu bar can never report different numbers for the same window.
-    ///
-    /// Resolution goes through `currentWindow` — the SAME function the per-account
-    /// columns use — so Overall's per-account chip and that account's own bar are the
-    /// same number by construction. They diverged while this path had its own
-    /// statusline-preferring resolver. An account whose statusline lacks rate_limits
-    /// still contributes from OAuth; only a window absent from every capture drops out.
-    public func accountLimitInputs(now: Date) -> [AccountLimitInput] {
-        config.accounts.map { account in
-            let snaps = snapshotsByAccount[account.name] ?? []
-            let scoped = modelScopedWindow(latestModelId: resolveLatestModelId(snaps),
-                                           snapshots: snaps, now: now)
-            return AccountLimitInput(
-                account: account.name,
-                tier: tier(for: account),
-                fiveHour: currentWindow(snaps, Self.pick(.fiveHour), now: now),
-                weekly: currentWindow(snaps, Self.pick(.sevenDay), now: now),
-                weeklySonnet: currentWindow(snaps, Self.pick(.sevenDaySonnet), now: now),
-                scopedModel: scoped?.model,
-                scopedWindow: scoped?.window)
-        }
-    }
-
-    /// Aggregate remaining capacity for a window across accounts (spec §C.3): each
-    /// account weighted by tier, combined with its most-recent capture's used%.
-    public func aggregateRemaining(window: LimitWindow, now: Date) -> RateLimitModel.Aggregate {
-        let accounts: [RateLimitModel.AccountWindow] = accountLimitInputs(now: now).compactMap { input in
-            let captured: CapturedWindow?
-            switch window {
-            case .fiveHour:       captured = input.fiveHour
-            case .sevenDay:       captured = input.weekly
-            case .sevenDaySonnet: captured = input.weeklySonnet
-            }
-            guard let used = captured?.usedPercentage else { return nil }
-            return RateLimitModel.AccountWindow(tier: input.tier, usedPercentage: used)
-        }
-        return RateLimitModel.aggregateRemaining(accounts)
-    }
-
-    /// Summing principle for windows that reset at DIFFERENT times: the remaining
-    /// capacity is the tier-weighted sum above (how much headroom you have RIGHT
-    /// NOW across accounts); the reset shown is the SOONEST upcoming one — the next
-    /// moment any account's window refreshes and headroom returns. Returns that
-    /// instant, or nil when no account has a future reset on record.
-    public func aggregateReset(window: LimitWindow, now: Date) -> Date? {
-        let windows: [CapturedWindow] = config.accounts.compactMap { account in
-            let snaps = snapshotsByAccount[account.name] ?? []
-            // Same statusline-first, OAuth-fallback resolution as aggregateRemaining
-            // (FIX I2) so the soonest reset spans EVERY account's windows.
-            return currentWindow(snaps, Self.pick(window), now: now)
-        }
-        return soonestReset(windows, now: now).flatMap(parseISODate)
     }
 
     /// Opens the account's config dir in Finder (`open <configDir>`). Snapshot-safe
@@ -1640,22 +1300,6 @@ extension AppState {
     /// Built fresh from the resolved dir (a value type that just holds the URL). The
     /// scanner + cache that must persist across ticks live on `self`, not here.
     private var statsStore: CodeStatsStore { CodeStatsStore(dir: statsStoreDir) }
-
-    /// The directory holding per-account usage-cost ledger files. Production:
-    /// ~/Library/Application Support/Grove/usageledger; tests inject usageLedgerStoreDirOverride.
-    private var usageLedgerStoreDir: URL {
-        if let override = usageLedgerStoreDirOverride { return URL(fileURLWithPath: override) }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Grove/usageledger")
-    }
-    var usageLedgerStore: UsageCostLedgerStore { UsageCostLedgerStore(dir: usageLedgerStoreDir) }
-
-    /// The per-UTC-day cost deltas the chart merges in for one account: ONLY days the ledger has
-    /// actually recorded a delta for (membership = "Grove tracked this day"). Pre-tracking days
-    /// are absent, so the chart keeps their transcript-derived cost; tracked days use the ledger.
-    public func ledgerCostByDay(forAccount name: String) -> [Date: Double] {
-        (usageLedgerByAccount[name] ?? UsageCostLedger()).costByDay
-    }
 
     /// Scans the project's code per-GIT-REPO (GitStatsService), updates the aggregate
     /// `codeStats`, the per-repo `repoStats` breakdown, and overwrites
@@ -1791,45 +1435,5 @@ extension AppState {
         let path = project.path
         let scanner = statsScanner
         return await Task.detached(priority: .utility) { scanner.directoryTree(projectPath: path) }.value
-    }
-
-    /// Builds the "Tokens per 100 net lines" cumulative series for a project (Phase 5D).
-    ///
-    /// Resolves the project's canonical cwd roots (its `path` and `workspacesRoot` plus
-    /// any cwds seen in `codeStatsHistory`), collects `dailyByCwd` from every account in
-    /// `usageByAccount`, and delegates the join + cumulative math to the pure presentation
-    /// function `tokensPerNetLine`. Returns `[]` when the project is unknown.
-    public func tokensPerLineSeries(projectID: UUID) -> [RatioPoint] {
-        guard let project = config.projects.first(where: { $0.id == projectID }) else { return [] }
-
-        // Canonical cwd roots for this project.
-        var projectCwds: [String] = []
-        if !project.path.isEmpty {
-            projectCwds.append(expandTilde(project.path))
-        }
-        if let root = project.workspacesRoot, !root.isEmpty {
-            projectCwds.append(expandTilde(root))
-        }
-        // Also include any cwds seen in the code-stats history (worktrees may differ from path).
-        if let history = codeStatsHistory[projectID] {
-            for point in history {
-                // codeStatsHistory points don't carry cwd; the project roots above cover it.
-                // This no-op loop is left as extension point for future per-worktree series.
-                _ = point
-            }
-        }
-
-        // Gather dailyByCwd from every account.
-        let tokensByAccount: [[String: [DayUsage]]] = config.accounts.compactMap { account in
-            usageByAccount[account.name]?.dailyByCwd
-        }
-
-        let history = codeStatsHistory[projectID] ?? []
-        return tokensPerNetLine(
-            tokenDailyByCwdPerAccount: tokensByAccount,
-            projectCwds: projectCwds,
-            codeHistory: history,
-            now: Date()
-        )
     }
 }

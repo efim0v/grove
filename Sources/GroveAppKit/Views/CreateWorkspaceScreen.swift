@@ -73,7 +73,6 @@ struct CreateWorkspaceScreen: View {
 
     private var header: some View {
         ScopeHeader(title: "New Workspace", backDisabled: phase == .running,
-                    aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()),
                     onBack: onClose)
     }
 

@@ -23,7 +23,7 @@ final class SnapshotModeTests: XCTestCase {
 
     /// Renders all scenes through the real ImageRenderer pipeline and asserts each
     /// PNG is produced and non-trivial. This drives every routed screen's body
-    /// (RootShell/ProjectsTab/DashboardScreen/ProjectScreen tabs/AccountsScreen…)
+    /// (RootShell/ProjectsTab/ProjectScreen tabs/AccountsScreen…)
     /// so a layout that crashes or renders blank is caught in CI, not by eye.
     @MainActor
     func testAllScenesRenderToNonEmptyPNGs() throws {
@@ -41,9 +41,9 @@ final class SnapshotModeTests: XCTestCase {
 
     func testScenesHaveContractFileNames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.allCases.map(\.fileName),
-                       ["projects.png", "charts.png", "root-workspaces.png", "workspaces-expanded.png",
+                       ["projects.png", "root-workspaces.png", "workspaces-expanded.png",
                         "create-sheet.png", "graph.png", "stats.png", "sessions.png", "accounts.png",
-                        "accounts-usage.png", "settings.png", "stats-settings.png", "error-banner.png"])
+                        "settings.png", "stats-settings.png", "error-banner.png"])
     }
 
     /// Every scene is RootView with a ROUTE (the panel is a state machine of
@@ -57,8 +57,6 @@ final class SnapshotModeTests: XCTestCase {
         let projectID = try XCTUnwrap(state(.projects).selectedProjectID)
 
         XCTAssertEqual(state(.projects).route, .projects)
-        XCTAssertEqual(state(.charts).route, .projects)   // merged window (projects | charts)
-        XCTAssertTrue(state(.charts).showCharts)          // charts section shown in the merge
         XCTAssertEqual(state(.rootWorkspaces).route, .project(projectID))
         XCTAssertEqual(state(.workspacesExpanded).route, .project(projectID))
         XCTAssertEqual(state(.graph).route, .project(projectID))
@@ -68,12 +66,7 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertEqual(state(.sessions).route, .project(projectID))
         XCTAssertEqual(state(.sessions).selectedTab, .sessions)
         XCTAssertEqual(state(.accounts).route, .accounts)
-        // accounts-usage routes to .accounts too, but the fixture carries the
-        // usage data so the AccountsScreen renders bars/cards/tables.
-        let usage = state(.accountsUsage)
-        XCTAssertEqual(usage.route, .accounts)
-        XCTAssertFalse(usage.usageByAccount.isEmpty, "accounts-usage must carry usage analytics")
-        XCTAssertFalse(usage.snapshotsByAccount.isEmpty, "accounts-usage must carry capture snapshots")
+        XCTAssertFalse(state(.accounts).snapshotsByAccount.isEmpty, "accounts must carry capture snapshots")
         XCTAssertEqual(state(.settings).route, .projectSettings(projectID))
 
         // stats-settings routes to the new top-level page; the fixture seeds the
@@ -101,7 +94,6 @@ final class SnapshotModeTests: XCTestCase {
     /// Canvas sizes mirror RootView's adaptive per-route panel frames.
     func testSceneSizesFollowTheAdaptivePanelFrames() {
         XCTAssertEqual(SnapshotMode.SnapshotScene.projects.size, CGSize(width: 460, height: 520))
-        XCTAssertEqual(SnapshotMode.SnapshotScene.charts.size, CGSize(width: 774, height: 800))
         XCTAssertEqual(SnapshotMode.SnapshotScene.rootWorkspaces.size, CGSize(width: 600, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.workspacesExpanded.size, CGSize(width: 600, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.graph.size, CGSize(width: 600, height: 540))
@@ -109,8 +101,6 @@ final class SnapshotModeTests: XCTestCase {
         XCTAssertEqual(SnapshotMode.SnapshotScene.sessions.size, CGSize(width: 600, height: 540))
         XCTAssertEqual(SnapshotMode.SnapshotScene.createSheet.size, CGSize(width: 540, height: 560))
         XCTAssertEqual(SnapshotMode.SnapshotScene.accounts.size, CGSize(width: 560, height: 480))
-        // accounts-usage shares the accounts adaptive panel frame.
-        XCTAssertEqual(SnapshotMode.SnapshotScene.accountsUsage.size, CGSize(width: 560, height: 480))
         XCTAssertEqual(SnapshotMode.SnapshotScene.settings.size, CGSize(width: 560, height: 560))
         XCTAssertEqual(SnapshotMode.SnapshotScene.statsSettings.size, CGSize(width: 560, height: 560))
         // projects frame + vertical allowance for the banner stacked above it.

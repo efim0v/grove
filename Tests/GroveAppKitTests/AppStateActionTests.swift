@@ -23,7 +23,6 @@ final class AppStateActionTests: XCTestCase {
         state.cmuxOverride = stubbedCmux(runner)
         // Fail-safe: default the canonical store to a temp dir, NEVER $HOME/.claude.
         state.canonicalDirOverride = root.appendingPathComponent("canonical-default").path
-        state.usageLedgerStoreDirOverride = root.appendingPathComponent("ledger").path
         return state
     }
 
@@ -793,30 +792,8 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertEqual(line?["command"] as? String, original)
     }
 
-    // MARK: - aggregate remaining capacity
-
-    @MainActor
-    func testAggregateRemainingWeightsAccountsByTierFromCaptureSnapshots() async throws {
-        let state = makeState(runner: ScriptedRunner(responses: [:]))
-        // Two accounts with tiers + a most-recent 5h capture each.
-        state.config = GroveConfig(
-            version: 1, workspacesRootTemplate: "~/Workspaces/{project}", projects: [],
-            accounts: [AccountConfig(name: "a", configDir: "/tmp/a"),
-                       AccountConfig(name: "b", configDir: "/tmp/b")])
-        // Inject tiers + capture snapshots directly (no disk).
-        state.tierOverride = ["a": "default_claude_max_20x", "b": "default_claude_max_5x"]
-        state.snapshotsByAccount = [
-            "a": [makeSnapshot(session: "sa", fiveHourUsed: 50)],
-            "b": [makeSnapshot(session: "sb", fiveHourUsed: 0)],
-        ]
-        let agg = state.aggregateRemaining(window: .fiveHour, now: Date())
-        // 20*(1-0.5) + 5*(1-0) = 15 of 25.
-        XCTAssertEqual(agg.remaining, 15, accuracy: 1e-9)
-        XCTAssertEqual(agg.total, 25, accuracy: 1e-9)
-    }
-
-    /// refresh() must populate usage on the Accounts route / menu-bar badge even
-    /// when NO project is selected — refreshUsage runs BEFORE the
+    /// refresh() must populate the captures on the Accounts route even when NO
+    /// project is selected — refreshUsage runs BEFORE the
     /// `guard let project = selectedProject` early-return (it iterates accounts).
     @MainActor
     func testRefreshPopulatesUsageWithNoSelectedProject() async throws {
@@ -845,14 +822,5 @@ final class AppStateActionTests: XCTestCase {
         // Usage populated despite no selected project (refreshUsage ran first).
         XCTAssertNotNil(state.snapshotsByAccount["work"])
         XCTAssertEqual(state.snapshotsByAccount["work"]?.first?.fiveHour?.usedPercentage, 40)
-        XCTAssertNotNil(state.usageByAccount["work"])
-    }
-
-    private func makeSnapshot(session: String, fiveHourUsed: Double) -> UsageSnapshot {
-        UsageSnapshot(accountName: "", sessionId: session, capturedAt: Date(), cwd: nil,
-                      modelId: nil, modelDisplayName: nil, effort: nil,
-                      contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
-                      fiveHour: CapturedWindow(usedPercentage: fiveHourUsed, resetsAt: nil),
-                      sevenDay: nil)
     }
 }

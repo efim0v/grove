@@ -26,7 +26,6 @@ final class AppStateAdoptSessionTests: XCTestCase {
         let state = AppState(configStore: ConfigStore(url: configURL))
         state.canonicalDirOverride = root.appendingPathComponent("canonical").path
         state.cmuxHookFile = root.appendingPathComponent("no-hook.json").path
-        state.usageLedgerStoreDirOverride = root.appendingPathComponent("ledger").path
         return state
     }
 

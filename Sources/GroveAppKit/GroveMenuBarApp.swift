@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import Combine
 
 /// Menu-bar entry point. A plain AppKit `NSStatusItem` + a borderless `NSPanel`
 /// hosting the SwiftUI `RootView` — NOT SwiftUI's `MenuBarExtra` and NOT an
@@ -61,10 +60,8 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
     /// (Liquid Glass ⇄ Visual Effect) without a relaunch when the Settings toggle flips.
     private var substrateObserver: (any NSObjectProtocol)?
 
-    /// Keeps the menu-bar % readout in sync with usage changes + a background refresh
-    /// so it stays current while the panel is closed.
-    private var usageCancellable: AnyCancellable?
-    private var menuReadoutTimer: Timer?
+    /// Background cadence for the transcript safety-net while the panel is closed.
+    private var backgroundTimer: Timer?
 
     /// Global mouse monitor installed while the panel is open so a click anywhere
     /// OUTSIDE our app (desktop, another app, the menu bar) dismisses it. A global
@@ -90,17 +87,12 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         updateMenuBarReadout()
         GroveLog.menubar.info("launched; statusItem.isVisible=\(item.isVisible, privacy: .public)")
 
-        // Keep the menu-bar weekly-% readout live: update it whenever usage changes,
-        // and refresh usage on a background cadence so it's current with the panel
-        // closed (the in-panel 15s loop only runs while the panel is open).
-        usageCancellable = state.$usageByAccount
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in Task { @MainActor in self?.updateMenuBarReadout() } }
-        // Phase 5A: ensure every configured account has the grove statusline wrapper so
-        // its usage is captured (the icloud "no usage" fix), before the first read.
+        // Every configured account gets the grove statusline wrapper: it is what
+        // writes the per-session captures (model, context, cost) the session views
+        // show — and the rate-limit captures Brow reads.
         state.reconcileMonitoring()
         Task { @MainActor in await state.refreshUsage(now: Date()) }
-        menuReadoutTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+        backgroundTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
             // Skip while the panel is open — RootView's 15s loop already refreshes, so
             // the two cadences never overlap (which could land out-of-order and
             // overwrite newer data).
@@ -167,29 +159,14 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         return true
     }
 
-    /// Renders the menu-bar item as the OVERALL WEEKLY limit: the used % coloured by
-    /// severity — adaptive (white on a dark bar) when there's plenty, yellow as it
-    /// approaches the cap, red when nearly there. A plain text readout instead of an
-    /// icon (the SF-symbol icon failed to render reliably in the menu bar; text is
-    /// both robust and more useful at a glance). Shows "–" until the first usage load.
+    /// The menu-bar item is a plain text glyph (an SF-symbol image failed to render
+    /// reliably in the menu bar). The weekly-limit percentage that used to sit here
+    /// lives in Brow's notch readouts now.
     private func updateMenuBarReadout() {
         guard let button = statusItem?.button else { return }
         button.image = nil
-        let font = NSFont.menuBarFont(ofSize: 0)
-        if let u = state.menuBarWeeklyUsage() {
-            let color: NSColor
-            switch u.level {
-            case .critical: color = .systemRed
-            case .tight:    color = .systemYellow
-            case .plenty:   color = .labelColor
-            case .noData:   color = .secondaryLabelColor
-            }
-            button.attributedTitle = NSAttributedString(
-                string: "\(u.percent)%", attributes: [.foregroundColor: color, .font: font])
-        } else {
-            button.attributedTitle = NSAttributedString(
-                string: "–", attributes: [.foregroundColor: NSColor.secondaryLabelColor, .font: font])
-        }
+        button.attributedTitle = NSAttributedString(
+            string: "⌘G", attributes: [.foregroundColor: NSColor.labelColor, .font: NSFont.menuBarFont(ofSize: 0)])
     }
 
     // MARK: - Panel lifecycle
@@ -199,12 +176,10 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // NOT .nonactivatingPanel: that flag blocks the panel from becoming key, so
         // the search field would never get the keyboard. Plain .borderless +
         // GrovePanel.canBecomeKey + NSApp.activate gives it focus.
-        // Initial rect sized for the default (showCharts == true) combined layout —
-        // projects 460 + 8px gap + charts BLOCK (290 + 8px padding ×2 = 306) = 774 —
-        // so the first frame doesn't flash at the projects-only width before KVO
-        // corrects it. Height is the charts-driven 600; the first
-        // preferredContentSize callback corrects both.
-        let p = GrovePanel(contentRect: NSRect(x: 0, y: 0, width: 774, height: 600),
+        // Initial rect sized for the projects route (460 wide) so the first frame
+        // doesn't flash at a wrong width before KVO corrects it; the first
+        // preferredContentSize callback corrects both dimensions.
+        let p = GrovePanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 520),
                            styleMask: [.borderless],
                            backing: .buffered, defer: false)
         p.level = .floating                  // above normal windows, but NOT forced over fullscreen apps

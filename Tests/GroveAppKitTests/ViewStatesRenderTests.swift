@@ -46,44 +46,17 @@ final class ViewStatesRenderTests: XCTestCase {
         render(s, projectSize)
     }
 
-    func testChartsSideWindowWithNoAccounts() {
-        let s = SnapshotMode.fixtureState()
-        s.config.accounts = []
-        s.usageByAccount = [:]
-        s.snapshotsByAccount = [:]
-        // The charts now render in the standalone side window, not the main shell.
-        let view = ChartsSideContent(state: s)
-            .frame(width: 290, height: 560)
+    /// Exercises the merged window root (the projects section under the window's
+    /// glass). Forcing cgImage catches a crashing/blank body.
+    func testMergedRootRenders() {
+        let state = SnapshotMode.fixtureState()
+        let view = MergedRootView(state: state)
+            .frame(width: 460, height: 520)
             .environment(\.colorScheme, .dark)
             .environment(\.isSnapshotRender, true)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 1
         _ = renderer.cgImage
-    }
-
-    /// Exercises the merged window root: the expanded HStack (projects + the
-    /// gap-separated charts BLOCK, no divider) and the collapsed projects-only path
-    /// (showCharts=false). Forcing cgImage on each catches a crashing/blank body.
-    func testMergedRootRendersExpandedAndCollapsed() {
-        let shown = SnapshotMode.fixtureState()
-        shown.showCharts = true
-        let expanded = MergedRootView(state: shown)
-            .frame(width: 774, height: 800)
-            .environment(\.colorScheme, .dark)
-            .environment(\.isSnapshotRender, true)
-        let r1 = ImageRenderer(content: expanded)
-        r1.scale = 1
-        _ = r1.cgImage
-
-        let collapsedState = SnapshotMode.fixtureState()
-        collapsedState.showCharts = false
-        let collapsed = MergedRootView(state: collapsedState)
-            .frame(width: 460, height: 520)
-            .environment(\.colorScheme, .dark)
-            .environment(\.isSnapshotRender, true)
-        let r2 = ImageRenderer(content: collapsed)
-        r2.scale = 1
-        _ = r2.cgImage
     }
 
     func testNonCmuxErrorBannerBranch() {

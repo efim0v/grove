@@ -22,7 +22,6 @@ struct WorkspaceRowCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            usageCaption
             if isExpanded {
                 Divider()
                 repoChips
@@ -103,48 +102,6 @@ struct WorkspaceRowCard: View {
         .labelStyle(.titleAndIcon)
     }
 
-    // MARK: - Usage caption (aggregate tokens + cost + active-account chips)
-
-    /// Per-row caption summarizing this workspace's aggregate transcript usage
-    /// across accounts (Task 11). Pure SwiftUI text/chips — snapshot-safe with no
-    /// gating. Omitted entirely when there's no usage yet (empty `usageByAccount`
-    /// pre-refresh / snapshot without fixture data => zero tokens => render
-    /// nothing, so existing PNGs don't regress).
-    @ViewBuilder
-    private var usageCaption: some View {
-        let usage = workspaceUsage(workspace: workspace,
-                                   analyticsByAccount: state.usageByAccount)
-        if usage.inputTokens + usage.outputTokens > 0 {
-            HStack(spacing: 8) {
-                Label("\(compactTokens(usage.inputTokens + usage.outputTokens)) tok",
-                      systemImage: "number")
-                    .foregroundStyle(.secondary)
-                Text(formatUSD(usage.cost))
-                    .foregroundStyle(.secondary)
-                ForEach(usage.activeAccounts, id: \.self) { account in
-                    Text(account)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(.white.opacity(0.06), in: Capsule())
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer(minLength: 0)
-            }
-            .font(.caption2)
-            .labelStyle(.titleAndIcon)
-        }
-    }
-
-    private func compactTokens(_ tokens: Int) -> String {
-        if tokens >= 1_000_000 { return String(format: "%.1fM", Double(tokens) / 1_000_000) }
-        if tokens >= 1_000 { return String(format: "%.1fk", Double(tokens) / 1_000) }
-        return String(tokens)
-    }
-
-    private func formatUSD(_ amount: Double) -> String {
-        String(format: "$%.2f", amount)
-    }
-
     // MARK: - Repo chips (branch, start point, +ahead/−behind, dirty; path as tooltip)
 
     private var repoChips: some View {
@@ -211,7 +168,7 @@ struct WorkspaceRowCard: View {
     }
 
     // MARK: - Sessions — a distinct, detailed sub-table (its OWN entity, set apart
-    // from the repos): status, title, account · model · tokens · cost, age, Go/Resume.
+    // from the repos): status, title, account · model, age, Go/Resume.
 
     private var sessionRows: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -242,8 +199,7 @@ struct WorkspaceRowCard: View {
     }
 
     private func sessionDetailRow(_ session: ClaudeSession) -> some View {
-        let usage = state.usageByAccount[session.accountName]?.sessions[session.id]
-        let model = usage?.modelBreakdown.max { $0.value < $1.value }?.key
+        let model = session.model
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Circle().fill(activityColor(for: session)).frame(width: 7, height: 7)
@@ -291,11 +247,7 @@ struct WorkspaceRowCard: View {
             .font(.caption)
             HStack(spacing: 8) {
                 Text(session.accountName).foregroundStyle(.tertiary)
-                if let usage {
-                    Text("\(compactTokens(usage.inputTokens + usage.outputTokens)) tok")
-                    Text(formatUSD(usage.cost))
-                }
-                if let model { Text(model).monospaced() }
+                if let model, !model.isEmpty { Text(shortModelName(model)).monospaced() }
                 Spacer(minLength: 0)
             }
             .font(.caption2)

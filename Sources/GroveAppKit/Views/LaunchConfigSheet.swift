@@ -31,7 +31,7 @@ struct LaunchConfigSheet: View {
             row("Model") {
                 Picker("", selection: $request.model) {
                     Text("(default)").tag(String?.none)
-                    ForEach(ModelPricing.knownModels, id: \.self) { Text($0).tag(String?.some($0)) }
+                    ForEach(ModelCatalog.knownModels, id: \.self) { Text($0).tag(String?.some($0)) }
                 }.pickerStyle(.menu).labelsHidden().fixedSize()
             }
             row("Effort") {

@@ -80,14 +80,11 @@ struct ProjectScreen: View {
     }
 
     /// Row 2: the tab strip on its own row (fits when the panel is narrow), with
-    /// the 5h aggregate chip — a project-scope status badge — and the ⌘R rescan
-    /// button trailing (a project-scope action, kept out of row 1 per spec).
+    /// the ⌘R rescan button trailing (a project-scope action, kept out of row 1 per spec).
     private var row2: some View {
         HStack(spacing: 10) {
             tabStrip
             Spacer()
-            AggregateChip(window: "5h",
-                          aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()))
             Button {
                 Task { await state.refresh() }
             } label: {

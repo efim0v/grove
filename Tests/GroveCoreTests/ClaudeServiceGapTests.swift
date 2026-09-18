@@ -17,18 +17,16 @@ final class ClaudeServiceGapTests: XCTestCase {
         XCTAssertEqual(id.organization, "Acme")
         XCTAssertEqual(id.tier, "max_5x")
         XCTAssertEqual(id.organizationRateLimitTier, "default_claude_max_5x")
-        XCTAssertEqual(claude.organizationRateLimitTier(account: account), "default_claude_max_5x")
     }
 
-    func testOrganizationRateLimitTierNilWhenAbsentOrMissing() throws {
+    func testIdentityTierNilWhenAbsentOrMissing() throws {
         try #"{"oauthAccount":{"emailAddress":"a@b.com"}}"#
             .write(to: dir.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
         let account = AccountConfig(name: "work", configDir: dir.path)
-        XCTAssertNil(claude.organizationRateLimitTier(account: account))
         XCTAssertNil(claude.identity(account: account)?.organizationRateLimitTier)
         // No file at all -> nil.
         let empty = AccountConfig(name: "none", configDir: dir.appendingPathComponent("nope").path)
-        XCTAssertNil(claude.organizationRateLimitTier(account: empty))
+        XCTAssertNil(claude.identity(account: empty))
     }
 
     func testWithProcessValidatorTogglesLiveProcesses() throws {

@@ -64,7 +64,6 @@ struct ProjectSettingsScreen: View {
 
     private var header: some View {
         ScopeHeader(title: "Settings", subtitle: project?.name,
-                    aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()),
                     onBack: { state.goBack() })
     }
 
@@ -210,7 +209,7 @@ struct ProjectSettingsScreen: View {
                     get: { currentProject(project).defaultModel },
                     set: { state.setProjectModel(projectID: project.id, model: $0) })) {
                     Text("(default)").tag(String?.none)
-                    ForEach(ModelPricing.knownModels, id: \.self) { m in
+                    ForEach(ModelCatalog.knownModels, id: \.self) { m in
                         Text(m).tag(String?.some(m))
                     }
                 }

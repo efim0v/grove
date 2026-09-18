@@ -3,8 +3,8 @@ import SwiftUI
 @testable import GroveAppKit
 import GroveCore
 
-/// Drives the LIVE render paths the snapshot scenes skip: Swift Charts marks
-/// (BarMark/LineMark/AreaMark), the ProgressBar, and the .globalSettings screen.
+/// Drives the LIVE render paths the snapshot scenes skip: real controls across every
+/// routed screen and the .globalSettings screen.
 /// Forcing `ImageRenderer.cgImage` evaluates every body, so a crash or a broken
 /// chart expression is caught in CI even though the offscreen pixels are blank.
 @MainActor
@@ -33,29 +33,6 @@ final class DashboardRenderTests: XCTestCase {
             renderer.scale = 1
             _ = renderer.cgImage
         }
-    }
-
-    func testDashboardColumnRendersLiveChartPaths() {
-        let state = SnapshotMode.fixtureState()
-        let now = Date()
-        let overall = overallDashboard(
-            analyticsByAccount: state.usageByAccount,
-            snapshotsByAccount: state.snapshotsByAccount,
-            limitInputs: state.accountLimitInputs(now: now),
-            now: now)
-        // isSnapshotRender:false -> the real Chart {} expressions execute.
-        render(DashboardColumnView(column: overall, isSnapshotRender: false))
-        // And the whole tab (horizontal/vertical ScrollView live path).
-        render(DashboardScreen(state: state), height: 900)
-    }
-
-    func testDashboardColumnHandlesEmptyData() {
-        let empty = RateLimitModel.Aggregate(remaining: 0, total: 0)
-        let column = overallDashboard(analyticsByAccount: [:], snapshotsByAccount: [:],
-                                      limitInputs: [], now: Date())
-        // Exercises the "no data" / "not enough captures" / empty-bars branches.
-        render(DashboardColumnView(column: column, isSnapshotRender: false))
-        render(DashboardColumnView(column: column, isSnapshotRender: true))
     }
 
     func testGlobalSettingsScreenRenders() {

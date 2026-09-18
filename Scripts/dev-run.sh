@@ -2,18 +2,17 @@
 # Builds and runs the dev binary SIGNED with the stable development identity.
 # Usage: Scripts/dev-run.sh [--release] [-- <args passed to Grove>]
 #
-# Why this exists: Grove reads Claude Code's OAuth credentials from the login
-# keychain. Granting "Always Allow" records a trusted-application entry on the
-# keychain item, and how that entry is keyed depends on how the binary is signed:
+# Why this exists: macOS keys every per-app consent (Automation/Apple Events for
+# cmux, and any future TCC grant) by how the binary is signed:
 #
 #   ad-hoc (what SwiftPM produces)  -> keyed by cdhash  -> DIES on every rebuild
 #   stable identity                 -> keyed by identifier + leaf certificate
 #
-# So an ad-hoc dev binary re-prompts for the login password after every `swift
-# build`, leaving a trail of dead ACL entries (the real items here had nine).
-# Signing with the same identity AND the same identifier as dist/Grove.app makes
-# the dev binary satisfy the requirement the app bundle is already trusted under,
-# so the grant survives rebuilds — and may not need to be given again at all.
+# Signing the dev binary with the same identity AND the same identifier as
+# dist/Grove.app makes it satisfy the requirement the app bundle is already
+# trusted under, so a consent survives rebuilds. (Grove no longer reads Claude
+# Code's Keychain credentials — Brow does — so the login-Keychain prompts that
+# first motivated this script are gone either way.)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

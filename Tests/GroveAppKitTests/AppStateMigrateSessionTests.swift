@@ -25,7 +25,6 @@ final class AppStateMigrateSessionTests: XCTestCase {
         // Always override canonicalDir so no real ~/.claude is touched.
         state.canonicalDirOverride = root.appendingPathComponent("canonical").path
         state.cmuxHookFile = root.appendingPathComponent("no-hook.json").path
-        state.usageLedgerStoreDirOverride = root.appendingPathComponent("ledger").path
         // migrateSession now auto-installs the statusline wrapper (Phase 5A); keep that
         // script write inside a temp dir, never the real ~/Library/Application Support.
         state.statuslineScriptDirOverride = root.appendingPathComponent("statusline-bin").path

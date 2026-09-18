@@ -45,7 +45,6 @@ struct AccountsScreen: View {
 
     private var header: some View {
         ScopeHeader(title: "Accounts",
-                    aggregate: state.aggregateRemaining(window: .fiveHour, now: Date()),
                     onBack: { state.goBack() })
     }
 
@@ -95,8 +94,6 @@ struct AccountsScreen: View {
                 monitorControl(account)
                 rootDirControl(account)
             }
-            limitBars(account)
-            usageTable(account)
             if isExpanded && !usage.entries.isEmpty {
                 Divider()
                 drillDown(usage)
@@ -188,136 +185,6 @@ struct AccountsScreen: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    // MARK: - Limit bars (5h / 7d) from the most-recent capture snapshot
-
-    /// Two limit bars (5-hour, 7-day) sourced from the most-recently captured
-    /// snapshot for this account; a hint to enable Monitoring when none exists.
-    @ViewBuilder
-    private func limitBars(_ account: AccountConfig) -> some View {
-        let snapshots = state.snapshotsByAccount[account.name] ?? []
-        let now = Date()
-        let five = currentWindow(snapshots, { $0.fiveHour }, now: now)
-        let seven = currentWindow(snapshots, { $0.sevenDay }, now: now)
-        if !snapshots.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                if let five { limitBarRow(title: "5h", window: five) }
-                if let seven { limitBarRow(title: "7d", window: seven) }
-                if five == nil && seven == nil {
-                    Text("no rate-limit data in last capture")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.top, 2)
-        } else {
-            Text("no recent capture — enable Monitoring")
-                .font(.caption2).foregroundStyle(.tertiary)
-                .padding(.top, 2)
-        }
-    }
-
-    private func limitBarRow(title: String, window: CapturedWindow) -> some View {
-        let bar = LimitBar(usedPercentage: window.usedPercentage,
-                           resetsAt: window.resetsAt, now: Date())
-        return HStack(spacing: 6) {
-            Text(title)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .frame(width: 22, alignment: .leading)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.secondary.opacity(0.15))
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(barColor(bar.level))
-                        .frame(width: geo.size.width * min(1, max(0, bar.usedPercentage / 100)))
-                }
-            }
-            .frame(height: 6)
-            Text("\(Int(bar.usedPercentage.rounded()))%")
-                .font(.caption2).foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .trailing)
-            if !bar.resetCaption.isEmpty {
-                Text(bar.resetCaption)
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    private func barColor(_ level: CapacityLevel) -> Color {
-        switch level {
-        case .plenty: return Palette.primary
-        case .tight: return Palette.mid
-        case .critical: return Palette.negative
-        case .noData: return Palette.neutral
-        }
-    }
-
-    // MARK: - today / month token+cost table + model breakdown
-
-    /// today / this-month token+cost table plus a model-share breakdown, sourced
-    /// from UsageAnalytics. Renders nothing until the first usage refresh populates
-    /// `usageByAccount`.
-    @ViewBuilder
-    private func usageTable(_ account: AccountConfig) -> some View {
-        if let analytics = state.usageByAccount[account.name] {
-            VStack(alignment: .leading, spacing: 3) {
-                usageRow(label: "today", totals: analytics.today)
-                usageRow(label: "month", totals: analytics.thisMonth)
-                modelBreakdownRow(analytics)
-                if !analytics.unpricedModels.isEmpty {
-                    Text("unpriced: \(analytics.unpricedModels.joined(separator: ", "))")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.top, 2)
-        }
-    }
-
-    private func usageRow(label: String, totals: UsageTotals) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-            Text("\(compactTokens(totals.inputTokens + totals.outputTokens)) tok")
-                .font(.caption2).foregroundStyle(.secondary)
-            Text(formatUSD(totals.cost))
-                .font(.caption2).foregroundStyle(.secondary)
-            Spacer()
-        }
-    }
-
-    private func modelBreakdownRow(_ analytics: AccountUsageAnalytics) -> some View {
-        // Account-wide token share per model: sum every session's per-model totals.
-        var tokensByModel: [String: Int] = [:]
-        for session in analytics.sessions.values {
-            for (model, tokens) in session.modelBreakdown {
-                tokensByModel[model, default: 0] += tokens
-            }
-        }
-        let percentages = modelBreakdownPercentages(tokensByModel)
-        return Group {
-            if !percentages.isEmpty {
-                Text(percentages.sorted { $0.value > $1.value }
-                        .map { "\($0.key) \(Int($0.value.rounded()))%" }
-                        .joined(separator: " · "))
-                    .font(.caption2).foregroundStyle(.tertiary)
-            } else {
-                EmptyView()
-            }
-        }
-    }
-
-    private func compactTokens(_ tokens: Int) -> String {
-        if tokens >= 1_000_000 { return String(format: "%.1fM", Double(tokens) / 1_000_000) }
-        if tokens >= 1_000 { return String(format: "%.1fk", Double(tokens) / 1_000) }
-        return String(tokens)
-    }
-
-    private func formatUSD(_ amount: Double) -> String {
-        String(format: "$%.2f", amount)
-    }
-
     @ViewBuilder
     private func usageSummary(_ usage: AccountUsage, account: AccountConfig) -> some View {
         HStack(spacing: 8) {
@@ -397,19 +264,18 @@ struct AccountsScreen: View {
     // MARK: - Per-session cards (spec §C.5/C.6)
 
     /// One session's resolved view-model: the ClaudeSession (for Resume/Relaunch),
-    /// its UsageAnalytics rollup (tokens/cost/model breakdown), the latest capture
-    /// snapshot (context %, effort, captured model) and whether a process is live.
+    /// the latest statusline capture (context %, effort, captured model) and whether
+    /// a process is live.
     private struct SessionCardModel: Identifiable {
         let session: ClaudeSession
-        let usage: SessionUsage?
         let capture: UsageSnapshot?
         let isLive: Bool
         var id: String { session.id }
     }
 
     /// All of this account's sessions across every loaded snapshot, deduped by
-    /// sessionId (most-recent activity first), each joined to its analytics rollup,
-    /// latest capture, and live-process status.
+    /// sessionId (most-recent activity first), each joined to its latest capture
+    /// and live-process status.
     private func sessionCardModels(_ account: AccountConfig) -> [SessionCardModel] {
         var byId: [String: ClaudeSession] = [:]
         var liveIds: Set<String> = []
@@ -423,7 +289,6 @@ struct AccountsScreen: View {
                 for p in loose.liveProcesses where p.accountName == account.name { liveIds.insert(p.sessionId) }
             }
         }
-        let analytics = state.usageByAccount[account.name]
         // Latest capture per sessionId (snapshotsByAccount may hold several over time).
         var latestCapture: [String: UsageSnapshot] = [:]
         for snap in state.snapshotsByAccount[account.name] ?? [] {
@@ -431,8 +296,7 @@ struct AccountsScreen: View {
             if (snap.capturedAt ?? .distantPast) >= existing { latestCapture[snap.sessionId] = snap }
         }
         return byId.values
-            .map { SessionCardModel(session: $0, usage: analytics?.sessions[$0.id],
-                                    capture: latestCapture[$0.id], isLive: liveIds.contains($0.id)) }
+            .map { SessionCardModel(session: $0, capture: latestCapture[$0.id], isLive: liveIds.contains($0.id)) }
             .sorted { $0.session.lastActivity > $1.session.lastActivity }
     }
 
@@ -458,8 +322,7 @@ struct AccountsScreen: View {
     private func sessionCard(_ model: SessionCardModel, account: AccountConfig) -> some View {
         let session = model.session
         let project = state.owningProject(forCwd: session.cwd)
-        let displayModel = model.capture?.modelDisplayName ?? model.capture?.modelId
-            ?? dominantModel(model.usage)
+        let displayModel = model.capture?.modelDisplayName ?? model.capture?.modelId ?? model.session.model
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 if model.isLive {
@@ -482,12 +345,6 @@ struct AccountsScreen: View {
 
     private func sessionStatsRow(_ model: SessionCardModel, displayModel: String?) -> some View {
         HStack(spacing: 8) {
-            if let usage = model.usage {
-                Text("in \(compactTokens(usage.inputTokens)) · out \(compactTokens(usage.outputTokens))")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Text(formatUSD(usage.cost))
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
             if let pct = model.capture?.contextUsedPercentage {
                 Text("ctx \(Int(pct.rounded()))%")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -545,7 +402,7 @@ struct AccountsScreen: View {
     private func modelPicker(project: ProjectConfig) -> some View {
         Picker("", selection: modelBinding(project)) {
             Text("(default)").tag(String?.none)
-            ForEach(ModelPricing.knownModels, id: \.self) { m in
+            ForEach(ModelCatalog.knownModels, id: \.self) { m in
                 Text(m).tag(String?.some(m))
             }
         }
@@ -574,14 +431,8 @@ struct AccountsScreen: View {
             set: { state.setProjectEffort(projectID: project.id, effort: $0) })
     }
 
-    /// The session's most-used model id (token share), as a fallback when no
-    /// capture snapshot recorded a display name.
-    private func dominantModel(_ usage: SessionUsage?) -> String? {
-        usage?.modelBreakdown.max { $0.value < $1.value }?.key
-    }
-
     private func relativeActivity(_ model: SessionCardModel) -> String {
-        let date = model.capture?.capturedAt ?? model.usage?.lastActivity ?? model.session.lastActivity
+        let date = model.capture?.capturedAt ?? model.session.lastActivity
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: Date())

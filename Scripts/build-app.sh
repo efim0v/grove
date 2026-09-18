@@ -20,8 +20,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
 	<!-- macOS 26.4 quirk: if this identity's menu-bar layout cache gets corrupted
 	     (status item parked off-screen — hides the icon AND any text title), it only
-	     clears on a logout/reboot OR with a fresh bundle id (which re-prompts once for
-	     the Claude keychain ACL). The grove id's slot was corrupted by heavy dev
+	     clears on a logout/reboot OR with a fresh bundle id. The grove id's slot was corrupted by heavy dev
 	     relaunching; bumped to grove3 for a clean slot. Avoid rapid relaunch churn —
 	     that's what corrupts the slot in the first place. -->
 	<key>CFBundleIdentifier</key>

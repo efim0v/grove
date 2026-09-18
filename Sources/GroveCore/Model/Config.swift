@@ -118,29 +118,6 @@ public struct SeedFile: Codable, Sendable, Equatable {
     }
 }
 
-/// Global usage subsystem settings (spec §6). `refreshSeconds` is the scan-tick
-/// cadence for reading capture snapshots / analytics; `oauthLiveEnabled` gates
-/// the OAuth usage poll (§C.4) — ON by default (Phase 5C-fix). The client has a
-/// 180s cache + 429 backoff so this is safe; a one-time keychain prompt may appear
-/// on first run. Set to false in config JSON to opt out.
-public struct UsageSettings: Codable, Sendable, Equatable {
-    public var refreshSeconds: Int
-    public var oauthLiveEnabled: Bool
-
-    public init(refreshSeconds: Int = 15, oauthLiveEnabled: Bool = true) {
-        self.refreshSeconds = refreshSeconds
-        self.oauthLiveEnabled = oauthLiveEnabled
-    }
-
-    enum CodingKeys: String, CodingKey { case refreshSeconds, oauthLiveEnabled }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        refreshSeconds = try c.decodeIfPresent(Int.self, forKey: .refreshSeconds) ?? 15
-        oauthLiveEnabled = try c.decodeIfPresent(Bool.self, forKey: .oauthLiveEnabled) ?? true
-    }
-}
-
 /// Transcript safety-net settings. grove hardlink-mirrors every session
 /// transcript and auto-restores any unlink'd out-of-band; `maxDays`/`maxMB` bound
 /// the mirror. Back-compat: absent from old JSON decodes to defaults.
@@ -224,9 +201,6 @@ public struct GroveConfig: Codable, Sendable, Equatable {
     public var workspacesRootTemplate: String
     public var projects: [ProjectConfig]
     public var accounts: [AccountConfig]
-    /// Usage subsystem settings (spec §6). Back-compat: absent from old JSON
-    /// decodes to UsageSettings() defaults (see init(from:)).
-    public var usage: UsageSettings
     public var transcriptMirror: TranscriptMirrorSettings
 
     public init(
@@ -234,19 +208,17 @@ public struct GroveConfig: Codable, Sendable, Equatable {
         workspacesRootTemplate: String,
         projects: [ProjectConfig],
         accounts: [AccountConfig],
-        usage: UsageSettings = UsageSettings(),
         transcriptMirror: TranscriptMirrorSettings = TranscriptMirrorSettings()
     ) {
         self.version = version
         self.workspacesRootTemplate = workspacesRootTemplate
         self.projects = projects
         self.accounts = accounts
-        self.usage = usage
         self.transcriptMirror = transcriptMirror
     }
 
     enum CodingKeys: String, CodingKey {
-        case version, workspacesRootTemplate, projects, accounts, usage, transcriptMirror
+        case version, workspacesRootTemplate, projects, accounts, transcriptMirror
     }
 
     public init(from decoder: Decoder) throws {
@@ -255,7 +227,6 @@ public struct GroveConfig: Codable, Sendable, Equatable {
         workspacesRootTemplate = try c.decode(String.self, forKey: .workspacesRootTemplate)
         projects = try c.decode([ProjectConfig].self, forKey: .projects)
         accounts = try c.decode([AccountConfig].self, forKey: .accounts)
-        usage = try c.decodeIfPresent(UsageSettings.self, forKey: .usage) ?? UsageSettings()
         transcriptMirror = try c.decodeIfPresent(TranscriptMirrorSettings.self, forKey: .transcriptMirror) ?? TranscriptMirrorSettings()
     }
 

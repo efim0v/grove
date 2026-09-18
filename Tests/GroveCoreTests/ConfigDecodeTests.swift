@@ -28,8 +28,7 @@ final class ConfigDecodeTests: XCTestCase {
 
         let cfgJSON = #"{"version":1,"workspacesRootTemplate":"~/W/{project}","projects":[],"accounts":[]}"#
         let cfg = try JSONDecoder().decode(GroveConfig.self, from: Data(cfgJSON.utf8))
-        XCTAssertEqual(cfg.usage.refreshSeconds, 15)        // usage absent -> defaults
-        XCTAssertTrue(cfg.usage.oauthLiveEnabled, "absent oauthLiveEnabled defaults to true after Phase 5C-fix")
+        XCTAssertTrue(cfg.projects.isEmpty)
     }
 
     func testFullRoundTripPreservesEveryField() throws {
@@ -44,8 +43,7 @@ final class ConfigDecodeTests: XCTestCase {
             version: 1, workspacesRootTemplate: "~/W/{project}", projects: [project],
             accounts: [AccountConfig(name: "work", configDir: "~/.x", sharedStore: true,
                                      monitoring: true, savedStatusline: "orig",
-                                     defaultModel: "m2", defaultEffort: "low")],
-            usage: UsageSettings(refreshSeconds: 30, oauthLiveEnabled: true))
+                                     defaultModel: "m2", defaultEffort: "low")])
         let data = try JSONEncoder().encode(cfg)
         let back = try JSONDecoder().decode(GroveConfig.self, from: data)
         XCTAssertEqual(back, cfg)

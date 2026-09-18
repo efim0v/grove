@@ -184,31 +184,6 @@ public final class ClaudeService: @unchecked Sendable {
         )
     }
 
-    /// The account's `organizationRateLimitTier` (e.g. "default_claude_max_20x")
-    /// from `oauthAccount` in `<configDir>/.claude.json` (or `$HOME/.claude.json`
-    /// for the default account). This is the canonical tier the rate-limit weight
-    /// table (RateLimitModel.tierWeights) keys on — distinct from
-    /// `userRateLimitTier` (identity().tier). nil = not logged in / field absent.
-    public func organizationRateLimitTier(account: AccountConfig) -> String? {
-        let dir = expandTilde(account.configDir)
-        let home = NSHomeDirectory()
-        let jsonPath = (dir == home + "/.claude") ? home + "/.claude.json"
-                                                  : dir + "/.claude.json"
-        return Self.organizationRateLimitTier(claudeJSONPath: jsonPath)
-    }
-
-    /// Path-based variant so the (synchronous) `.claude.json` read can run OFF the
-    /// main actor — view bodies must never call the account-based version (it would
-    /// read+parse the file on the main thread on every render). Resolve once in the
-    /// off-main refresh and cache the result.
-    public static func organizationRateLimitTier(claudeJSONPath: String) -> String? {
-        guard
-            let data = FileManager.default.contents(atPath: claudeJSONPath),
-            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-            let oauth = object["oauthAccount"] as? [String: Any]
-        else { return nil }
-        return oauth["organizationRateLimitTier"] as? String
-    }
 
     // MARK: - Sessions
 

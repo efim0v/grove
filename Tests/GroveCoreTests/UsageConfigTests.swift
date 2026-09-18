@@ -2,8 +2,8 @@ import XCTest
 import GroveCore
 
 final class UsageConfigTests: XCTestCase {
-    // Old configs predate the whole usage block + the new account/project fields.
-    func testOldJSONDecodesWithUsageDefaultsAndNilModelEffort() throws {
+    // Old configs predate the account/project model/effort fields.
+    func testOldJSONDecodesWithNilModelEffort() throws {
         let json = """
         {
           "version": 1,
@@ -20,10 +20,6 @@ final class UsageConfigTests: XCTestCase {
         }
         """
         let decoded = try JSONDecoder().decode(GroveConfig.self, from: Data(json.utf8))
-        // usage block absent -> defaults.
-        XCTAssertEqual(decoded.usage, UsageSettings())
-        XCTAssertEqual(decoded.usage.refreshSeconds, 15)
-        XCTAssertTrue(decoded.usage.oauthLiveEnabled, "absent oauthLiveEnabled defaults to true after Phase 5C-fix")
         // account fields absent -> false / nil.
         XCTAssertEqual(decoded.accounts.map(\.monitoring), [false, false])
         XCTAssertEqual(decoded.accounts.map(\.savedStatusline), [nil, nil])
@@ -34,11 +30,16 @@ final class UsageConfigTests: XCTestCase {
         XCTAssertNil(decoded.projects[0].defaultEffort)
     }
 
-    func testUsageSettingsRoundTrips() throws {
-        let s = UsageSettings(refreshSeconds: 30, oauthLiveEnabled: true)
-        let decoded = try JSONDecoder().decode(UsageSettings.self,
-                                               from: JSONEncoder().encode(s))
-        XCTAssertEqual(decoded, s)
+    /// A config.json written while Grove still polled limits carries a `usage`
+    /// block. It is nobody's now (Brow keeps its own settings) and must decode as
+    /// an unknown key — never fail the whole config.
+    func testLegacyUsageBlockIsIgnored() throws {
+        let json = #"{"version":1,"workspacesRootTemplate":"~/W/{project}","projects":[],"accounts":[],"usage":{"refreshSeconds":30,"oauthLiveEnabled":false}}"#
+        let decoded = try JSONDecoder().decode(GroveConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.version, 1)
+        XCTAssertTrue(decoded.accounts.isEmpty)
+        let reencoded = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
+        XCTAssertFalse(reencoded.contains("oauthLiveEnabled"), "the block is dropped on the next write")
     }
 
     func testAccountModelEffortMonitoringRoundTrip() throws {
@@ -60,10 +61,6 @@ final class UsageConfigTests: XCTestCase {
                                                from: JSONEncoder().encode(p))
         XCTAssertEqual(decoded.defaultModel, "claude-sonnet-4-6")
         XCTAssertEqual(decoded.defaultEffort, "medium")
-    }
-
-    func testDefaultConfigHasDefaultUsageBlock() {
-        XCTAssertEqual(GroveConfig.defaultConfig.usage, UsageSettings())
     }
 
     func testNewAccountDefaultsAreInert() {

@@ -8,8 +8,9 @@ Grove is a SwiftUI menu-bar app. Per standard practice for UI apps, the
 unit-coverage **gate** is the **pure / mockable logic layer** — it must stay at
 **≥ 95%** line coverage:
 
-- `GroveCore` services (git, claude, usage analytics/reader, workspace, shared
-  store, statusline, pricing, rate-limit, config store, process runner, oauth),
+- `GroveCore` services (git, claude, statusline capture reader, workspace, shared
+  store, statusline, config store, process runner — and the rate-limit model,
+  OAuth clients, token keeper and account directory Brow builds on),
 - `GroveCore` models (config, errors, paths),
 - `GroveAppKit/Presentation/*` (all the pure view-models),
 - `GroveAppKit/State/*` (`AppState`, routing).
