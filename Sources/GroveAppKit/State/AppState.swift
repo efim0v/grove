@@ -348,12 +348,23 @@ public final class AppState: ObservableObject {
     @discardableResult
     public func reconcileAccountNames() -> Bool {
         let emails = identityByAccount.compactMapValues(\.email)
-        let renames = AccountNaming.renames(accounts: config.accounts, emailByName: emails)
-        guard !renames.isEmpty else { return false }
-        config = config.renamingAccounts(renames)
+        // Same login in two folders is one account: the folder Claude Code used most
+        // recently launches it, the other is read for its sessions.
+        var activity: [String: Date] = [:]
+        for account in config.accounts {
+            activity[account.name] = (try? FileManager.default.attributesOfItem(atPath: claudeJSONPath(for: account)))?[.modificationDate] as? Date
+        }
+        let merge = AccountNaming.merged(accounts: config.accounts, emailByName: emails, activityByName: activity)
+        var next = config
+        next.accounts = merge.accounts
+        next = next.renamingAccounts(merge.renames)
+        let renames = AccountNaming.renames(accounts: next.accounts, emailByName: emails)
+        next = next.renamingAccounts(renames)
+        guard next != config else { return false }
+        config = next
         persist()
-        for (old, new) in renames.sorted(by: { $0.key < $1.key }) {
-            GroveLog.perf.info("account renamed: \(old, privacy: .public) → \(new, privacy: .public)")
+        for (old, new) in merge.renames.merging(renames, uniquingKeysWith: { $1 }).sorted(by: { $0.key < $1.key }) {
+            GroveLog.perf.info("account \(old, privacy: .public) → \(new, privacy: .public)")
         }
         return true
     }
@@ -365,7 +376,14 @@ public final class AppState: ObservableObject {
     public func discoverAccountDirs() -> Bool {
         let root = accountsRootOverride ?? NSHomeDirectory() + "/.claude-accounts"
         let fm = FileManager.default
-        let known = Set(config.accounts.map { expandTilde($0.configDir) })
+        let known = Set(config.accounts.flatMap(\.allConfigDirs).map(expandTilde))
+        // A folder signed in to a login Grove already lists joins that account as an alias.
+        var emailOfAccount: [String: String] = [:]
+        for account in config.accounts {
+            if let email = ClaudeService.identity(claudeJSONPath: claudeJSONPath(for: account))?.email {
+                emailOfAccount[account.name] = email
+            }
+        }
         var added = false
         for folder in ((try? fm.contentsOfDirectory(atPath: root)) ?? []).sorted() where !folder.hasPrefix(".") {
             let path = root + "/" + folder
@@ -373,13 +391,33 @@ public final class AppState: ObservableObject {
             guard !known.contains(path), fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue,
                   let email = ClaudeService.identity(claudeJSONPath: path + "/.claude.json")?.email
             else { continue }
-            let name = AccountNaming.uniqueName(email: email, folder: folder, taken: Set(config.accounts.map(\.name)))
             let stored = accountsRootOverride == nil ? "~/.claude-accounts/\(folder)" : path
-            config.accounts.append(AccountConfig(name: name, configDir: stored))
+            if let i = config.accounts.firstIndex(where: { emailOfAccount[$0.name] == email }) {
+                config.accounts[i].aliasDirs.append(stored)
+            } else {
+                let name = AccountNaming.uniqueName(email: email, folder: folder, taken: Set(config.accounts.map(\.name)))
+                config.accounts.append(AccountConfig(name: name, configDir: stored))
+                emailOfAccount[name] = email
+            }
             added = true
         }
         if added { persist() }
         return added
+    }
+
+    /// Brow's per-account browser router, when Brow is installed: `claude auth login`
+    /// from a Grove-launched session then opens that account's own browser profile.
+    /// An instance property so tests can pin it (nil = no router on this machine).
+    internal var browserRouter: String? = AppState.locateBrowserRouter()
+
+    static func locateBrowserRouter() -> String? {
+        let candidates = [NSWorkspace.shared.urlForApplication(withBundleIdentifier: "dev.artemefimov.brow")?.path,
+                          "/Applications/Brow.app"].compactMap { $0 }
+        for app in candidates {
+            let router = app + "/Contents/Resources/brow-browser"
+            if FileManager.default.isExecutableFile(atPath: router) { return router }
+        }
+        return nil
     }
 
     /// Removes the account from Grove's config only — the directory is untouched.
@@ -604,9 +642,11 @@ extension AppState {
         // --dangerously-skip-permissions: an explicit per-launch choice (from the
         // config sheet) wins; otherwise resolve the project default by `cwd`, here in
         // the single launch chokepoint so EVERY caller honors the setting.
+        ClaudeService.ensureOnboarded(configDir: account.configDir)
         let command = ClaudeService.launchCommand(account: account, resume: sessionId,
                                                   model: model, effort: effort,
-                                                  skipPermissions: skipPermissions ?? effectiveSkipPermissions(cwd: cwd))
+                                                  skipPermissions: skipPermissions ?? effectiveSkipPermissions(cwd: cwd),
+                                                  browser: browserRouter)
         do {
             try await service.ensureRunning()
             try await service.newWorkspace(name: title, cwd: cwd, command: command, focus: true)
@@ -787,9 +827,11 @@ extension AppState {
                                resume: request.sessionId, model: request.model, effort: request.effort,
                                skipPermissions: request.skipPermissions)
         case .terminal:
+            ClaudeService.ensureOnboarded(configDir: account.configDir)
             let command = ClaudeService.launchCommand(account: account, resume: request.sessionId,
                                                       model: request.model, effort: request.effort,
-                                                      skipPermissions: request.skipPermissions)
+                                                      skipPermissions: request.skipPermissions,
+                                                      browser: browserRouter)
             let cwd = request.cwd
             let ok = await Task.detached(priority: .userInitiated) {
                 TerminalFocus.launchInTerminal(command: command, cwd: cwd)
@@ -852,15 +894,16 @@ extension AppState {
             return
         }
         guard expandTilde(account.configDir) != canonicalDir else { return }  // canonical: nothing to link
-        let dir = expandTilde(account.configDir)
-        // The account's CLAUDE_CONFIG_DIR must exist before its wholesale dirs can
-        // be symlinked into canonical (createSymbolicLink needs a real parent).
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        do {
-            _ = try SharedSessionStore().ensureLinked(accountDir: dir, canonicalDir: canonicalDir)
-        } catch {
-            actionError = "Couldn't link “\(account.name)”: \(error.localizedDescription)"
-            return
+        for dir in account.allConfigDirs.map(expandTilde) where dir != canonicalDir {
+            // The account's CLAUDE_CONFIG_DIR must exist before its wholesale dirs can
+            // be symlinked into canonical (createSymbolicLink needs a real parent).
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            do {
+                _ = try SharedSessionStore().ensureLinked(accountDir: dir, canonicalDir: canonicalDir)
+            } catch {
+                actionError = "Couldn't link “\(account.name)”: \(error.localizedDescription)"
+                return
+            }
         }
         if let index = config.accounts.firstIndex(where: { $0.name == account.name }),
            !config.accounts[index].sharedStore {
@@ -881,8 +924,8 @@ extension AppState {
     public func reconcileTranscripts() async {
         guard config.transcriptMirror.enabled, canonicalAccount != nil else { return }
         let canonical = canonicalDir
-        let accts = config.accounts.map {
-            MirrorAccount(key: accountKey($0.configDir), configDir: expandTilde($0.configDir))
+        let accts = config.accounts.flatMap(\.allConfigDirs).map {
+            MirrorAccount(key: accountKey($0), configDir: expandTilde($0))
         }
         let policy = RetentionPolicy(
             maxDays: config.transcriptMirror.maxDays,
@@ -956,8 +999,8 @@ extension AppState {
     /// refreshes the session index. Failures land in actionError.
     public func purgeTranscript(id: String) {
         guard canonicalAccount != nil else { return }
-        let accts = config.accounts.map {
-            MirrorAccount(key: accountKey($0.configDir), configDir: expandTilde($0.configDir))
+        let accts = config.accounts.flatMap(\.allConfigDirs).map {
+            MirrorAccount(key: accountKey($0), configDir: expandTilde($0))
         }
         do {
             try TranscriptMirror().purge(sessionId: id, accounts: accts, canonicalDir: canonicalDir)
@@ -972,7 +1015,7 @@ extension AppState {
     /// issues → clears nothing (so it never stomps an unrelated error). Snapshot
     /// renders skip it (no real ~/.claude access).
     public func verifySharedStore() {
-        let marked = config.accounts.filter(\.sharedStore).map { expandTilde($0.configDir) }
+        let marked = config.accounts.filter(\.sharedStore).flatMap(\.allConfigDirs).map(expandTilde).filter { $0 != canonicalDir }
         guard !marked.isEmpty, canonicalAccount != nil else { return }
         let issues = SharedSessionStore().verify(accountDirs: marked, canonicalDir: canonicalDir)
         if let first = issues.first {
@@ -1267,6 +1310,11 @@ extension AppState {
                 actionError = "Couldn't enable monitoring for “\(account.name)”: \(error.localizedDescription)"
             }
             return
+        }
+        // Every folder of the login captures: an alias dir's sessions are the
+        // account's sessions too (best-effort; nothing to save for an alias).
+        for alias in account.aliasDirs.map(expandTilde) {
+            _ = try? installer.install(configDir: alias)
         }
         guard let i = config.accounts.firstIndex(where: { $0.name == account.name }) else { return }
         config.accounts[i].monitoring = true

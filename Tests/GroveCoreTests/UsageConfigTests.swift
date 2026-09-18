@@ -48,9 +48,13 @@ final class UsageConfigTests: XCTestCase {
         a.savedStatusline = "~/.claude/statusline-command.sh"
         a.defaultModel = "claude-opus-4-6"
         a.defaultEffort = "high"
+        a.aliasDirs = ["~/.claude-accounts/work-old"]
         let decoded = try JSONDecoder().decode(AccountConfig.self,
                                                from: JSONEncoder().encode(a))
         XCTAssertEqual(decoded, a)
+        XCTAssertEqual(decoded.allConfigDirs, ["~/.claude-accounts/work", "~/.claude-accounts/work-old"])
+        XCTAssertEqual(decoded.dirVariants.map(\.configDir), decoded.allConfigDirs)
+        XCTAssertTrue(decoded.dirVariants.allSatisfy { $0.aliasDirs.isEmpty && $0.name == "work" })
     }
 
     func testProjectModelEffortRoundTrip() throws {

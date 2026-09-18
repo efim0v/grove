@@ -176,6 +176,15 @@ final class AppStateGapTests: XCTestCase {
         XCTAssertEqual(s.config.accounts.map(\.name), ["one@example.com", "two@example.com"])
         XCTAssertEqual(s.config.accounts[1].configDir, accountsRoot.appendingPathComponent("account-2").path)
         XCTAssertFalse(s.discoverAccountDirs(), "idempotent")
+
+        // A second folder signed in as one@example.com joins that account as an alias.
+        let again = accountsRoot.appendingPathComponent("account-3")
+        try fm.createDirectory(at: again, withIntermediateDirectories: true)
+        try #"{"oauthAccount":{"emailAddress":"one@example.com","organizationUuid":"org-account-1"}}"#
+            .write(to: again.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        XCTAssertTrue(s.discoverAccountDirs())
+        XCTAssertEqual(s.config.accounts.map(\.name), ["one@example.com", "two@example.com"], "no third entry")
+        XCTAssertEqual(s.config.accounts[0].aliasDirs, [again.path])
     }
 
     /// Once identities are read, folder names give way to emails — the project
@@ -186,7 +195,15 @@ final class AppStateGapTests: XCTestCase {
         try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
         try #"{"oauthAccount":{"emailAddress":"a@example.com","organizationUuid":"org-a"}}"#
             .write(to: dirA.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        // A second folder signed in as the same login, used more recently.
+        let dirA2 = root.appendingPathComponent("named-a2")
+        try FileManager.default.createDirectory(at: dirA2, withIntermediateDirectories: true)
+        try #"{"oauthAccount":{"emailAddress":"a@example.com","organizationUuid":"org-a"}}"#
+            .write(to: dirA2.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-3600)],
+                                              ofItemAtPath: dirA.appendingPathComponent(".claude.json").path)
         s.config.accounts = [AccountConfig(name: "default", configDir: dirA.path),
+                             AccountConfig(name: "twice", configDir: dirA2.path),
                              AccountConfig(name: "nameless", configDir: root.appendingPathComponent("named-b").path)]
         var project = ProjectConfig(name: "p", path: root.appendingPathComponent("p").path)
         project.defaultAccount = "default"
@@ -196,6 +213,8 @@ final class AppStateGapTests: XCTestCase {
         await s.refreshUsage(now: Date())
         XCTAssertTrue(s.reconcileAccountNames())
         XCTAssertEqual(s.config.accounts.map(\.name), ["a@example.com", "nameless"])
+        XCTAssertEqual(s.config.accounts[0].configDir, dirA2.path, "the fresher folder launches the account")
+        XCTAssertEqual(s.config.accounts[0].aliasDirs, [dirA.path])
         XCTAssertEqual(s.config.projects[0].defaultAccount, "a@example.com")
         XCTAssertFalse(s.reconcileAccountNames(), "settled")
         await s.refreshUsage(now: Date())

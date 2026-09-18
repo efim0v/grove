@@ -29,6 +29,36 @@ final class ClaudeServiceGapTests: XCTestCase {
         XCTAssertNil(claude.identity(account: empty))
     }
 
+    /// `claude auth login` leaves `{oauthAccount}` alone; the first `claude` there
+    /// ran the onboarding wizard. Seeding marks it done and copies the theme, and
+    /// touches nothing else; the default dir is never written.
+    func testEnsureOnboardedStampsAFreshDirAndLeavesTheRestAlone() throws {
+        let home = dir.appendingPathComponent("home")
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        try #"{"hasCompletedOnboarding":true,"theme":"dark","numStartups":9}"#
+            .write(to: home.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let fresh = home.appendingPathComponent(".claude-accounts/fresh")
+        try fm.createDirectory(at: fresh, withIntermediateDirectories: true)
+        try #"{"oauthAccount":{"emailAddress":"f@x"}}"#
+            .write(to: fresh.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(ClaudeService.ensureOnboarded(configDir: fresh.path, home: home.path))
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fresh.appendingPathComponent(".claude.json"))) as? [String: Any])
+        XCTAssertEqual(obj["hasCompletedOnboarding"] as? Bool, true)
+        XCTAssertEqual(obj["theme"] as? String, "dark")
+        XCTAssertEqual((obj["oauthAccount"] as? [String: Any])?["emailAddress"] as? String, "f@x", "the sign-in stays")
+        XCTAssertNil(obj["numStartups"], "only the two keys, not the whole default config")
+        XCTAssertFalse(ClaudeService.ensureOnboarded(configDir: fresh.path, home: home.path), "idempotent")
+        XCTAssertFalse(ClaudeService.ensureOnboarded(configDir: home.path + "/.claude", home: home.path), "never the default dir")
+    }
+
+    func testLaunchCommandCarriesTheBrowserRouter() {
+        let account = AccountConfig(name: "w", configDir: "/tmp/w")
+        let command = ClaudeService.launchCommand(account: account, browser: "/Applications/Brow.app/Contents/Resources/brow-browser")
+        XCTAssertTrue(command.hasPrefix("CLAUDE_CONFIG_DIR='/tmp/w' BROWSER='/Applications/Brow.app/Contents/Resources/brow-browser' "), command)
+        XCTAssertFalse(ClaudeService.launchCommand(account: account).contains("BROWSER="))
+    }
+
     func testWithProcessValidatorTogglesLiveProcesses() throws {
         let sessions = dir.appendingPathComponent("sessions")
         try fm.createDirectory(at: sessions, withIntermediateDirectories: true)

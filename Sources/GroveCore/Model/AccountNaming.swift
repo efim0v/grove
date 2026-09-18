@@ -38,6 +38,50 @@ public enum AccountNaming {
     }
 }
 
+public extension AccountNaming {
+    /// Same login in several config dirs → ONE account. Per email, the dir with the
+    /// most recent activity (`activityByName`: the `.claude.json` mtime) becomes the
+    /// account's `configDir`; the others become its `aliasDirs`, their config
+    /// entries go, and their names map to the survivor's in the returned renames so
+    /// project defaults follow. Accounts with no email are left untouched.
+    static func merged(accounts: [AccountConfig], emailByName: [String: String],
+                       activityByName: [String: Date] = [:]) -> (accounts: [AccountConfig], renames: [String: String]) {
+        var byEmail: [String: [AccountConfig]] = [:]
+        var order: [String] = []
+        for account in accounts {
+            guard let email = emailByName[account.name] else { continue }
+            if byEmail[email] == nil { order.append(email) }
+            byEmail[email, default: []].append(account)
+        }
+        var renames: [String: String] = [:]
+        var absorbed: Set<String> = []
+        var survivorByName: [String: AccountConfig] = [:]
+        for email in order {
+            let group = byEmail[email] ?? []
+            guard group.count > 1 else { continue }
+            let primary = group.enumerated().max { a, b in
+                let da = activityByName[a.element.name] ?? .distantPast
+                let db = activityByName[b.element.name] ?? .distantPast
+                return da == db ? a.offset > b.offset : da < db
+            }!.element
+            var survivor = primary
+            for other in group where other.name != primary.name {
+                survivor.aliasDirs.append(contentsOf: other.allConfigDirs.filter { !survivor.allConfigDirs.contains($0) })
+                survivor.sharedStore = survivor.sharedStore || other.sharedStore
+                survivor.monitoring = survivor.monitoring || other.monitoring
+                absorbed.insert(other.name)
+                renames[other.name] = primary.name
+            }
+            survivorByName[primary.name] = survivor
+        }
+        let kept = accounts.compactMap { account -> AccountConfig? in
+            if absorbed.contains(account.name) { return nil }
+            return survivorByName[account.name] ?? account
+        }
+        return (kept, renames)
+    }
+}
+
 extension GroveConfig {
     /// The config with `renames` applied to the accounts AND to every project's
     /// default account, so a project keeps pointing at the same account.

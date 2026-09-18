@@ -157,6 +157,10 @@ public struct AccountConfig: Codable, Sendable, Equatable {
     public var savedStatusline: String?
     public var defaultModel: String?
     public var defaultEffort: String?
+    /// Other config dirs signed in to the SAME login (the same email). One account,
+    /// several folders: sessions are read from every dir, launches use `configDir`.
+    /// Back-compat: absent from old JSON decodes to [].
+    public var aliasDirs: [String]
 
     public init(
         name: String,
@@ -166,7 +170,8 @@ public struct AccountConfig: Codable, Sendable, Equatable {
         monitoringDisabledByUser: Bool = false,
         savedStatusline: String? = nil,
         defaultModel: String? = nil,
-        defaultEffort: String? = nil
+        defaultEffort: String? = nil,
+        aliasDirs: [String] = []
     ) {
         self.name = name
         self.configDir = configDir
@@ -176,11 +181,26 @@ public struct AccountConfig: Codable, Sendable, Equatable {
         self.savedStatusline = savedStatusline
         self.defaultModel = defaultModel
         self.defaultEffort = defaultEffort
+        self.aliasDirs = aliasDirs
+    }
+
+    /// `configDir` first, then every alias.
+    public var allConfigDirs: [String] { [configDir] + aliasDirs }
+
+    /// One copy of this account per config dir, each without aliases — so a reader
+    /// written for one dir covers every dir of the account by iterating these.
+    public var dirVariants: [AccountConfig] {
+        allConfigDirs.map { dir in
+            var variant = self
+            variant.configDir = dir
+            variant.aliasDirs = []
+            return variant
+        }
     }
 
     enum CodingKeys: String, CodingKey {
         case name, configDir, sharedStore
-        case monitoring, monitoringDisabledByUser, savedStatusline, defaultModel, defaultEffort
+        case monitoring, monitoringDisabledByUser, savedStatusline, defaultModel, defaultEffort, aliasDirs
     }
 
     public init(from decoder: Decoder) throws {
@@ -193,6 +213,7 @@ public struct AccountConfig: Codable, Sendable, Equatable {
         savedStatusline = try c.decodeIfPresent(String.self, forKey: .savedStatusline)
         defaultModel = try c.decodeIfPresent(String.self, forKey: .defaultModel)
         defaultEffort = try c.decodeIfPresent(String.self, forKey: .defaultEffort)
+        aliasDirs = try c.decodeIfPresent([String].self, forKey: .aliasDirs) ?? []
     }
 }
 

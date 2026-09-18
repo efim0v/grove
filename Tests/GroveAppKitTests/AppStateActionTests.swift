@@ -23,6 +23,9 @@ final class AppStateActionTests: XCTestCase {
         state.cmuxOverride = stubbedCmux(runner)
         // Fail-safe: default the canonical store to a temp dir, NEVER $HOME/.claude.
         state.canonicalDirOverride = root.appendingPathComponent("canonical-default").path
+        // The launch-command assertions pin the command shape; whether Brow happens
+        // to be installed on this machine must not change it.
+        state.browserRouter = nil
         return state
     }
 

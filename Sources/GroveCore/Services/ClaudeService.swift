@@ -192,6 +192,9 @@ public final class ClaudeService: @unchecked Sendable {
     /// skipped), verified by the first record carrying a "cwd" key (mangling is lossy).
     /// Sorted newest first by file mtime.
     public func sessions(for cwd: String, account: AccountConfig) -> [ClaudeSession] {
+        if !account.aliasDirs.isEmpty {
+            return Self.dedupe(account.dirVariants.flatMap { sessions(for: cwd, account: $0) })
+        }
         let fm = FileManager.default
         let dir = expandTilde(account.configDir) + "/projects/" + ClaudeService.mangle(cwd)
         guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
@@ -231,6 +234,7 @@ public final class ClaudeService: @unchecked Sendable {
     /// per-project session previews without a full workspace scan.
     public func recentSessions(underRoots roots: [String], accounts: [AccountConfig],
                                limit: Int) -> [ClaudeSession] {
+        let accounts = accounts.flatMap(\.dirVariants)
         guard limit > 0, !roots.isEmpty else { return [] }
         let fm = FileManager.default
         let canonRoots = roots.map { canonicalPath($0) }
@@ -291,6 +295,7 @@ public final class ClaudeService: @unchecked Sendable {
     /// The injected `now` keeps the method pure/deterministic — no `Date()` inside.
     public func allRecentSessions(accounts: [AccountConfig], limit: Int,
                                   sinceDays: Int, now: Date) -> [ClaudeSession] {
+        let accounts = accounts.flatMap(\.dirVariants)
         guard limit > 0 else { return [] }
         let fm = FileManager.default
         let cutoff = now.addingTimeInterval(-Double(sinceDays) * 86400)
@@ -431,6 +436,9 @@ public final class ClaudeService: @unchecked Sendable {
     /// whose pid passes `processValidator`. Malformed JSON files are skipped.
     /// Sorted by pid ascending for deterministic output.
     public func liveProcesses(account: AccountConfig) -> [LiveProcess] {
+        if !account.aliasDirs.isEmpty {
+            return account.dirVariants.flatMap { liveProcesses(account: $0) }
+        }
         let fm = FileManager.default
         let dir = expandTilde(account.configDir) + "/sessions"
         guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
@@ -750,13 +758,62 @@ public final class ClaudeService: @unchecked Sendable {
     /// `skipPermissions` appends `--dangerously-skip-permissions` (per-project, for
     /// fully-autonomous agents). The binary path, config dir, resume id, model and
     /// effort are single-quote shell-quoted.
+    /// One session per id: the same transcript can sit in two dirs of one account
+    /// (a copy, a shared-store move); the newer activity wins.
+    static func dedupe(_ sessions: [ClaudeSession]) -> [ClaudeSession] {
+        var byId: [String: ClaudeSession] = [:]
+        var order: [String] = []
+        for session in sessions {
+            if let existing = byId[session.id] {
+                if session.lastActivity > existing.lastActivity { byId[session.id] = session }
+            } else {
+                byId[session.id] = session
+                order.append(session.id)
+            }
+        }
+        return order.compactMap { byId[$0] }
+    }
+
+    /// A config dir Claude Code has never run interactively in — the folders
+    /// `claude auth login` leaves behind — carries an `oauthAccount` and nothing
+    /// else, so the first `claude` in it opens the onboarding wizard as if nobody
+    /// were signed in. Stamps `hasCompletedOnboarding` (and the theme, copied from
+    /// the default account) into `<configDir>/.claude.json`, touching nothing else.
+    /// Never for the default dir itself. Returns whether the file was written.
+    @discardableResult
+    public static func ensureOnboarded(configDir: String, home: String = NSHomeDirectory()) -> Bool {
+        let dir = expandTilde(configDir)
+        guard dir != home + "/.claude" else { return false }
+        let path = dir + "/.claude.json"
+        let fm = FileManager.default
+        var object = (fm.contents(atPath: path))
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
+        guard object["hasCompletedOnboarding"] as? Bool != true else { return false }
+        object["hasCompletedOnboarding"] = true
+        if object["theme"] == nil,
+           let canonical = fm.contents(atPath: home + "/.claude.json"),
+           let canonicalObject = (try? JSONSerialization.jsonObject(with: canonical)) as? [String: Any],
+           let theme = canonicalObject["theme"] {
+            object["theme"] = theme
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) else { return false }
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
+    }
+
+    /// `browser`: the executable `claude auth login` should open (`$BROWSER`) — Brow's
+    /// per-account router, so a re-login from a Grove-launched session lands in
+    /// that account's own browser profile instead of the default browser.
     public static func launchCommand(account: AccountConfig, resume sessionId: String? = nil,
                                      model: String? = nil, effort: String? = nil,
-                                     skipPermissions: Bool = false) -> String {
+                                     skipPermissions: Bool = false, browser: String? = nil) -> String {
         let dir = expandTilde(account.configDir)
         let isDefaultAccount = dir == NSHomeDirectory() + "/.claude"
         let claude = shellQuote(claudeExecutable())
-        var command = isDefaultAccount ? claude : "CLAUDE_CONFIG_DIR=\(shellQuote(dir)) \(claude)"
+        var env: [String] = []
+        if !isDefaultAccount { env.append("CLAUDE_CONFIG_DIR=\(shellQuote(dir))") }
+        if let browser, !browser.isEmpty { env.append("BROWSER=\(shellQuote(browser))") }
+        var command = env.isEmpty ? claude : env.joined(separator: " ") + " " + claude
         // Guard on non-empty so an empty value (e.g. a hand-edited config with
         // model: "") is treated like nil instead of emitting `--model ''`.
         if let sessionId, !sessionId.isEmpty { command += " --resume \(shellQuote(sessionId))" }

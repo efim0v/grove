@@ -104,6 +104,12 @@ struct AccountsScreen: View {
             Text(account.configDir)
                 .font(.caption2.monospaced())
                 .foregroundStyle(.tertiary)
+            ForEach(account.aliasDirs, id: \.self) { alias in
+                Text("+ \(alias)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .help("Also signed in as this account; its sessions are listed here")
+            }
         }
         .padding(10)
         .glassCard()
