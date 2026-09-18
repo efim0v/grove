@@ -123,11 +123,24 @@ public struct TranscriptMirror: Sendable {
                 } else if inode(live) != inode(mp) {
                     try? fm.removeItem(atPath: mp); placeMirror(src: live, dst: mp, report: &report)
                 }
-            } else if st.mirrorPath != nil {
+            } else if let existingMirror = st.mirrorPath {
                 guard let cfg = configDirByKey[ref.accountKey] else {
                     report.issues.append("mirror \(ref.file): account \(ref.accountKey) unknown"); continue
                 }
                 let live = cfg + "/projects/\(ref.encodedCwd)/\(ref.file)"
+                // Already there — reached through a shared-store symlink (the account's
+                // `projects/<cwd>` points into canonical, so step 1 skipped it and this
+                // mirror is a leftover from before the workspace was shared) or written
+                // back by Claude itself. Nothing to restore, and a leftover that is the
+                // very same inode is a redundant link: drop it rather than fail on it
+                // every ninety seconds ("… couldn't be linked to …" was exactly this).
+                if fm.fileExists(atPath: live) {
+                    if inode(live) == inode(existingMirror) {
+                        try? fm.removeItem(atPath: existingMirror)
+                        report.evicted.append(existingMirror)
+                    }
+                    continue
+                }
                 do {
                     try fm.createDirectory(atPath: (live as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
                     try ops.hardlink(mp, live)

@@ -196,6 +196,37 @@ final class TranscriptMirrorTests: XCTestCase {
         XCTAssertTrue(report.issues.contains { $0.contains("cross-volume") })
     }
 
+    /// The production failure: a workspace mirrored under an account's key WHILE the
+    /// account still had a real `projects/<cwd>`, then shared — Grove moved the dir
+    /// into canonical and left a symlink. Step 1 now skips the symlink, so the old
+    /// mirror looks orphaned and every reconcile tried to "restore" it onto a path
+    /// where the very same file already is: `couldn't be linked to …`, forever.
+    func testLeftoverMirrorUnderASharedCwdIsDroppedNotRestored() throws {
+        let cwd = "-shared-later", id = "zzzz"
+        let work = root.appendingPathComponent("work")
+        let liveW = try writeTranscript(configDir: work, cwd: cwd, id: id, "data\n")
+        // Mirrored while the dir was real.
+        var report = mirror.reconcile(accounts: [acct(canonical), acct(work)], canonicalDir: canonical.path, policy: policy())
+        let workMirror = mirrorPath(cwd, id, account: work)
+        XCTAssertTrue(fm.fileExists(atPath: workMirror))
+        // Then shared: the dir moves into canonical, a symlink stays behind.
+        let canonCwd = canonical.appendingPathComponent("projects/\(cwd)").path
+        try fm.createDirectory(atPath: canonical.appendingPathComponent("projects").path, withIntermediateDirectories: true)
+        try fm.moveItem(atPath: work.appendingPathComponent("projects/\(cwd)").path, toPath: canonCwd)
+        try fm.createSymbolicLink(atPath: work.appendingPathComponent("projects/\(cwd)").path, withDestinationPath: canonCwd)
+
+        report = mirror.reconcile(accounts: [acct(canonical), acct(work)], canonicalDir: canonical.path, policy: policy())
+        XCTAssertTrue(report.issues.isEmpty, "no restore attempted onto a file that is already there: \(report.issues)")
+        XCTAssertTrue(fm.fileExists(atPath: liveW), "still reachable through the symlink")
+        XCTAssertFalse(fm.fileExists(atPath: workMirror), "the leftover duplicate link is dropped")
+        XCTAssertTrue(fm.fileExists(atPath: mirrorPath(cwd, id, account: canonical)), "canonical's own mirror holds the safety net")
+        XCTAssertEqual(report.evicted, [workMirror])
+        // And it stays quiet from now on.
+        report = mirror.reconcile(accounts: [acct(canonical), acct(work)], canonicalDir: canonical.path, policy: policy())
+        XCTAssertTrue(report.issues.isEmpty)
+        XCTAssertTrue(report.evicted.isEmpty)
+    }
+
     func testMultiAccountRestoreTargetsRightConfigDir() throws {
         let work = root.appendingPathComponent("acc-work")
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
