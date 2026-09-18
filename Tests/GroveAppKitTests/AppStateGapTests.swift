@@ -154,6 +154,54 @@ final class AppStateGapTests: XCTestCase {
             .contains("grove-statusline-") == true)
     }
 
+    /// The folders Brow's sign-in creates (`~/.claude-accounts/account-1`) join the
+    /// list at launch, named by their email; a folder Grove already knows, or one
+    /// nobody is signed in to, is left alone.
+    func testDiscoverAccountDirsAddsSignedInFoldersNamedByEmail() throws {
+        let s = state()
+        let accountsRoot = root.appendingPathComponent("accounts-root")
+        s.accountsRootOverride = accountsRoot.path
+        let fm = FileManager.default
+        for (folder, email) in [("account-1", "one@example.com"), ("account-2", "two@example.com"), ("empty", nil)] {
+            let dir = accountsRoot.appendingPathComponent(folder)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            if let email {
+                try #"{"oauthAccount":{"emailAddress":"\#(email)","organizationUuid":"org-\#(folder)"}}"#
+                    .write(to: dir.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+            }
+        }
+        s.config.accounts = [AccountConfig(name: "one@example.com", configDir: accountsRoot.appendingPathComponent("account-1").path)]
+
+        XCTAssertTrue(s.discoverAccountDirs())
+        XCTAssertEqual(s.config.accounts.map(\.name), ["one@example.com", "two@example.com"])
+        XCTAssertEqual(s.config.accounts[1].configDir, accountsRoot.appendingPathComponent("account-2").path)
+        XCTAssertFalse(s.discoverAccountDirs(), "idempotent")
+    }
+
+    /// Once identities are read, folder names give way to emails — the project
+    /// default follows — and the captures are re-keyed by the new names.
+    func testReconcileAccountNamesRenamesToEmailsAfterIdentitiesAreRead() async throws {
+        let s = state()
+        let dirA = root.appendingPathComponent("named-a")
+        try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+        try #"{"oauthAccount":{"emailAddress":"a@example.com","organizationUuid":"org-a"}}"#
+            .write(to: dirA.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        s.config.accounts = [AccountConfig(name: "default", configDir: dirA.path),
+                             AccountConfig(name: "nameless", configDir: root.appendingPathComponent("named-b").path)]
+        var project = ProjectConfig(name: "p", path: root.appendingPathComponent("p").path)
+        project.defaultAccount = "default"
+        s.config.projects = [project]
+
+        XCTAssertFalse(s.reconcileAccountNames(), "nothing known yet")
+        await s.refreshUsage(now: Date())
+        XCTAssertTrue(s.reconcileAccountNames())
+        XCTAssertEqual(s.config.accounts.map(\.name), ["a@example.com", "nameless"])
+        XCTAssertEqual(s.config.projects[0].defaultAccount, "a@example.com")
+        XCTAssertFalse(s.reconcileAccountNames(), "settled")
+        await s.refreshUsage(now: Date())
+        XCTAssertNotNil(s.identityByAccount["a@example.com"], "captures and identities re-keyed")
+    }
+
     func testInstallAndDisableMonitoringToggleFlag() throws {
         let s = state()
         s.statuslineScriptDirOverride = root.appendingPathComponent("bin").path

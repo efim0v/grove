@@ -90,8 +90,14 @@ private final class StatusBarController: NSObject, NSApplicationDelegate, NSWind
         // Every configured account gets the grove statusline wrapper: it is what
         // writes the per-session captures (model, context, cost) the session views
         // show — and the rate-limit captures Brow reads.
+        // Accounts Brow signed in (~/.claude-accounts/<folder>) join the list, then
+        // every account takes its email as its name once identities are read.
+        state.discoverAccountDirs()
         state.reconcileMonitoring()
-        Task { @MainActor in await state.refreshUsage(now: Date()) }
+        Task { @MainActor in
+            await state.refreshUsage(now: Date())
+            if state.reconcileAccountNames() { await state.refreshUsage(now: Date()) }
+        }
         backgroundTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
             // Skip while the panel is open — RootView's 15s loop already refreshes, so
             // the two cadences never overlap (which could land out-of-order and

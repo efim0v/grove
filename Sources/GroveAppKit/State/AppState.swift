@@ -340,6 +340,48 @@ public final class AppState: ObservableObject {
         enableMonitoring(account, reportErrors: false)
     }
 
+    /// Names every account by the login Claude Code knows it by — the email in its
+    /// `.claude.json` — once identities have been read (`refreshUsage`). Runs at
+    /// launch; a rename moves the project default-account references with it.
+    /// Returns whether anything changed, so the caller can re-read captures under
+    /// the new keys.
+    @discardableResult
+    public func reconcileAccountNames() -> Bool {
+        let emails = identityByAccount.compactMapValues(\.email)
+        let renames = AccountNaming.renames(accounts: config.accounts, emailByName: emails)
+        guard !renames.isEmpty else { return false }
+        config = config.renamingAccounts(renames)
+        persist()
+        for (old, new) in renames.sorted(by: { $0.key < $1.key }) {
+            GroveLog.perf.info("account renamed: \(old, privacy: .public) → \(new, privacy: .public)")
+        }
+        return true
+    }
+
+    /// Adds every folder under the accounts root (`~/.claude-accounts`) that is
+    /// signed in and unknown to Grove — the folders Brow's one-click sign-in
+    /// creates — named by its email. Returns whether anything was added.
+    @discardableResult
+    public func discoverAccountDirs() -> Bool {
+        let root = accountsRootOverride ?? NSHomeDirectory() + "/.claude-accounts"
+        let fm = FileManager.default
+        let known = Set(config.accounts.map { expandTilde($0.configDir) })
+        var added = false
+        for folder in ((try? fm.contentsOfDirectory(atPath: root)) ?? []).sorted() where !folder.hasPrefix(".") {
+            let path = root + "/" + folder
+            var isDir: ObjCBool = false
+            guard !known.contains(path), fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue,
+                  let email = ClaudeService.identity(claudeJSONPath: path + "/.claude.json")?.email
+            else { continue }
+            let name = AccountNaming.uniqueName(email: email, folder: folder, taken: Set(config.accounts.map(\.name)))
+            let stored = accountsRootOverride == nil ? "~/.claude-accounts/\(folder)" : path
+            config.accounts.append(AccountConfig(name: name, configDir: stored))
+            added = true
+        }
+        if added { persist() }
+        return added
+    }
+
     /// Removes the account from Grove's config only — the directory is untouched.
     public func removeAccount(name: String) {
         config.accounts.removeAll { $0.name == name }
