@@ -251,30 +251,15 @@ public struct SessionMigration: Sendable {
             return report
         }
 
-        // Read or create target
-        var targetObj: [String: Any]
-        if let dstData = fm.contents(atPath: toHomeJSON),
-           let parsed = (try? JSONSerialization.jsonObject(with: dstData)) as? [String: Any] {
-            targetObj = parsed
-        } else {
-            targetObj = [:]
-        }
-
-        // Merge only our cwd entry
-        let merged = mergeClaudeProjectEntry(targetHomeJSON: targetObj, sourceEntry: sourceEntry, cwd: cwd)
-
-        // Write back
+        // Merge only our cwd entry — under Claude's own lock, on the freshest content,
+        // so a session running in the target account never loses (or causes) an update.
         do {
-            let outData = try JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted)
-            let url = URL(fileURLWithPath: toHomeJSON)
-            let parent = url.deletingLastPathComponent().path
-            try fm.createDirectory(atPath: parent, withIntermediateDirectories: true)
-            try outData.write(to: url, options: .atomic)
-            // Enforce 0600
-            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: toHomeJSON)
-            report.copied.append(toHomeJSON)
+            let outcome = try HotJSONFile.update(path: toHomeJSON, mode: 0o600) {
+                mergeClaudeProjectEntry(targetHomeJSON: $0, sourceEntry: sourceEntry, cwd: cwd)
+            }
+            record(outcome, toHomeJSON, &report)
         } catch {
-            report.issues.append("migrateProjectConfig: write \(toHomeJSON): \(error.localizedDescription)")
+            report.issues.append("migrateProjectConfig: \(error.localizedDescription)")
         }
 
         return report
@@ -320,28 +305,16 @@ public struct SessionMigration: Sendable {
             )
         }
 
-        // Read or create target
-        var targetSettings: [String: Any]
-        if let dstData = fm.contents(atPath: dstPath),
-           let parsed = (try? JSONSerialization.jsonObject(with: dstData)) as? [String: Any] {
-            targetSettings = parsed
-        } else {
-            targetSettings = [:]
-        }
-
         let keys = ["enabledPlugins", "model", "statusLine",
                     "extraKnownMarketplaces", "effortLevel",
                     "skipDangerousModePermissionPrompt", "theme"]
-        let merged = mergeSettingsKeys(target: targetSettings, source: sourceSettings, keys: keys)
-
         do {
-            let outData = try JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted)
-            let url = URL(fileURLWithPath: dstPath)
-            try fm.createDirectory(atPath: toConfigDir, withIntermediateDirectories: true)
-            try outData.write(to: url, options: .atomic)
-            report.copied.append(dstPath)
+            let outcome = try HotJSONFile.update(path: dstPath) {
+                mergeSettingsKeys(target: $0, source: sourceSettings, keys: keys)
+            }
+            record(outcome, dstPath, &report)
         } catch {
-            report.issues.append("migrateSettings: write \(dstPath): \(error.localizedDescription)")
+            report.issues.append("migrateSettings: \(error.localizedDescription)")
         }
 
         return report
@@ -461,21 +434,11 @@ public struct SessionMigration: Sendable {
         let toKnown   = toConfigDir   + "/plugins/known_marketplaces.json"
         if let srcData = fm.contents(atPath: fromKnown),
            let srcObj = (try? JSONSerialization.jsonObject(with: srcData)) as? [String: Any] {
-            let targetObj: [String: Any]
-            if let dstData = fm.contents(atPath: toKnown),
-               let parsed = (try? JSONSerialization.jsonObject(with: dstData)) as? [String: Any] {
-                targetObj = parsed
-            } else {
-                targetObj = [:]
-            }
-            let merged = deepMergeJSON(target: targetObj, source: srcObj)
-            if let outData = try? JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted) {
-                do {
-                    try outData.write(to: URL(fileURLWithPath: toKnown), options: .atomic)
-                    report.copied.append(toKnown)
-                } catch {
-                    report.issues.append("migratePlugins: write \(toKnown): \(error.localizedDescription)")
-                }
+            do {
+                let outcome = try HotJSONFile.update(path: toKnown) { deepMergeJSON(target: $0, source: srcObj) }
+                record(outcome, toKnown, &report)
+            } catch {
+                report.issues.append("migratePlugins: \(error.localizedDescription)")
             }
         }
 
@@ -484,13 +447,6 @@ public struct SessionMigration: Sendable {
         let toInstalled   = toConfigDir   + "/plugins/installed_plugins.json"
         if let srcData = fm.contents(atPath: fromInstalled),
            let srcObj = (try? JSONSerialization.jsonObject(with: srcData)) as? [String: Any] {
-            let targetObj: [String: Any]
-            if let dstData = fm.contents(atPath: toInstalled),
-               let parsed = (try? JSONSerialization.jsonObject(with: dstData)) as? [String: Any] {
-                targetObj = parsed
-            } else {
-                targetObj = [:]
-            }
             // Step 1: repoint source installPaths into target-space BEFORE merging,
             //         so fingerprints are comparable to target records.
             let repointedSrc = repointPluginInstallPaths(
@@ -498,17 +454,16 @@ public struct SessionMigration: Sendable {
                 fromConfigDir: fromConfigDir,
                 toConfigDir: toConfigDir
             )
-            // Step 2: deep-merge (target wins on scalar conflicts; arrays unioned).
-            let mergedRaw = deepMergeJSON(target: targetObj, source: repointedSrc)
-            // Step 3: dedup each plugins[key] array by (version, installPath) —
-            //         both now in target-space — keeping first (target-native) occurrence.
-            let merged = dedupPluginRecords(mergedRaw)
             do {
-                let outData = try JSONSerialization.data(withJSONObject: merged, options: .prettyPrinted)
-                try outData.write(to: URL(fileURLWithPath: toInstalled), options: .atomic)
-                report.copied.append(toInstalled)
+                let outcome = try HotJSONFile.update(path: toInstalled) {
+                    // Step 2: deep-merge (target wins on scalar conflicts; arrays unioned).
+                    // Step 3: dedup each plugins[key] array by (version, installPath) —
+                    //         both now in target-space — keeping first (target-native) occurrence.
+                    dedupPluginRecords(deepMergeJSON(target: $0, source: repointedSrc))
+                }
+                record(outcome, toInstalled, &report)
             } catch {
-                report.issues.append("migratePlugins: write \(toInstalled): \(error.localizedDescription)")
+                report.issues.append("migratePlugins: \(error.localizedDescription)")
             }
         }
 
@@ -556,6 +511,14 @@ public struct SessionMigration: Sendable {
         merge(migratePlugins(fromConfigDir: fromConfigDir, toConfigDir: toConfigDir))
 
         return report
+    }
+
+    /// A hot-file merge that changed nothing is a skip, not a copy.
+    private static func record(_ outcome: HotJSONFile.Outcome, _ path: String, _ report: inout MigrateReport) {
+        switch outcome {
+        case .written:   report.copied.append(path)
+        case .unchanged: report.skipped.append(path)
+        }
     }
 
     // MARK: - Plugin dedup helper

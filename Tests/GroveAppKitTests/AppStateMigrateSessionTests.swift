@@ -160,12 +160,12 @@ final class AppStateMigrateSessionTests: XCTestCase {
                       "source settings.json must remain after migration")
     }
 
-    // MARK: - Test 4: live-target guard — refused when TARGET account has a running process
+    // MARK: - Test 4: HOT migration — the TARGET account is in use
 
     /// Injects a live process attributed to the TARGET account via allLiveProcessesOverride.
-    /// migrateSession must refuse (set actionError mentioning "running") and must NOT
-    /// copy any files to the target configDir.
-    func testMigrateSessionRefusesWhenTargetAccountHasLiveProcess() async throws {
+    /// migrateSession must NOT refuse: the session lands in the target, no error is
+    /// raised, and what the running account already had in its hot files survives.
+    func testMigrateSessionSucceedsWhileTargetAccountHasLiveProcess() async throws {
         let cwd = "/Users/x/Projects/live-target"
         let sessionId = "migrate-live-target-s1"
         let sourceDir = root.appendingPathComponent("src-live-guard")
@@ -185,29 +185,32 @@ final class AppStateMigrateSessionTests: XCTestCase {
                                      accountName: targetAccount.name)
         state.allLiveProcessesOverride = [liveProcess]
 
+        // What the in-use target account already owns — must survive the merge.
+        let fm = FileManager.default
+        try fm.createDirectory(at: targetDir, withIntermediateDirectories: true)
+        let targetHome = targetDir.appendingPathComponent(".claude.json")
+        try Data(#"{"oauthAccount":{"emailAddress":"live@example.com"},"projects":{"/some/other/cwd":{"hasTrustDialogAccepted":true}}}"#.utf8)
+            .write(to: targetHome)
+
         await state.migrateSession(cwd: cwd, sessionId: sessionId,
                                    from: sourceAccount, to: targetAccount)
 
-        // Must have set actionError mentioning the session is running
-        let error = try XCTUnwrap(state.actionError,
-                                   "migrateSession must set actionError when target account has a live process")
-        XCTAssertTrue(error.lowercased().contains("running"),
-                      "actionError must mention 'running'; got: \(error)")
-        XCTAssertTrue(error.contains(targetAccount.name),
-                      "actionError must mention the target account name '\(targetAccount.name)'; got: \(error)")
+        XCTAssertNil(state.actionError, "a live session under the target account must not block migration")
 
-        // Target configDir must remain empty — no transcript, no settings.json, nothing
-        let fm = FileManager.default
         let mangled = ClaudeService.mangle(cwd)
         let targetTranscript = targetDir
             .appendingPathComponent("projects")
             .appendingPathComponent(mangled)
             .appendingPathComponent("\(sessionId).jsonl")
-        XCTAssertFalse(fm.fileExists(atPath: targetTranscript.path),
-                       "target transcript must NOT exist when migration was refused")
-        let targetSettings = targetDir.appendingPathComponent("settings.json")
-        XCTAssertFalse(fm.fileExists(atPath: targetSettings.path),
-                       "target settings.json must NOT exist when migration was refused")
+        XCTAssertTrue(fm.fileExists(atPath: targetTranscript.path),
+                      "transcript must land in the in-use target account")
+
+        let home = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: targetHome)) as? [String: Any])
+        XCTAssertEqual((home["oauthAccount"] as? [String: Any])?["emailAddress"] as? String, "live@example.com",
+                       "the running account's login must survive")
+        let projects = try XCTUnwrap(home["projects"] as? [String: Any])
+        XCTAssertNotNil(projects["/some/other/cwd"], "the live session's own project entry must survive")
+        XCTAssertFalse(fm.fileExists(atPath: targetHome.path + ".lock"), "the config lock must be released")
     }
 
     /// Happy-path complement: with NO live processes, migrateSession proceeds normally.

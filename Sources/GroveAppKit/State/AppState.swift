@@ -941,7 +941,7 @@ extension AppState {
     /// Full cross-account session migration: copies the session's transcript,
     /// aux files, tasks, settings keys, and plugins into the target account's
     /// configDir — non-destructively (never overwrites). No-op when source and
-    /// target share the same account name.
+    /// target share the same account name. Works while the target account is in use.
     public func migrateSession(cwd: String, sessionId: String,
                                from sourceAccount: AccountConfig,
                                to targetAccount: AccountConfig) async {
@@ -950,22 +950,11 @@ extension AppState {
         let fromConfigDir = expandTilde(sourceAccount.configDir)
         let toConfigDir   = expandTilde(targetAccount.configDir)
 
-        // SAFETY: refuse if any process is live under the TARGET account.
-        // migratePlugins and migrateSettings do atomic read-modify-write of the target's
-        // hot config files; a concurrent claude process writing those files between our
-        // read and write causes a silent lost update.
-        let live: [LiveProcess]
-        if let override = allLiveProcessesOverride {
-            live = override
-        } else {
-            let service = liveProcessValidatorOverride
-                .map { ClaudeService().withProcessValidator($0) } ?? ClaudeService()
-            live = service.allLiveProcesses(accounts: config.accounts)
-        }
-        if live.contains(where: { $0.accountName == targetAccount.name }) {
-            actionError = "Target account \"\(targetAccount.name)\" has a running session — close it before migrating (its config could be overwritten)."
-            return
-        }
+        // HOT migration: sessions running under the TARGET account are fine. The
+        // target's hot config files (.claude.json, settings.json, plugin registries)
+        // are merged through HotJSONFile — Claude's own `<file>.lock`, a
+        // compare-before-swap, and no write at all when nothing changes — so a
+        // concurrent claude process neither loses an update nor causes one.
         let fromHomeJSON  = claudeJSONPath(for: sourceAccount)
         let toHomeJSON    = claudeJSONPath(for: targetAccount)
         let mirrorRoot    = TranscriptMirror.mirrorRoot(canonicalDir: canonicalDir)
