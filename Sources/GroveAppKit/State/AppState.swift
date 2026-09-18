@@ -35,6 +35,27 @@ public final class AppState: ObservableObject {
     /// refreshUsage on the scan tick. Empty until the first refresh.
     @Published public var usageByAccount: [String: AccountUsageAnalytics] = [:]
     @Published public var snapshotsByAccount: [String: [UsageSnapshot]] = [:]
+    /// When the displayed limits were actually OBTAINED — the newest `capturedAt`
+    /// across every account's captures, not the time the refresh loop last ran. The
+    /// OAuth client caches for 180s, so a tick can pass without the numbers moving;
+    /// the panel's footer must not claim such data is current. nil until first data.
+    @Published public var usageDataAsOf: Date?
+    /// True while a usage FETCH is in flight — the footer swaps its refresh button for
+    /// a loading indicator. Only set by passes that actually go to the network, never
+    /// by the local liveness tick.
+    @Published public var isRefreshingUsage: Bool = false
+    /// Why the last usage FETCH failed, or nil when it succeeded. The OAuth call used to
+    /// be a bare `try?`: an expired bearer, a 429 backoff or a dead network produced a
+    /// silent no-op, the panel kept showing its retained capture, and pressing Refresh
+    /// looked like a broken button. Cleared on the next success. Only fetch passes touch
+    /// it — a local liveness tick makes no request and so can neither set nor clear it.
+    @Published public var usageFetchError: String?
+    /// Newest successful synthetic OAuth capture per account. Nothing persists these
+    /// (only the statusline writes `grove/usage`), and `refreshUsage` rebuilds
+    /// `snapshotsByAccount` from disk every pass — so this is what keeps the
+    /// API-only windows on screen between fetches. See the re-attach step in
+    /// `refreshUsage` for why dropping them made the model bar blink.
+    private var lastOAuthSnapshot: [String: UsageSnapshot] = [:]
     /// Per-account snapshot-delta cost ledger — the forward-accurate daily-cost source for the
     /// Daily Usage chart, accumulated from statusline snapshots in refreshUsage and persisted.
     @Published public var usageLedgerByAccount: [String: UsageCostLedger] = [:]
@@ -233,6 +254,8 @@ public final class AppState: ObservableObject {
     /// account's own Keychain token.
     private let oauthClient = OAuthUsageClient(
         fetcher: URLSessionUsageFetcher(), appVersion: GroveVersion.current,
+        // One bucket picture shared with Brow (the notch utility): see UsagePacingLedger.
+        ledger: FileUsagePacingLedger(),
         // Cache the Keychain token per launch so reading Claude Code's credentials
         // prompts the user at most once per account per launch (not every ~3-min poll).
         credentials: CachingCredentialsReader())
@@ -417,9 +440,12 @@ extension AppState {
     /// with the scan via `async let`, and its heavy file I/O happens off the main
     /// actor (see refreshUsage), so neither freezes the panel (item 2). Both are
     /// awaited before returning so tests and the 15s loop stay deterministic.
-    public func refresh() async {
+    /// `oauth` defaults to `.skip` because this is the 15s liveness tick: it re-reads
+    /// local captures, sessions and worktrees, and must not touch the rate-limited
+    /// usage API. The panel-open pass passes `.fetch` once.
+    public func refresh(oauth policy: OAuthPolicy = .skip) async {
         let started = Date()
-        async let usage: Void = refreshUsage(now: started)
+        async let usage: Void = refreshUsage(now: started, oauth: policy)
         async let sessions: Void = refreshSessionIndex()
         // Scan the selected project every tick (its detail view needs fresh data);
         // scan the OTHERS once, when they have no snapshot yet, so EVERY project card
@@ -1214,18 +1240,42 @@ extension AppState {
     /// cold transcript parse never freezes the panel on open (item 2). The shared
     /// `usageAnalytics` keeps its mtime cache between calls, so steady-state ticks
     /// only re-parse changed files. Results are assigned back on the main actor.
-    public func refreshUsage(now: Date) async {
+    /// Whether THIS refresh may talk to Anthropic's usage API. The caller decides —
+    /// it used to be inferred from `isPanelOpen`, which meant the 15s liveness loop
+    /// re-fetched limits all day, burned rate limit, and (see `lastOAuthSnapshot`)
+    /// made the OAuth-only bars blink.
+    public enum OAuthPolicy: Sendable, Equatable {
+        /// Local statusline captures only. The liveness tick and the background
+        /// menu-bar timer: neither needs the API, and the menu-bar readout is built
+        /// from the statusline weekly window, which costs no keychain access.
+        case skip
+        /// One request per account, served from the client's 180s cache when warm.
+        /// This is what opening the panel means: "show me current limits". Automatic,
+        /// so `config.usage.oauthLiveEnabled` can switch it off.
+        case fetch
+        /// The refresh button: bypass the result cache. Still honours the 429
+        /// backoff — a user holding the button must not earn a longer ban. A direct
+        /// gesture, so it is NOT subject to the automatic-fetch setting; a button that
+        /// silently did nothing would be worse than no button.
+        case force
+    }
+
+    public func refreshUsage(now: Date, oauth policy: OAuthPolicy = .skip) async {
+        let wantsOAuth: Bool
+        switch policy {
+        case .skip:  wantsOAuth = false
+        case .fetch: wantsOAuth = config.usage.oauthLiveEnabled
+        case .force: wantsOAuth = true
+        }
+        // Only a pass that actually goes to the network shows the loading indicator;
+        // otherwise it would flash on every liveness tick.
+        if wantsOAuth { isRefreshingUsage = true }
+        defer { if wantsOAuth { isRefreshingUsage = false } }
         let analytics = usageAnalytics
         let jobs: [(name: String, dir: String, claudeJSON: String)] = config.accounts.map {
             (name: $0.name, dir: expandTilde($0.configDir), claudeJSON: claudeJSONPath(for: $0))
         }
         let started = Date()
-        // Fetch OAuth only on an EXPLICIT decision: the panel is open (a user
-        // gesture) OR the user opted into the always-on live poll. The test provider
-        // override supplies the *provider* (see below) but must NOT itself force the
-        // fetch — otherwise the background menu-bar timer would hit the keychain
-        // before any gesture. `oauthLiveEnabled` was a dead flag until now (Phase 5A).
-        let wantsOAuth = isPanelOpen || config.usage.oauthLiveEnabled
         let ledgerStore = usageLedgerStore
         let inLedgers = usageLedgerByAccount
         let result = await Task.detached(priority: .utility) {
@@ -1258,23 +1308,58 @@ extension AppState {
             return (snaps, byAcc, tiers, ids, baseLedgers)
         }.value
         var snaps = result.snaps
-        // OAuth limits from Anthropic's usage API, folded in as the latest capture for
-        // EVERY account — the authoritative source and the only one carrying the 7-day
-        // Sonnet window. It requires a KEYCHAIN read, so we only fetch it when the panel
-        // is OPEN (a user gesture): the launch one-shot and the background menu-bar
-        // timer (panel closed) must NOT prompt for / block on the keychain before any
-        // gesture. The menu-bar readout needs only the statusline weekly window, which
-        // is already captured above without any keychain access.
+        // OAuth limits from Anthropic's usage API. It requires a KEYCHAIN read and it is
+        // rate-limited, so it is fetched only when the caller says so (panel opened, or
+        // the refresh button) — never on the liveness tick or the background timer.
         if wantsOAuth {
-            let provider: @Sendable (String, Date) async -> OAuthUsage? =
-                oauthLimitsOverride ?? { [oauthClient] dir, now in try? await oauthClient.usage(configDir: dir, now: now) }
+            let bypassCache = policy == .force
+            // Report the FIRST failure across accounts, and only when no account
+            // succeeded — one broken account among several should not label the whole
+            // panel as failing when the bars it drew are current.
+            var firstFailure: String?
+            var anySucceeded = false
             for job in jobs {
-                guard let usage = await provider(job.dir, now),
-                      let snap = Self.oauthSnapshot(accountName: job.name, usage: usage, now: now) else { continue }
-                snaps[job.name, default: []].append(snap)
+                let usage: OAuthUsage?
+                if let override = oauthLimitsOverride {
+                    usage = await override(job.dir, now)
+                } else {
+                    do {
+                        usage = try await oauthClient.usage(configDir: job.dir, now: now,
+                                                            force: bypassCache)
+                    } catch {
+                        usage = nil
+                        let text = Self.usageErrorText(error)
+                        GroveLog.perf.error("oauth usage failed for \(job.name, privacy: .public): \(text, privacy: .public)")
+                        if firstFailure == nil { firstFailure = text }
+                    }
+                }
+                guard let usage,
+                      let snap = Self.oauthSnapshot(accountName: job.name, usage: usage, now: now)
+                else { continue }
+                anySucceeded = true
+                lastOAuthSnapshot[job.name] = snap
+            }
+            usageFetchError = anySucceeded ? nil : firstFailure
+        }
+        // Re-attach each account's newest known OAuth capture whether or not THIS pass
+        // fetched. The capture is synthetic — nothing writes it to `grove/usage`, and the
+        // block above rebuilds `snaps` from disk every time — so without this the windows
+        // that ONLY the API supplies would vanish on any pass that didn't fetch: a
+        // liveness tick, a 429 backoff (up to an hour), a transient error. The
+        // model-scoped bar is exactly such a window: the live endpoint returns null for
+        // every top-level per-model key, so `limits[] weekly_scoped` is its only source
+        // and it has nothing to fall back on. Retained captures keep their ORIGINAL
+        // `capturedAt`, so the footer still reports the true age and the staleness checks
+        // in `currentWindow` still fire once a window's reset passes.
+        let liveNames = Set(config.accounts.map(\.name))
+        lastOAuthSnapshot = lastOAuthSnapshot.filter { liveNames.contains($0.key) }
+        for job in jobs where liveNames.contains(job.name) {
+            if let retained = lastOAuthSnapshot[job.name] {
+                snaps[job.name, default: []].append(retained)
             }
         }
         snapshotsByAccount = snaps
+        usageDataAsOf = snaps.values.flatMap { $0 }.compactMap(\.capturedAt).max()
         usageByAccount = result.byAcc
         tierCache = result.tiers
         identityByAccount = result.ids
@@ -1305,6 +1390,21 @@ extension AppState {
         GroveLog.perf.info("usage refresh (\(jobs.count) accts, oauth=\(wantsOAuth)): \(Int(Date().timeIntervalSince(started) * 1000))ms")
     }
 
+    /// A short, user-facing reason a usage fetch failed. Deliberately actionable: each
+    /// case tells the user whether to wait, to sign in, or that the problem is ours.
+    static func usageErrorText(_ error: Error) -> String {
+        switch error {
+        case OAuthUsageError.noCredentials:   return "No Claude credentials found"
+        case OAuthUsageError.tooManyRequests: return "Rate limited — try again shortly"
+        case OAuthUsageError.backoff:         return "Rate limited — waiting to retry"
+        case OAuthUsageError.malformed:       return "Unexpected response from Anthropic"
+        case OAuthUsageError.http(401), OAuthUsageError.http(403):
+            return "Claude sign-in expired — run `claude` to refresh it"
+        case OAuthUsageError.http(let status): return "Anthropic returned HTTP \(status)"
+        default: return (error as NSError).localizedDescription
+        }
+    }
+
     /// Builds a synthetic capture from OAuth usage so the dashboard, aggregate, and
     /// header chip pick up the limits exactly like a statusline capture. The API's
     /// `utilization` is already a 0–100 used-percentage (verified against the live
@@ -1332,7 +1432,11 @@ extension AppState {
         let scopedModel = usage.weeklyScoped?.modelDisplayName
         guard five != nil || seven != nil || sonnet != nil || opus != nil || fable != nil
                 || scopedWindow != nil else { return nil }
-        return UsageSnapshot(accountName: accountName, sessionId: "oauth", capturedAt: now, cwd: nil,
+        // Dated by the FETCH, not by this tick: a 180s cache hit carries the instant of
+        // the original request, so the panel's "Updated …" line can't claim stale numbers
+        // are current. nil (canned test values) falls back to the tick.
+        return UsageSnapshot(accountName: accountName, sessionId: "oauth",
+                             capturedAt: usage.fetchedAt ?? now, cwd: nil,
                              modelId: nil, modelDisplayName: nil, effort: nil,
                              contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
                              fiveHour: five, sevenDay: seven, sevenDaySonnet: sonnet,
@@ -1366,19 +1470,43 @@ extension AppState {
         return (Int(used.rounded()), level)
     }
 
+    /// Every account's resolved limit windows + tier. The SINGLE source the Overall
+    /// column and the menu-bar readout both aggregate from, so the panel and the
+    /// menu bar can never report different numbers for the same window.
+    ///
+    /// Resolution goes through `currentWindow` — the SAME function the per-account
+    /// columns use — so Overall's per-account chip and that account's own bar are the
+    /// same number by construction. They diverged while this path had its own
+    /// statusline-preferring resolver. An account whose statusline lacks rate_limits
+    /// still contributes from OAuth; only a window absent from every capture drops out.
+    public func accountLimitInputs(now: Date) -> [AccountLimitInput] {
+        config.accounts.map { account in
+            let snaps = snapshotsByAccount[account.name] ?? []
+            let scoped = modelScopedWindow(latestModelId: resolveLatestModelId(snaps),
+                                           snapshots: snaps, now: now)
+            return AccountLimitInput(
+                account: account.name,
+                tier: tier(for: account),
+                fiveHour: currentWindow(snaps, Self.pick(.fiveHour), now: now),
+                weekly: currentWindow(snaps, Self.pick(.sevenDay), now: now),
+                weeklySonnet: currentWindow(snaps, Self.pick(.sevenDaySonnet), now: now),
+                scopedModel: scoped?.model,
+                scopedWindow: scoped?.window)
+        }
+    }
+
     /// Aggregate remaining capacity for a window across accounts (spec §C.3): each
     /// account weighted by tier, combined with its most-recent capture's used%.
     public func aggregateRemaining(window: LimitWindow, now: Date) -> RateLimitModel.Aggregate {
-        let accounts: [RateLimitModel.AccountWindow] = config.accounts.compactMap { account in
-            let snaps = snapshotsByAccount[account.name] ?? []
-            // Per-window resolution: statusline first, OAuth-fetched limits as the
-            // fallback (FIX I2). An account whose statusline lacks rate_limits but
-            // whose limits come from the OAuth usage API still contributes here, so
-            // the "Overall" scope consolidates EVERY account, not just the ones with
-            // statusline windows. Only a window absent from BOTH sources drops out.
-            let captured = accountWindow(snaps, Self.pick(window), now: now)
+        let accounts: [RateLimitModel.AccountWindow] = accountLimitInputs(now: now).compactMap { input in
+            let captured: CapturedWindow?
+            switch window {
+            case .fiveHour:       captured = input.fiveHour
+            case .sevenDay:       captured = input.weekly
+            case .sevenDaySonnet: captured = input.weeklySonnet
+            }
             guard let used = captured?.usedPercentage else { return nil }
-            return RateLimitModel.AccountWindow(tier: tier(for: account), usedPercentage: used)
+            return RateLimitModel.AccountWindow(tier: input.tier, usedPercentage: used)
         }
         return RateLimitModel.aggregateRemaining(accounts)
     }
@@ -1393,7 +1521,7 @@ extension AppState {
             let snaps = snapshotsByAccount[account.name] ?? []
             // Same statusline-first, OAuth-fallback resolution as aggregateRemaining
             // (FIX I2) so the soonest reset spans EVERY account's windows.
-            return accountWindow(snaps, Self.pick(window), now: now)
+            return currentWindow(snaps, Self.pick(window), now: now)
         }
         return soonestReset(windows, now: now).flatMap(parseISODate)
     }

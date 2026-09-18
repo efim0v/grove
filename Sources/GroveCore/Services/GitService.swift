@@ -17,12 +17,20 @@ public struct WorktreeEntry: Sendable, Equatable {
     public let branch: String?       // nil when detached
     public let head: String
     public let isMain: Bool
+    /// Filesystem creation time (birthtime) of the worktree directory — the
+    /// HONEST "when was this workspace made" signal. nil when the porcelain is
+    /// parsed without a disk probe (pure parse) or the birthtime is unreadable.
+    /// This is intentionally NOT derived from any commit/merge-base date: a fresh
+    /// fork off a 15-day-stale base must read as "today", not as the base's age.
+    public let createdAt: Date?
 
-    public init(path: String, branch: String?, head: String, isMain: Bool) {
+    public init(path: String, branch: String?, head: String, isMain: Bool,
+                createdAt: Date? = nil) {
         self.path = path
         self.branch = branch
         self.head = head
         self.isMain = isMain
+        self.createdAt = createdAt
     }
 }
 
@@ -88,7 +96,20 @@ public struct GitService: Sendable {
 
     public func worktrees(repo: RepoInfo) async throws -> [WorktreeEntry] {
         let result = try await runner.runOK("git", ["-C", repo.path, "worktree", "list", "--porcelain"])
-        return Self.parseWorktreePorcelain(result.stdout)
+        // Stamp each entry with its directory's birthtime (the real workspace age
+        // source). The porcelain parse stays pure/string-only; the disk probe lives
+        // here so it's exercised only on the real listing path.
+        return Self.parseWorktreePorcelain(result.stdout).map { entry in
+            WorktreeEntry(path: entry.path, branch: entry.branch, head: entry.head,
+                          isMain: entry.isMain,
+                          createdAt: Self.directoryCreationDate(entry.path))
+        }
+    }
+
+    /// Filesystem birthtime of a directory, used as the workspace's creation
+    /// time. nil when unreadable (the badge then degrades to "unknown age").
+    static func directoryCreationDate(_ path: String) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: path))?[.creationDate] as? Date
     }
 
     /// Porcelain format: blank-line-separated stanzas of
@@ -143,7 +164,19 @@ public struct GitService: Sendable {
             let ref = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             let prefix = "refs/remotes/origin/"
             if ref.hasPrefix(prefix), ref.count > prefix.count {
-                return String(ref.dropFirst(prefix.count))
+                let name = String(ref.dropFirst(prefix.count))
+                // Return the REMOTE-TRACKING ref (origin/<name>), not the bare local
+                // name. The local <name> is frequently stale (behind origin), which
+                // made every comparison relative to it wrong: a fresh fork off the
+                // current upstream counted its INHERITED commits as its own "ahead"
+                // (the +95 bug). Comparing against origin/<name> measures the user's
+                // real divergence from the upstream they actually forked from. Falls
+                // through to the offline (bare-name) path when the remote ref is
+                // absent (no fetch / no remote), preserving offline behavior.
+                if await refExists(repoPath: repo.path, "refs/remotes/origin/\(name)") {
+                    return "origin/\(name)"
+                }
+                return name
             }
         }
         for candidate in ["main", "master", "dev"] {
@@ -183,6 +216,19 @@ public struct GitService: Sendable {
     public func branchExists(repoPath: String, _ branch: String) async -> Bool {
         guard let result = try? await runner.run(
             "git", ["-C", repoPath, "rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"],
+            cwd: nil, env: nil, timeout: 10
+        ) else { return false }
+        return result.exitCode == 0
+    }
+
+    /// Existence of ANY resolvable ref — local branch, remote-tracking ref
+    /// (`origin/main`), tag, or sha. Unlike `branchExists` (which hard-scopes to
+    /// `refs/heads/`), this validates whatever `baseBranch()` returns now that the
+    /// base can be a remote-tracking ref. Used where a base ref is checked before
+    /// being fed to a range/log.
+    public func refExists(repoPath: String, _ ref: String) async -> Bool {
+        guard let result = try? await runner.run(
+            "git", ["-C", repoPath, "rev-parse", "--verify", "--quiet", ref],
             cwd: nil, env: nil, timeout: 10
         ) else { return false }
         return result.exitCode == 0
@@ -270,11 +316,103 @@ let isoDateWithFractional: ISO8601DateFormatter = {
     return f
 }()
 
-/// Parses `%cI` output; tries both formatter variants (with/without fractional seconds).
+/// Parses `%cI` / transcript ISO8601 output. Tries a fast integer parser first (the
+/// common `YYYY-MM-DDTHH:MM:SS[.frac][Z|±HH[:MM]]` shapes), then falls back to the
+/// formatter variants for anything unusual. The formatter path is ~90µs/call, so a
+/// cold usage scan of 200k+ transcript records cost ~18s on it alone (the Daily-Usage
+/// stall); the fast path is ~0.3µs and handles essentially all real timestamps.
 func gitISODate(_ raw: String) -> Date? {
     let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     if s.isEmpty { return nil }
+    if let fast = fastISO8601(s) { return fast }
     return isoDatePlain.date(from: s) ?? isoDateWithFractional.date(from: s)
+}
+
+/// Fast, allocation-light ISO8601 parser for `YYYY-MM-DDTHH:MM:SS[.fraction][Z|±HH[:MM]]`.
+/// Pure integer math via Howard Hinnant's civil-days algorithm — no ISO8601DateFormatter.
+/// Returns nil for any shape it doesn't FULLY recognize (and rejects invalid dates the
+/// same way the formatter would, e.g. Feb 30), so `gitISODate` falls back to the
+/// formatters and exotic inputs keep their exact previous behavior.
+func fastISO8601(_ s: String) -> Date? {
+    var s = s
+    // withUTF8 hands us a contiguous byte buffer with no Swift-array allocation and no
+    // per-subscript ARC — this is the hot path (200k+ records per cold usage scan).
+    return s.withUTF8 { fastISO8601(bytes: $0) }
+}
+
+private func fastISO8601(bytes b: UnsafeBufferPointer<UInt8>) -> Date? {
+    let n = b.count
+    guard n >= 19 else { return nil }                       // "YYYY-MM-DDTHH:MM:SS"
+    @inline(__always) func num(_ i: Int, _ len: Int) -> Int? {
+        var v = 0
+        for k in i..<(i + len) {
+            let c = b[k]
+            guard c >= 0x30, c <= 0x39 else { return nil }  // ASCII digit
+            v = v * 10 + Int(c - 0x30)
+        }
+        return v
+    }
+    guard
+        let year = num(0, 4), b[4] == 0x2D,                 // '-'
+        let month = num(5, 2), b[7] == 0x2D,
+        let day = num(8, 2),
+        b[10] == 0x54 || b[10] == 0x74 || b[10] == 0x20,    // 'T' / 't' / ' '
+        let hour = num(11, 2), b[13] == 0x3A,               // ':'
+        let minute = num(14, 2), b[16] == 0x3A,
+        let second = num(17, 2)
+    else { return nil }
+
+    var idx = 19
+    var frac = 0.0
+    if idx < n, b[idx] == 0x2E {                            // '.fraction'
+        idx += 1
+        var scale = 0.1
+        var any = false
+        while idx < n, b[idx] >= 0x30, b[idx] <= 0x39 {
+            frac += Double(b[idx] - 0x30) * scale
+            scale /= 10
+            idx += 1
+            any = true
+        }
+        guard any else { return nil }
+    }
+
+    var offset = 0
+    if idx < n {
+        let c = b[idx]
+        if c == 0x5A || c == 0x7A {                          // 'Z' / 'z'
+            idx += 1
+        } else if c == 0x2B || c == 0x2D {                   // '+' / '-'
+            let sign = (c == 0x2D) ? -1 : 1
+            idx += 1
+            guard let oh = num(idx, 2) else { return nil }
+            idx += 2
+            if idx < n, b[idx] == 0x3A { idx += 1 }          // optional ':'
+            var om = 0
+            if idx + 1 < n, let m = num(idx, 2) { om = m; idx += 2 }
+            offset = sign * (oh * 3600 + om * 60)
+        } else {
+            return nil
+        }
+    }
+    guard idx == n else { return nil }                       // no trailing garbage
+
+    guard month >= 1, month <= 12, hour <= 23, minute <= 59, second <= 59 else { return nil }
+    let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    let daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+    guard day >= 1, day <= daysInMonth else { return nil }
+
+    // Days since the Unix epoch (1970-01-01), Hinnant's days_from_civil.
+    var y = year
+    if month <= 2 { y -= 1 }
+    let era = (y >= 0 ? y : y - 399) / 400
+    let yoe = y - era * 400
+    let mp = (month + 9) % 12
+    let doy = (153 * mp + 2) / 5 + day - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    let days = era * 146097 + doe - 719468
+    let secs = Double(days * 86400 + hour * 3600 + minute * 60 + second - offset) + frac
+    return Date(timeIntervalSince1970: secs)
 }
 
 /// Public ISO8601 parse shim forwarding to the package-internal `gitISODate`,

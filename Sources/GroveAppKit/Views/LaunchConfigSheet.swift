@@ -40,6 +40,11 @@ struct LaunchConfigSheet: View {
                     ForEach(ClaudeService.effortLevels, id: \.self) { Text($0).tag(String?.some($0)) }
                 }.pickerStyle(.menu).labelsHidden().fixedSize()
             }
+            row("Skip permissions") {
+                Toggle("", isOn: $request.skipPermissions)
+                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                    .help("Launch with --dangerously-skip-permissions for this session")
+            }
 
             HStack {
                 Button("Cancel") { state.launchRequest = nil }

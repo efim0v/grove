@@ -25,15 +25,25 @@ public struct ClaudeSession: Sendable, Equatable {
     public let lastActivity: Date
     public let accountName: String
     public let gitBranch: String?
+    /// Session creation moment (first transcript timestamp); survives resumes.
+    public let createdAt: Date?
+    /// Human-prompt count ("N turns").
+    public let turnCount: Int
+    /// Last model the session was driven with (e.g. "claude-opus-4-8").
+    public let model: String?
 
     public init(id: String, cwd: String, title: String?, lastActivity: Date,
-                accountName: String, gitBranch: String?) {
+                accountName: String, gitBranch: String?,
+                createdAt: Date? = nil, turnCount: Int = 0, model: String? = nil) {
         self.id = id
         self.cwd = cwd
         self.title = title
         self.lastActivity = lastActivity
         self.accountName = accountName
         self.gitBranch = gitBranch
+        self.createdAt = createdAt
+        self.turnCount = turnCount
+        self.model = model
     }
 }
 
@@ -115,6 +125,15 @@ public final class ClaudeService: @unchecked Sendable {
         let cwd: String
         let title: String?
         let gitBranch: String?
+        /// First record's `timestamp` — the session's TRUE creation moment. It
+        /// survives resumes: a resumed transcript replays the original messages
+        /// with their original timestamps, so the first line still dates day one.
+        let createdAt: Date?
+        /// Count of human prompts (external `user` records) — how developed the
+        /// session is, for the "N turns" meta.
+        let turnCount: Int
+        /// Last model seen on a message record — the model to resume under.
+        let model: String?
     }
 
     private let cacheLock = NSLock()
@@ -219,7 +238,10 @@ public final class ClaudeService: @unchecked Sendable {
                 title: parsed.title,
                 lastActivity: mtime,
                 accountName: account.name,
-                gitBranch: parsed.gitBranch
+                gitBranch: parsed.gitBranch,
+                createdAt: parsed.createdAt,
+                turnCount: parsed.turnCount,
+                model: parsed.model
             ))
         }
         return result.sorted { $0.lastActivity > $1.lastActivity }
@@ -271,7 +293,9 @@ public final class ClaudeService: @unchecked Sendable {
             guard seen.insert(parsed.cwd + "\u{0}" + parsed.id).inserted else { continue }
             rows.append(ClaudeSession(id: parsed.id, cwd: parsed.cwd, title: parsed.title,
                                       lastActivity: cand.mtime, accountName: cand.account,
-                                      gitBranch: parsed.gitBranch))
+                                      gitBranch: parsed.gitBranch,
+                                      createdAt: parsed.createdAt, turnCount: parsed.turnCount,
+                                      model: parsed.model))
             if rows.count >= limit { break }
         }
         return rows
@@ -326,7 +350,9 @@ public final class ClaudeService: @unchecked Sendable {
             guard seen.insert(parsed.cwd + "\u{0}" + parsed.id).inserted else { continue }
             rows.append(ClaudeSession(id: parsed.id, cwd: parsed.cwd, title: parsed.title,
                                       lastActivity: cand.mtime, accountName: cand.account,
-                                      gitBranch: parsed.gitBranch))
+                                      gitBranch: parsed.gitBranch,
+                                      createdAt: parsed.createdAt, turnCount: parsed.turnCount,
+                                      model: parsed.model))
             if rows.count >= limit { break }
         }
         return rows
@@ -359,6 +385,9 @@ public final class ClaudeService: @unchecked Sendable {
         var sawFirstUserRecord = false
         var aiTitle: String?
         var fallbackTitle: String?
+        var createdAt: Date?        // first record carrying a timestamp
+        var turnCount = 0           // external user prompts
+        var model: String?          // last message.model seen
 
         for line in text.split(whereSeparator: \.isNewline) {
             guard
@@ -368,6 +397,15 @@ public final class ClaudeService: @unchecked Sendable {
             if fileCwd == nil, let recordCwd = object["cwd"] as? String {
                 fileCwd = recordCwd                 // first record carrying "cwd" wins
             }
+            // First timestamp wins → creation moment. Cheap: same loop already runs.
+            if createdAt == nil, let ts = object["timestamp"] as? String {
+                createdAt = gitISODate(ts)
+            }
+            // Last model wins → the model the session was last driven with.
+            if let message = object["message"] as? [String: Any],
+               let m = message["model"] as? String, !m.isEmpty {
+                model = m
+            }
             let type = object["type"] as? String
             if type == "user" {
                 if sessionId == nil { sessionId = object["sessionId"] as? String }
@@ -375,12 +413,14 @@ public final class ClaudeService: @unchecked Sendable {
                     sawFirstUserRecord = true
                     gitBranch = object["gitBranch"] as? String
                 }
-                if fallbackTitle == nil,
-                   (object["userType"] as? String) == "external",
-                   let message = object["message"] as? [String: Any],
-                   let textContent = extractText(message["content"]),
-                   !textContent.isEmpty {
-                    fallbackTitle = String(textContent.prefix(80))
+                if (object["userType"] as? String) == "external" {
+                    turnCount += 1                  // one human prompt
+                    if fallbackTitle == nil,
+                       let message = object["message"] as? [String: Any],
+                       let textContent = extractText(message["content"]),
+                       !textContent.isEmpty {
+                        fallbackTitle = String(textContent.prefix(80))
+                    }
                 }
             } else if type == "ai-title" {
                 if let title = object["aiTitle"] as? String { aiTitle = title }  // LAST one wins
@@ -388,7 +428,8 @@ public final class ClaudeService: @unchecked Sendable {
         }
 
         guard let id = sessionId, let cwd = fileCwd else { return nil }
-        return ParsedSession(id: id, cwd: cwd, title: aiTitle ?? fallbackTitle, gitBranch: gitBranch)
+        return ParsedSession(id: id, cwd: cwd, title: aiTitle ?? fallbackTitle, gitBranch: gitBranch,
+                             createdAt: createdAt, turnCount: turnCount, model: model)
     }
 
     /// User message content is either a plain string or an array of content blocks;

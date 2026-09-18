@@ -14,6 +14,7 @@ enum Fix {
         dirName: String = "alpha",
         branch: String? = "feat/x",
         forkDate: Date? = nil,
+        createdAt: Date? = nil,
         ahead: Int = 0,
         behind: Int = 0,
         dirty: Int = 0,
@@ -21,7 +22,7 @@ enum Fix {
     ) -> WorkspaceRepoState {
         let repo = RepoInfo(path: "/proj/\(dirName)", dirName: dirName)
         let entry = WorktreeEntry(path: "/ws/feature/\(dirName)", branch: branch,
-                                  head: "deadbeef", isMain: false)
+                                  head: "deadbeef", isMain: false, createdAt: createdAt)
         let meta: WorktreeMeta? = hasMeta
             ? WorktreeMeta(baseBranch: "main", forkPoint: "f0", forkDate: forkDate,
                            ahead: ahead, behind: behind, dirtyCount: dirty,

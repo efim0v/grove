@@ -74,10 +74,66 @@ final class GitWorktreeTests: XCTestCase {
         try Fixture.sh("git -C \(shellQuote(clone.path)) symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk")
 
         let base = await git.baseBranch(repo: repoInfo(clone), override: nil)
-        XCTAssertEqual(base, "trunk")
+        // The REMOTE-TRACKING ref, not the bare local name: the local branch can be
+        // stale, so comparisons must be relative to origin/<name>.
+        XCTAssertEqual(base, "origin/trunk")
 
         let overridden = await git.baseBranch(repo: repoInfo(clone), override: "docker")
         XCTAssertEqual(overridden, "docker") // override beats origin/HEAD too
+    }
+
+    /// The +95 regression, encoded: when the LOCAL base is behind origin, a fresh
+    /// fork off the upstream tip must read ahead==0 — because the base resolves to
+    /// origin/<name>, not the stale local branch.
+    func testFreshForkOffStaleLocalBaseIsZeroAhead() async throws {
+        let dir = try Fixture.tempDir("stale-base")
+        let upstream = try Fixture.makeRepo(in: dir, name: "upstream", defaultBranch: "trunk")
+        // Advance upstream by one commit AFTER the initial, then clone.
+        try Fixture.commit(repo: upstream, file: "u.txt", content: "u", message: "upstream advance")
+        let bare = dir.appendingPathComponent("upstream.git")
+        try Fixture.sh("git clone -q --bare \(shellQuote(upstream.path)) \(shellQuote(bare.path))")
+        let clone = dir.appendingPathComponent("clone")
+        try Fixture.sh("git clone -q \(shellQuote(bare.path)) \(shellQuote(clone.path))")
+        try Fixture.sh("git -C \(shellQuote(clone.path)) symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk")
+        // Make the LOCAL trunk stale: move it back one commit while origin/trunk
+        // (remote-tracking) stays at the real tip.
+        try Fixture.sh("git -C \(shellQuote(clone.path)) reset --hard HEAD~1")
+
+        let git = GitService()
+        let base = await git.baseBranch(repo: repoInfo(clone), override: nil)
+        XCTAssertEqual(base, "origin/trunk")
+
+        // Fork a branch from the upstream tip (origin/trunk) — zero own commits.
+        let wt = dir.appendingPathComponent("wt")
+        try Fixture.sh("git -C \(shellQuote(clone.path)) worktree add -q -b feat/x \(shellQuote(wt.path)) origin/trunk")
+        let head = try Fixture.sh("git -C \(shellQuote(clone.path)) rev-parse feat/x")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let entry = WorktreeEntry(path: wt.path, branch: "feat/x", head: head, isMain: false)
+
+        let honest = await git.meta(repoPath: clone.path, worktree: entry, relativeTo: base)
+        XCTAssertEqual(honest.ahead, 0, "fresh fork off origin/trunk has no own commits")
+        XCTAssertEqual(honest.behind, 0)
+
+        // Contrast: comparing against the STALE local trunk would wrongly count the
+        // inherited commit as the fork's own ahead — the old behavior.
+        let stale = await git.meta(repoPath: clone.path, worktree: entry, relativeTo: "trunk")
+        XCTAssertEqual(stale.ahead, 1, "stale local base mis-attributes the inherited commit")
+    }
+
+    /// worktrees() stamps each entry with its directory birthtime (the age source).
+    func testWorktreesCarryCreatedAt() async throws {
+        let dir = try Fixture.tempDir("created-at")
+        let repo = try Fixture.makeRepo(in: dir, name: "r")
+        let wt = dir.appendingPathComponent("wt")
+        try Fixture.addWorktree(repo: repo, branch: "feat/x", from: "main", at: wt)
+
+        let entries = try await git.worktrees(repo: repoInfo(repo))
+        let feature = entries.first { $0.branch == "feat/x" }
+        XCTAssertNotNil(feature?.createdAt, "worktree entry must carry a creation date")
+        if let created = feature?.createdAt {
+            XCTAssertLessThan(abs(created.timeIntervalSinceNow), 3_600,
+                              "a just-created worktree's birthtime is within the last hour")
+        }
     }
 
     func testBaseBranchFallbackChain() async throws {

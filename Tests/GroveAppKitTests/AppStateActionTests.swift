@@ -23,6 +23,7 @@ final class AppStateActionTests: XCTestCase {
         state.cmuxOverride = stubbedCmux(runner)
         // Fail-safe: default the canonical store to a temp dir, NEVER $HOME/.claude.
         state.canonicalDirOverride = root.appendingPathComponent("canonical-default").path
+        state.usageLedgerStoreDirOverride = root.appendingPathComponent("ledger").path
         return state
     }
 
@@ -85,6 +86,29 @@ final class AppStateActionTests: XCTestCase {
         let command = call.args[commandIndex + 1]
         XCTAssertTrue(command.contains("--model 'claude-opus-4-6'"), command)
         XCTAssertTrue(command.contains("--effort 'high'"), command)
+    }
+
+    /// SAFETY NET (pre-refactor characterization): a project's
+    /// `dangerouslySkipPermissions` flows through the launchClaude chokepoint into
+    /// the cmux `--command`. Pins this BEFORE launchClaude gains an optional
+    /// `skipPermissions` override param, so the per-project default can't silently
+    /// regress. (The no-project case — no flag — is already pinned by
+    /// testLaunchClaudeCreatesFocusedCmuxWorkspaceWithLaunchCommand.)
+    func testLaunchClaudeAppliesProjectSkipPermissionsToCommand() async throws {
+        var project = ProjectConfig(name: "p", path: "/proj")
+        project.workspacesRoot = "/ws"
+        project.dangerouslySkipPermissions = true
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [project], accounts: [account]))
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+
+        await state.launchClaude(cwd: "/ws/feat-x", title: "feat-x", account: account, resume: nil)
+
+        let call = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first)
+        let i = try XCTUnwrap(call.args.firstIndex(of: "--command"))
+        XCTAssertTrue(call.args[i + 1].contains("--dangerously-skip-permissions"), call.args[i + 1])
     }
 
     /// resumeSession applies the project's default model/effort (project beats
@@ -420,6 +444,44 @@ final class AppStateActionTests: XCTestCase {
                       "a live session under another account blocks the launch")
     }
 
+    /// SAFETY NET (pre-refactor characterization): the liveness guard MUST precede
+    /// the canonical-account check. With a session live under another account AND
+    /// NO canonical/default account configured, resumeSession must fail with the
+    /// LIVE error (naming the other account), NOT the canonical-missing error.
+    /// Pins guard ORDER so extracting this block into a shared helper (for
+    /// confirmLaunch cross-account linking) can't silently reorder it — the one
+    /// ordering edge the existing 5 resumeSession tests don't cover (they all
+    /// configure a canonical account).
+    func testResumeSessionLivenessGuardPrecedesCanonicalCheck() async throws {
+        let ownerDir = root.appendingPathComponent("acc-owner-order")
+        let targetDir = root.appendingPathComponent("acc-target-order")
+        let ownerSessions = ownerDir.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: ownerSessions, withIntermediateDirectories: true)
+        try Data(#"{"pid": 999998, "sessionId": "sess-order", "cwd": "/ws/feat-x", "status": "busy"}"#.utf8)
+            .write(to: ownerSessions.appendingPathComponent("999998.json"))
+        // NO default/canonical account in config — only owner + target.
+        let owner = AccountConfig(name: "owner", configDir: ownerDir.path)
+        let target = AccountConfig(name: "work", configDir: targetDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [owner, target]))
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        state.canonicalDirOverride = root.appendingPathComponent("no-canonical-order").path
+        state.liveProcessValidatorOverride = { _ in true }
+        let session = ClaudeSession(id: "sess-order", cwd: "/ws/feat-x", title: nil,
+                                    lastActivity: Date(), accountName: "owner", gitBranch: nil)
+
+        await state.resumeSession(session, as: target)
+
+        let error = try XCTUnwrap(state.actionError)
+        XCTAssertTrue(error.contains("owner") && error.lowercased().contains("live"),
+                      "liveness error must win over canonical-missing; got: \(error)")
+        XCTAssertFalse(error.lowercased().contains("canonical"),
+                       "canonical check must NOT pre-empt the liveness guard; got: \(error)")
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)
+    }
+
     // MARK: - model/effort defaults + relaunch
 
     func testSetProjectModelAndEffortPersist() async throws {
@@ -614,6 +676,9 @@ final class AppStateActionTests: XCTestCase {
             projects: [], accounts: [defaultAccount, work]))
         let state = makeState(runner: ScriptedRunner(responses: [:]))
         state.canonicalDirOverride = canonicalDir.path
+        // linkAccount now auto-installs the statusline wrapper (Phase 5A); keep that
+        // write inside a temp dir, never the real ~/Library/Application Support/Grove.
+        state.statuslineScriptDirOverride = root.appendingPathComponent("bin-link-symlink").path
 
         state.linkAccount(work)
 
@@ -624,6 +689,43 @@ final class AppStateActionTests: XCTestCase {
                 canonicalDir.appendingPathComponent(name).path)
         }
         XCTAssertEqual(state.config.accounts.first { $0.name == "work" }?.sharedStore, true)
+    }
+
+    /// Phase 5A: linking an account also auto-installs the grove statusline wrapper
+    /// so its usage is captured (the icloud "no usage" fix). Install is best-effort,
+    /// idempotent, and preserves the user's original statusLine.command.
+    func testLinkAccountAutoInstallsStatuslineMonitoring() async throws {
+        let canonicalDir = root.appendingPathComponent("canon-link-mon")
+        let workDir = root.appendingPathComponent("acc-work-link-mon")
+        try FileManager.default.createDirectory(at: canonicalDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        let original = "/bin/echo original-status"
+        try #"{"statusLine":{"type":"command","command":"\#(original)"}}"#
+            .write(to: workDir.appendingPathComponent("settings.json"),
+                   atomically: true, encoding: .utf8)
+        let defaultAccount = AccountConfig(name: "default", configDir: canonicalDir.path)
+        let work = AccountConfig(name: "work", configDir: workDir.path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}",
+            projects: [], accounts: [defaultAccount, work]))
+        let state = makeState(runner: ScriptedRunner(responses: [:]))
+        state.canonicalDirOverride = canonicalDir.path
+        state.statuslineScriptDirOverride = root.appendingPathComponent("bin-link").path
+
+        state.linkAccount(work)
+
+        XCTAssertNil(state.actionError)
+        // settings.json now points at the grove wrapper (per-account script path).
+        let data = try Data(contentsOf: workDir.appendingPathComponent("settings.json"))
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let command = (obj?["statusLine"] as? [String: Any])?["command"] as? String
+        XCTAssertNotNil(command)
+        XCTAssertTrue(command?.contains("grove-statusline-") == true,
+                      "linkAccount must repoint statusLine at the grove wrapper; got \(command ?? "nil")")
+        // The account is marked monitored with its original preserved.
+        let saved = state.config.accounts.first { $0.name == "work" }
+        XCTAssertEqual(saved?.monitoring, true)
+        XCTAssertEqual(saved?.savedStatusline, original)
     }
 
     func testLinkAccountWithoutCanonicalSetsActionError() async throws {

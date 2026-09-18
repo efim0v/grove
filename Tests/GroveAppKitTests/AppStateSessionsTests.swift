@@ -83,6 +83,65 @@ final class AppStateSessionsTests: XCTestCase {
         XCTAssertEqual(req.target, .cmux)
     }
 
+    // MARK: - Per-session config (gear) + skip-permissions override
+
+    /// The gear seeds the sheet to RESUME the session, carrying the project's
+    /// skip-permissions default and recording the session's origin account.
+    func testBeginConfigureSeedsResumeWithProjectSkipPermissions() async throws {
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner)
+        state.config.accounts = [AccountConfig(name: "work", configDir: "/tmp/grove-work")]
+        var project = ProjectConfig(name: "demo", path: "/ws")
+        project.dangerouslySkipPermissions = true
+        state.config.projects = [project]
+
+        let session = ClaudeSession(id: "s9", cwd: "/ws/feat", title: "Feat",
+                                    lastActivity: Date(), accountName: "work", gitBranch: nil)
+        state.beginConfigure(session: session)
+
+        let req = try XCTUnwrap(state.launchRequest)
+        XCTAssertEqual(req.sessionId, "s9")              // resume, not new
+        XCTAssertEqual(req.account, "work")
+        XCTAssertEqual(req.originAccount, "work")        // origin recorded for cross-account
+        XCTAssertTrue(req.skipPermissions)               // seeded from project default
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)  // nothing spawned yet
+    }
+
+    /// The per-launch toggle WINS over the project default in BOTH directions:
+    /// ON when the project is off, and OFF when the project is on.
+    func testConfirmLaunchHonorsPerLaunchSkipPermissionsOverride() async throws {
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner)
+        state.config.accounts = [AccountConfig(name: "default", configDir: "/tmp/x")]
+        // Project default OFF, but the sheet turns it ON for this one launch.
+        state.config.projects = [ProjectConfig(name: "p", path: "/ws")]
+        var on = LaunchRequest(sessionId: nil, cwd: "/ws/a", title: "a", account: "default")
+        on.skipPermissions = true
+        await state.confirmLaunch(on)
+        let onCmd = try cmuxCommand(runner)
+        XCTAssertTrue(onCmd.contains("--dangerously-skip-permissions"), onCmd)
+
+        // Project default ON, but the sheet turns it OFF — override must win.
+        let runner2 = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state2 = makeState(runner2)
+        state2.config.accounts = [AccountConfig(name: "default", configDir: "/tmp/x")]
+        var proj = ProjectConfig(name: "p", path: "/ws")
+        proj.dangerouslySkipPermissions = true
+        state2.config.projects = [proj]
+        var off = LaunchRequest(sessionId: nil, cwd: "/ws/a", title: "a", account: "default")
+        off.skipPermissions = false
+        await state2.confirmLaunch(off)
+        let offCmd = try cmuxCommand(runner2)
+        XCTAssertFalse(offCmd.contains("--dangerously-skip-permissions"), offCmd)
+    }
+
+    /// Extracts the cmux `--command` string from the first new-workspace call.
+    private func cmuxCommand(_ runner: ScriptedRunner) throws -> String {
+        let call = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first)
+        let i = try XCTUnwrap(call.args.firstIndex(of: "--command"))
+        return call.args[i + 1]
+    }
+
     // MARK: - refreshSessionIndex
 
     func testRefreshSessionIndexPopulatesRecentSessionsPerProject() async throws {

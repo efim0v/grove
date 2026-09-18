@@ -150,7 +150,7 @@ final class AppStateGapTests: XCTestCase {
                              sevenDaySonnet: nil, sevenDayOpus: nil)
                 : nil
         }
-        await s.refreshUsage(now: now)
+        await s.refreshUsage(now: now, oauth: .fetch)
         let snaps = s.snapshotsByAccount["apple"] ?? []
         XCTAssertEqual(snaps.last?.sessionId, "oauth")
         XCTAssertEqual(snaps.last?.fiveHour?.usedPercentage, 22)
@@ -186,7 +186,7 @@ final class AppStateGapTests: XCTestCase {
                               sevenDaySonnet: OAuthWindow(utilization: 8, resetsAt: resets),
                               sevenDayOpus: nil)
         }
-        await s.refreshUsage(now: now)
+        await s.refreshUsage(now: now, oauth: .fetch)
         XCTAssertTrue(oauthCalled, "OAuth is fetched for every account (Sonnet source)")
         let snaps = s.snapshotsByAccount["default"] ?? []
         // The statusline capture is kept (history) AND the OAuth capture is appended.
@@ -196,12 +196,12 @@ final class AppStateGapTests: XCTestCase {
         XCTAssertEqual(currentWindow(snaps, { $0.sevenDaySonnet }, now: now)?.usedPercentage, 8)
     }
 
-    /// The OAuth fetch is gated by an EXPLICIT decision (panel open OR the
-    /// `oauthLiveEnabled` flag), NOT by the mere presence of the test provider
-    /// override. With the panel closed and the flag off, refreshUsage must not
-    /// consult OAuth even though a provider override is installed — otherwise the
-    /// background menu-bar timer would hit the keychain before any user gesture.
-    func testRefreshUsageSkipsOAuthWhenFlagOffAndPanelClosed() async throws {
+    /// `oauthLiveEnabled` gates the AUTOMATIC pass: with it off, opening the panel
+    /// must not consult OAuth. (An explicit refresh-button press still does — see
+    /// AppStateUsageFreshnessTests.) The mere presence of a provider override must
+    /// never force a fetch either, or the background timer would hit the keychain
+    /// before any user gesture.
+    func testRefreshUsageSkipsAutomaticOAuthWhenFlagOff() async throws {
         let s = state()
         let dir = try FixtureLite.tempDir("oauth-gate-off")
         s.config.accounts = [AccountConfig(name: "apple", configDir: dir.path)]
@@ -216,17 +216,17 @@ final class AppStateGapTests: XCTestCase {
             return OAuthUsage(fiveHour: OAuthWindow(utilization: 22, resetsAt: resets),
                               sevenDay: nil, sevenDaySonnet: nil, sevenDayOpus: nil)
         }
-        await s.refreshUsage(now: now)
+        await s.refreshUsage(now: now, oauth: .fetch)
         XCTAssertFalse(oauthCalled,
-            "OAuth must not be fetched when the panel is closed and oauthLiveEnabled is off")
+            "the automatic pass must not fetch when oauthLiveEnabled is off")
         XCTAssertTrue((s.snapshotsByAccount["apple"] ?? []).isEmpty,
             "No OAuth snapshot should be folded in when OAuth is gated off")
     }
 
-    /// `config.usage.oauthLiveEnabled` is a LIVE gate: when the user opts into the
-    /// OAuth live poll, refreshUsage fetches OAuth even with the panel CLOSED (this
-    /// is the "always-on" mode that fixes an account with no statusline capture).
-    func testRefreshUsageFetchesOAuthWhenLiveEnabledFlagOnEvenWithPanelClosed() async throws {
+    /// The panel's open/closed state no longer gates the fetch — the CALLER's policy
+    /// does. A `.fetch` pass works with the panel closed, which is what lets an account
+    /// with no statusline capture get its limits at all.
+    func testRefreshUsageFetchesOAuthOnDemandEvenWithPanelClosed() async throws {
         let s = state()
         let dir = try FixtureLite.tempDir("oauth-gate-on")
         s.config.accounts = [AccountConfig(name: "apple", configDir: dir.path)]
@@ -242,9 +242,9 @@ final class AppStateGapTests: XCTestCase {
                               sevenDay: OAuthWindow(utilization: 4, resetsAt: resets),
                               sevenDaySonnet: nil, sevenDayOpus: nil)
         }
-        await s.refreshUsage(now: now)
+        await s.refreshUsage(now: now, oauth: .fetch)
         XCTAssertTrue(oauthCalled,
-            "OAuth must be fetched when oauthLiveEnabled is on, even with the panel closed")
+            "a .fetch pass must reach OAuth regardless of the panel's state")
         XCTAssertEqual((s.snapshotsByAccount["apple"] ?? []).last?.fiveHour?.usedPercentage, 22)
     }
 

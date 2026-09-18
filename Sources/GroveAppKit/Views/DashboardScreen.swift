@@ -28,9 +28,7 @@ struct DashboardScreen: View {
         let overall = overallDashboard(
             analyticsByAccount: state.usageByAccount,
             snapshotsByAccount: state.snapshotsByAccount,
-            aggregateFiveHour: state.aggregateRemaining(window: .fiveHour, now: now),
-            aggregateWeekly: state.aggregateRemaining(window: .sevenDay, now: now),
-            aggregateSonnet: state.aggregateRemaining(window: .sevenDaySonnet, now: now),
+            limitInputs: state.accountLimitInputs(now: now),
             now: now,
             ledgerCostByAccount: ledgerByAccount)
         return [overall] + perAccount
@@ -42,10 +40,23 @@ struct DashboardScreen: View {
             emptyState
         } else {
             let index = min(max(state.chartsScopeIndex, 0), cols.count - 1)
-            // Sizes to the cards' natural height (no scroll); the panel grows to fit.
+            // Sizes to the TALLEST scope's natural height (no scroll).
             VStack(spacing: 8) {
                 switcher(scopes: cols, index: index)
-                DashboardColumnView(column: cols[index], isSnapshotRender: isSnapshotRender)
+                ZStack(alignment: .top) {
+                    // Measuring layer: every scope laid out but never drawn. A ZStack is
+                    // as tall as its tallest child, so the panel stops resizing when you
+                    // page through scopes — Overall carries chip lines and one model bar
+                    // per model, an account column neither. No PreferenceKey and no
+                    // sticky high-water mark: the height is a pure function of the data.
+                    // `isSnapshotRender: true` picks DailyUsageCardView's cheap manual
+                    // bars, so measuring N scopes doesn't instantiate N Swift Charts.
+                    ForEach(cols) { column in
+                        DashboardColumnView(column: column, isSnapshotRender: true).hidden()
+                    }
+                    DashboardColumnView(column: cols[index], isSnapshotRender: isSnapshotRender)
+                }
+                footer
             }
             // No padding here: the charts block's single content inset is supplied
             // ONCE by the GlassMenuContainer wrapper in MergedRootView. (Previously
@@ -78,6 +89,58 @@ struct DashboardScreen: View {
                 state.chartsScopeIndex = min(cols.count - 1, index + 1)
             }
         }
+    }
+
+    // MARK: - Footer (data age + manual refresh)
+
+    /// When the shown limits were last really obtained, and the button that forces a
+    /// fresh fetch. The age is panel-wide, not per-scope, so it sits below the cards
+    /// rather than inside them. It reports the newest CAPTURE, not the last poll: the
+    /// OAuth client caches for 180s, so ticks pass without the numbers moving.
+    private var footer: some View {
+        HStack(spacing: 6) {
+            // A failed fetch REPLACES the age line rather than sitting beside it: the
+            // age describes the retained capture, so pairing "Updated 1m ago" with a
+            // failure is the same lie that made this bug invisible for days.
+            if let failure = state.usageFetchError {
+                Label(failure, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .help(failure)
+            } else {
+                Text("Updated \(formatAsOf(state.usageDataAsOf))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            Spacer(minLength: 6)
+            // Two DISTINCT states rather than one button that spins: a spinning button
+            // reads as "is this thing even tappable right now?". Fetching shows a plain
+            // indeterminate indicator — obviously a status, not a control; idle shows
+            // the button — obviously a control.
+            if state.isRefreshingUsage {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 22, height: 22)
+                    .help("Fetching current limits…")
+            } else {
+                Button {
+                    Task { await state.refreshUsage(now: Date(), oauth: .force) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Refresh usage now")
+            }
+        }
+        .padding(.horizontal, 4)
     }
 
     private func arrow(_ symbol: String, enabled: Bool, _ action: @escaping () -> Void) -> some View {
@@ -132,8 +195,8 @@ struct DashboardColumnView: View {
         VStack(spacing: 8) {
             LimitCardView(card: column.fiveHour)
             LimitCardView(card: column.weekly)
-            if column.weeklyModel.hasData {
-                LimitCardView(card: column.weeklyModel)
+            ForEach(column.weeklyModels, id: \.title) { card in
+                LimitCardView(card: card)
             }
             DailyUsageCardView(bars: column.daily, isSnapshotRender: isSnapshotRender)
             TokenUsageCardView(rows: column.tokens, models: column.models)
@@ -188,10 +251,39 @@ struct LimitCardView: View {
                     .foregroundStyle(noteColor)
                     .fixedSize()
             }
+            accountChips
             sessionTrend
         }
         .padding(10)
         .glassCard()
+    }
+
+    /// "Overall" only: which account is holding how much of this window. The
+    /// aggregate above is tier-weighted and so cannot answer "where do I still have
+    /// room" — these chips do, sorted with the most-loaded account first.
+    @ViewBuilder private var accountChips: some View {
+        if !card.perAccount.isEmpty {
+            chipRun
+                .font(.caption2)
+                .monospacedDigit()
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// One `Text` run rather than a stack of views: each account's percentage keeps
+    /// its own capacity colour AND the run wraps like prose, which an HStack in a
+    /// 290pt column cannot.
+    private var chipRun: Text {
+        var run = Text("")
+        for (index, chip) in card.perAccount.enumerated() {
+            let separator = index == 0 ? Text("") : Text(" · ").foregroundStyle(.tertiary)
+            let name = Text("\(chip.account) ").foregroundStyle(.secondary)
+            let percent = Text("\(Int(chip.usedPercentage.rounded()))%")
+                .foregroundStyle(levelColor(chip.level))
+            run = Text("\(run)\(separator)\(name)\(percent)")
+        }
+        return run
     }
 
     /// 5-hour card only: how this session compares to your recent ones — the

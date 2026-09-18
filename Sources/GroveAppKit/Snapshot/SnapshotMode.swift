@@ -150,6 +150,9 @@ public enum SnapshotMode {
         // the fixture `now`, so they stay stable across renders.
         state.snapshotsByAccount = fixtureSnapshotsByAccount(now: now)
         state.usageByAccount = fixtureUsageByAccount(now: now)
+        // Pinned to the fixture clock so the panel footer's "Updated …" line renders
+        // the same string on every offscreen pass.
+        state.usageDataAsOf = now.addingTimeInterval(-120)
         // Internally-consistent tier namespace (FIX I2): the SAME canonical
         // strings the Accounts card (organizationRateLimitTier) and
         // RateLimitModel.tierWeights key on, so the aggregate badge weights
@@ -366,7 +369,8 @@ public enum SnapshotMode {
                     repo: client,
                     entry: WorktreeEntry(path: mpUmbrella + "/acme_client",
                                          branch: "feat/media-pipeline",
-                                         head: "aaaa111", isMain: false),
+                                         head: "aaaa111", isMain: false,
+                                         createdAt: day(12)),
                     meta: WorktreeMeta(baseBranch: "dev", forkPoint: "ffff000",
                                        forkDate: day(12), ahead: 14, behind: 2, dirtyCount: 8,
                                        lastCommitDate: day(0.04),
@@ -376,7 +380,8 @@ public enum SnapshotMode {
                     repo: server,
                     entry: WorktreeEntry(path: mpUmbrella + "/acme_server",
                                          branch: "feat/media-pipeline",
-                                         head: "aaaa222", isMain: false),
+                                         head: "aaaa222", isMain: false,
+                                         createdAt: day(12)),
                     meta: WorktreeMeta(baseBranch: "master", forkPoint: "ffff001",
                                        forkDate: day(12), ahead: 5, behind: 0, dirtyCount: 4,
                                        lastCommitDate: day(0.2),
@@ -413,7 +418,8 @@ public enum SnapshotMode {
                     repo: client,
                     entry: WorktreeEntry(path: muUmbrella + "/acme_client",
                                          branch: "feat/media-upload",
-                                         head: "bbbb111", isMain: false),
+                                         head: "bbbb111", isMain: false,
+                                         createdAt: day(2)),
                     meta: WorktreeMeta(baseBranch: "feat/media-pipeline", forkPoint: "aaaa111",
                                        forkDate: day(2), ahead: 3, behind: 0, dirtyCount: 3,
                                        lastCommitDate: day(0.1),
@@ -423,7 +429,8 @@ public enum SnapshotMode {
                     repo: server,
                     entry: WorktreeEntry(path: muUmbrella + "/acme_server",
                                          branch: "feat/media-upload",
-                                         head: "bbbb222", isMain: false),
+                                         head: "bbbb222", isMain: false,
+                                         createdAt: day(2)),
                     meta: WorktreeMeta(baseBranch: "feat/media-pipeline", forkPoint: "aaaa222",
                                        forkDate: day(2), ahead: 1, behind: 0, dirtyCount: 0,
                                        lastCommitDate: day(1.5),
@@ -461,7 +468,8 @@ public enum SnapshotMode {
                     repo: client,
                     entry: WorktreeEntry(path: ffUmbrella + "/acme_client",
                                          branch: "feat/folders-followup",
-                                         head: "cccc111", isMain: false),
+                                         head: "cccc111", isMain: false,
+                                         createdAt: day(24)),
                     meta: WorktreeMeta(baseBranch: "dev", forkPoint: "ffff002",
                                        forkDate: day(24), ahead: 9, behind: 6, dirtyCount: 0,
                                        lastCommitDate: day(20),

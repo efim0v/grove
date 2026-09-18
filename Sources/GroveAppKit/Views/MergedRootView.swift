@@ -79,16 +79,31 @@ public struct MergedRootView: View {
     /// projects column can match it.
     private var chartsColumn: some View {
         GlassMenuContainer {
-            ChartsSideContent(state: state).padding(7)
+            ChartsSideContent(state: state)
+                .padding(7)
+                // Measured on the CARDS, before the block below is stretched: measuring
+                // the stretched container would feed `projectsCap` back into its own
+                // input. The outer vertical padding isn't inside this subtree, so it's
+                // added from the same constants the paddings use.
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: ChartsHeightKey.self,
+                                           value: g.size.height + Self.chartsVerticalChrome)
+                })
+                // Cards pinned to the TOP of the block; the block itself fills the
+                // window height, so it never floats over a bare-glass band when the
+                // projects column turns out to be taller.
+                .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(maxHeight: 820)
         .padding(.trailing, 8)
-        .padding(.top, 14)
-        .padding(.bottom, 8)
-        .background(GeometryReader { g in
-            Color.clear.preference(key: ChartsHeightKey.self, value: g.size.height)
-        })
+        .padding(.top, Self.chartsTopPad)
+        .padding(.bottom, Self.chartsBottomPad)
     }
+
+    private static let chartsTopPad: CGFloat = 14
+    private static let chartsBottomPad: CGFloat = 8
+    /// Vertical chrome outside the measured subtree, added back to the reported height.
+    private static var chartsVerticalChrome: CGFloat { chartsTopPad + chartsBottomPad }
 
     /// Height cap for the projects column: the usage panel's height when shown (so the
     /// window never exceeds it), else the screen height.

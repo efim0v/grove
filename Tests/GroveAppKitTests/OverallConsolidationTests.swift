@@ -19,6 +19,7 @@ final class OverallConsolidationTests: XCTestCase {
     private func makeState() -> AppState {
         let state = AppState(configStore: ConfigStore(url: configURL))
         state.canonicalDirOverride = root.appendingPathComponent("canonical-default").path
+        state.usageLedgerStoreDirOverride = root.appendingPathComponent("ledger").path
         return state
     }
 
@@ -132,6 +133,7 @@ final class OverallConsolidationTests: XCTestCase {
                        AccountConfig(name: "work-account", configDir: appleDir.path)])
         state.tierOverride = ["default": "default_claude_max_20x",
                               "work-account": "default_claude_max_20x"]
+        state.config.usage.oauthLiveEnabled = true       // opt into the OAuth poll
         // OAuth available ONLY for work-account's dir.
         let appleResolved = appleDir.path
         state.oauthLimitsOverride = { @Sendable dir, _ in
@@ -143,7 +145,7 @@ final class OverallConsolidationTests: XCTestCase {
                 : nil
         }
 
-        await state.refreshUsage(now: now)
+        await state.refreshUsage(now: now, oauth: .fetch)
 
         // work-account must now have an OAuth-sourced capture in its snapshots.
         let appleSnaps = state.snapshotsByAccount["work-account"] ?? []
@@ -232,12 +234,14 @@ final class OverallConsolidationTests: XCTestCase {
             sevenDaySonnet: CapturedWindow(usedPercentage: 5, resetsAt: future))
         let snaps = [statusline, oauth]
 
-        // 5h resolves to the statusline value (25%), NOT nil.
-        XCTAssertEqual(accountWindow(snaps, { $0.fiveHour }, now: now)?.usedPercentage, 25)
-        // weekly prefers the statusline value (60%) over the OAuth fallback (10%).
-        XCTAssertEqual(accountWindow(snaps, { $0.sevenDay }, now: now)?.usedPercentage, 60)
-        // sonnet has no statusline value → falls back to OAuth (5%).
-        XCTAssertEqual(accountWindow(snaps, { $0.sevenDaySonnet }, now: now)?.usedPercentage, 5)
+        // 5h: only the statusline carries it, so it resolves to 25% — NOT nil.
+        XCTAssertEqual(currentWindow(snaps, { $0.fiveHour }, now: now)?.usedPercentage, 25)
+        // weekly: both carry it, so the MORE RECENT capture wins — the OAuth 10%, not
+        // the statusline 60% from five minutes earlier. Preferring the older statusline
+        // here is what made Overall disagree with the account's own column.
+        XCTAssertEqual(currentWindow(snaps, { $0.sevenDay }, now: now)?.usedPercentage, 10)
+        // sonnet: only OAuth carries it (5%).
+        XCTAssertEqual(currentWindow(snaps, { $0.sevenDaySonnet }, now: now)?.usedPercentage, 5)
     }
 
     /// A FRESH OAuth window must win over a STALE statusline window: the statusline
@@ -259,7 +263,7 @@ final class OverallConsolidationTests: XCTestCase {
             totalInputTokens: nil, totalCostUSD: nil,
             fiveHour: nil,
             sevenDay: CapturedWindow(usedPercentage: 12, resetsAt: future))  // fresh
-        let resolved = accountWindow([statuslineStale, oauthFresh], { $0.sevenDay }, now: now)
+        let resolved = currentWindow([statuslineStale, oauthFresh], { $0.sevenDay }, now: now)
         XCTAssertEqual(resolved?.usedPercentage, 12,
                        "fresh OAuth weekly must win over a stale statusline weekly")
     }

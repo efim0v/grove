@@ -36,7 +36,12 @@ public struct RootView: View {
         // never starts — no runaway refresh against the real ~/.claude.
         .task(id: state.isPanelOpen) {
             guard !isSnapshotRender, state.isPanelOpen else { return }
-            await state.refresh()
+            // Opening the panel IS the request for current limits: one usage fetch per
+            // account here, then never again on its own. The loop below only re-reads
+            // local state (captures on disk, sessions, worktrees) — it must not poll the
+            // rate-limited usage API, which is what made the panel "update" forever and
+            // kept tripping the 429 backoff. Fresh numbers on demand: the footer button.
+            await state.refresh(oauth: .fetch)
             while !Task.isCancelled && state.isPanelOpen {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
                 if Task.isCancelled || !state.isPanelOpen { break }

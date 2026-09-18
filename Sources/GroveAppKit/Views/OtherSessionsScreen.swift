@@ -53,8 +53,6 @@ struct OtherSessionsScreen: View {
 
     private func table(rows: [SessionRow], now: Date) -> some View {
         VStack(spacing: 0) {
-            headerRow
-            Divider()
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 sessionRow(row, now: now)
                 if index < rows.count - 1 { Divider().opacity(0.4) }
@@ -64,73 +62,15 @@ struct OtherSessionsScreen: View {
         .padding(.vertical, 8)
     }
 
-    private var headerRow: some View {
-        HStack(spacing: 10) {
-            Text("Status").frame(width: SessionsScreen.statusWidth, alignment: .leading)
-            Text("Session").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Location").frame(width: SessionsScreen.locationWidth, alignment: .leading)
-            Text("").frame(width: SessionsScreen.gearWidth)
-            Text("").frame(width: SessionsScreen.actionWidth, alignment: .trailing)
-        }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.secondary)
-        .padding(.vertical, 4)
-    }
-
+    /// Same multi-line card as the Claude tab; these rows are always resumable
+    /// (no live process, no gear), so the trailing slot is just Resume + menus.
     private func sessionRow(_ row: SessionRow, now: Date) -> some View {
-        HStack(spacing: 10) {
-            statusCell(row, now: now)
-                .frame(width: SessionsScreen.statusWidth, alignment: .leading)
-            sessionCell(row)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(row.location)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(width: SessionsScreen.locationWidth, alignment: .leading)
-            Color.clear.frame(width: SessionsScreen.gearWidth)   // no gear for other sessions
-            actionCell(row).frame(width: SessionsScreen.actionWidth, alignment: .trailing)
+        SessionCard(row: row, now: now) {
+            actionCell(row)
         }
-        .font(.callout)
-        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .onTapGesture { performResume(row) }
         .help(row.cwd)
-    }
-
-    // MARK: - Session cell (2-line: title + account subtitle)
-
-    @ViewBuilder
-    private func sessionCell(_ row: SessionRow) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(row.title)
-                .fontWeight(.medium)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Text(row.accountName)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-    }
-
-    // MARK: - Status cell (2-line: dot+status / age)
-
-    @ViewBuilder
-    private func statusCell(_ row: SessionRow, now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(Color(white: 0.5))   // always resumable / neutral
-                    .frame(width: 7, height: 7)
-                Text("resumable")
-                    .foregroundStyle(.secondary)
-            }
-            Text(relativeAge(row.lastActivity, now: now))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .padding(.leading, 13)   // align under the status word (dot 7 + gap 6)
-        }
     }
 
     // MARK: - Action cell

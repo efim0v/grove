@@ -110,8 +110,6 @@ struct SessionsScreen: View {
 
     private func table(rows: [SessionRow], now: Date) -> some View {
         VStack(spacing: 0) {
-            headerRow
-            Divider()
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 sessionRow(row, now: now)
                 if index < rows.count - 1 { Divider().opacity(0.4) }
@@ -144,38 +142,13 @@ struct SessionsScreen: View {
         }
     }
 
-    private var headerRow: some View {
-        HStack(spacing: 10) {
-            Text("Status").frame(width: Self.statusWidth, alignment: .leading)
-            Text("Session").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Location").frame(width: Self.locationWidth, alignment: .leading)
-            Text("").frame(width: Self.gearWidth)
-            Text("").frame(width: Self.actionWidth, alignment: .trailing)
-        }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.secondary)
-        .padding(.vertical, 4)
-    }
-
-    static let statusWidth: CGFloat = 78
-    static let locationWidth: CGFloat = 96
-    static let gearWidth: CGFloat = 26
-    static let actionWidth: CGFloat = 96
-
+    /// One session as the shared multi-line CARD, with this screen's trailing
+    /// actions (gear + Go/Resume + cross-account menus) plus its tap/context menu.
     private func sessionRow(_ row: SessionRow, now: Date, isExternal: Bool = false) -> some View {
-        HStack(spacing: 10) {
-            statusCell(row, now: now).frame(width: Self.statusWidth, alignment: .leading)
-            sessionCell(row).frame(maxWidth: .infinity, alignment: .leading)
-            Text(row.location)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(width: Self.locationWidth, alignment: .leading)
-            gearCell(row).frame(width: Self.gearWidth)
-            actionCell(row, isExternal: isExternal).frame(width: Self.actionWidth, alignment: .trailing)
+        SessionCard(row: row, now: now) {
+            gearCell(row)
+            actionCell(row, isExternal: isExternal)
         }
-        .font(.callout)
-        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .onTapGesture {
             if isExternal { performExternal(row) } else { performPrimary(row) }
@@ -209,69 +182,6 @@ struct SessionsScreen: View {
             }
         } else {
             Color.clear
-        }
-    }
-
-    // MARK: - Session cell (2-line: title + account·model subtitle)
-
-    @ViewBuilder
-    private func sessionCell(_ row: SessionRow) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(row.title)
-                .fontWeight(.medium)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Text(row.accountName)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-    }
-
-    // MARK: - Status cell (2-line: dot+status / age)
-
-    @ViewBuilder
-    private func statusCell(_ row: SessionRow, now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(dotColor(row.liveStatus))
-                    .frame(width: 7, height: 7)
-                if let status = row.liveStatus {
-                    Text(statusWord(status))
-                        .foregroundStyle(.primary)
-                } else {
-                    Text("resumable")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Group {
-                if let startedAt = row.startedAt, row.liveStatus != nil {
-                    Text(relativeAge(startedAt, now: now))
-                } else {
-                    Text(relativeAge(row.lastActivity, now: now))
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-            .padding(.leading, 13)   // align under the status word (dot 7 + gap 6)
-        }
-    }
-
-    private func dotColor(_ status: SessionLiveStatus?) -> Color {
-        switch status {
-        case .busy: return Palette.primary
-        case .waiting: return Palette.mid
-        case .idle: return Palette.neutral
-        case nil: return Palette.neutral
-        }
-    }
-
-    private func statusWord(_ status: SessionLiveStatus) -> String {
-        switch status {
-        case .busy: return "busy"
-        case .waiting: return "waiting"
-        case .idle: return "idle"
         }
     }
 

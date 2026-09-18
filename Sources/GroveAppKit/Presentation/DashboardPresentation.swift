@@ -33,6 +33,29 @@ private func trim(_ v: Double) -> String {
 
 // MARK: - Limit card (5-Hour Session / Weekly Limit)
 
+/// Capacity grade from a used-percentage. The ONE place these thresholds live —
+/// `LimitCard`, the per-account chips and the menu-bar readout all grade alike.
+public func capacityLevel(usedPercentage: Double) -> CapacityLevel {
+    let remaining = max(0, 1 - usedPercentage / 100)
+    return remaining > 0.5 ? .plenty : (remaining > 0.1 ? .tight : .critical)
+}
+
+/// One account's contribution to an "Overall" bar, rendered as a chip under it
+/// ("work 12% · personal 56%"). Answers *which* account has headroom left, which
+/// the tier-weighted aggregate alone cannot.
+public struct AccountLimitChip: Equatable, Sendable, Identifiable {
+    public var id: String { account }
+    public let account: String
+    public let usedPercentage: Double
+    public let level: CapacityLevel
+
+    public init(account: String, usedPercentage: Double) {
+        self.account = account
+        self.usedPercentage = usedPercentage
+        self.level = capacityLevel(usedPercentage: usedPercentage)
+    }
+}
+
 /// One limit bar. Color grades by REMAINING capacity (reuses `CapacityLevel`).
 public struct LimitCard: Equatable, Sendable {
     public enum Window: String, Equatable, Sendable { case fiveHour, weekly, weeklySonnet, weeklyModel }
@@ -50,10 +73,15 @@ public struct LimitCard: Equatable, Sendable {
     /// previous peak across completed 5h sessions, for the "vs avg" delta.
     public let averagePercent: Double?
     public let previousPercent: Double?
+    /// Per-account breakdown of this bar, populated for the "Overall" scope only —
+    /// a single account's own column has nothing to break down. Sorted by load
+    /// descending (the account closest to its limit reads first).
+    public let perAccount: [AccountLimitChip]
 
     public init(window: Window, title: String, systemImage: String,
                 usedPercentage: Double, resetsAt: String?, hasData: Bool, now: Date,
-                averagePercent: Double? = nil, previousPercent: Double? = nil) {
+                averagePercent: Double? = nil, previousPercent: Double? = nil,
+                perAccount: [AccountLimitChip] = []) {
         self.window = window
         self.title = title
         self.systemImage = systemImage
@@ -61,9 +89,9 @@ public struct LimitCard: Equatable, Sendable {
         self.hasData = hasData
         self.averagePercent = averagePercent
         self.previousPercent = previousPercent
+        self.perAccount = perAccount
         let remaining = max(0, 1 - usedPercentage / 100)
-        self.level = !hasData ? .noData
-            : (remaining > 0.5 ? .plenty : (remaining > 0.1 ? .tight : .critical))
+        self.level = !hasData ? .noData : capacityLevel(usedPercentage: usedPercentage)
         if hasData, let resetsAt, let date = parseISODate(resetsAt) {
             self.resetCaption = LimitCard.shortCountdown(date.timeIntervalSince(now))
             self.resetAbsolute = LimitCard.absoluteTime(date, now: now)
@@ -163,19 +191,43 @@ public func mergeLedgerCost(_ daily: [DayUsage], ledgerCostByDay: [Date: Double]
     }
 }
 
-/// Element-wise sum of several accounts' daily buckets (matched by day). Returns
-/// the longest input's day axis; missing days contribute zero.
+/// Sum of several accounts' daily buckets, matched BY DAY. Returns the longest
+/// input's day axis; a day an account has no bucket for contributes zero.
+///
+/// Matching by day rather than by array position: today every account is built from
+/// the same fixed 7-day UTC axis, so the two agree — but the axis is not a contract,
+/// and a positional sum would silently add Monday to Tuesday the moment it varies.
 public func mergeDailyUsage(_ perAccount: [[DayUsage]]) -> [DayUsage] {
     guard let axis = perAccount.max(by: { $0.count < $1.count }), !axis.isEmpty else { return [] }
-    return axis.indices.map { i in
-        var input = 0, output = 0, cache = 0; var cost = 0.0
-        for days in perAccount where i < days.count {
-            input += days[i].inputTokens; output += days[i].outputTokens
-            cache += days[i].cacheTokens; cost += days[i].cost
+    var byDay: [Date: (input: Int, output: Int, cache: Int, cost: Double)] = [:]
+    for days in perAccount {
+        for d in days {
+            var bucket = byDay[d.day] ?? (0, 0, 0, 0)
+            bucket.input += d.inputTokens; bucket.output += d.outputTokens
+            bucket.cache += d.cacheTokens; bucket.cost += d.cost
+            byDay[d.day] = bucket
         }
-        return DayUsage(day: axis[i].day, inputTokens: input, outputTokens: output,
-                        cacheTokens: cache, cost: cost)
     }
+    return axis.map { slot in
+        let bucket = byDay[slot.day] ?? (0, 0, 0, 0)
+        return DayUsage(day: slot.day, inputTokens: bucket.input, outputTokens: bucket.output,
+                        cacheTokens: bucket.cache, cost: bucket.cost)
+    }
+}
+
+// MARK: - "Updated …" footer
+
+/// When the displayed limits were last really obtained, e.g. "25 Jul 14:32". "—"
+/// when nothing has been captured yet. Locale/timezone are injected so the format
+/// is testable and matches the user's clock in production.
+public func formatAsOf(_ date: Date?, locale: Locale = .current,
+                       timeZone: TimeZone = .current) -> String {
+    guard let date else { return "—" }
+    let formatter = DateFormatter()
+    formatter.locale = locale
+    formatter.timeZone = timeZone
+    formatter.setLocalizedDateFormatFromTemplate("d MMM HH:mm")
+    return formatter.string(from: date)
 }
 
 // MARK: - Current (non-stale) limit window
@@ -186,56 +238,35 @@ public func mergeDailyUsage(_ perAccount: [[DayUsage]]) -> [DayUsage] {
 /// session's statusline caches its own last-seen limits, which is exactly what
 /// produced bogus readings (e.g. a stale 53%/88% next to the live 23%/5%). Falls
 /// back to the latest capture's window when none are provably fresh.
+/// THE resolver — every scope uses this one, which is the point. Overall's bars and
+/// chips used to go through a second resolver that preferred statusline captures over
+/// OAuth ones whenever the statusline's window had not yet reset. But "has not reset"
+/// is not "was captured recently": the statusline only re-renders when a session
+/// redraws, so a reading minutes old routinely masked the OAuth reading fetched on
+/// panel open — and "Overall" then disagreed with the very same account's own column
+/// (the reported 81% vs 83%). Recency is the only defensible tie-break: whoever
+/// measured last measured best, whatever the source.
+///
+/// Snapshots that don't carry this window are ignored entirely, which is what lets an
+/// account whose statusline emits no `rate_limits` still resolve from OAuth alone.
 public func currentWindow(_ snapshots: [UsageSnapshot],
                           _ pick: (UsageSnapshot) -> CapturedWindow?,
                           now: Date) -> CapturedWindow? {
-    var best: (at: Date, window: CapturedWindow)?
+    var newestValid: (at: Date, window: CapturedWindow)?
+    var newestAny: (at: Date, window: CapturedWindow)?
     for snap in snapshots {
         guard let window = pick(snap), let capturedAt = snap.capturedAt else { continue }
-        if let raw = window.resetsAt, let reset = parseISODate(raw), reset <= now { continue } // stale
-        if best == nil || capturedAt > best!.at { best = (capturedAt, window) }
+        if newestAny == nil || capturedAt > newestAny!.at { newestAny = (capturedAt, window) }
+        // A window whose reset has passed reports usage from a period that has since
+        // rolled over, so its percentage is meaningless — it can only serve as a
+        // last-known value when nothing still-valid exists.
+        let hasReset = window.resetsAt.flatMap(parseISODate).map { $0 <= now } ?? false
+        guard !hasReset else { continue }
+        if newestValid == nil || capturedAt > newestValid!.at { newestValid = (capturedAt, window) }
     }
-    if let best { return best.window }
-    return latestCapture(snapshots).flatMap(pick)   // nothing provably fresh
+    return (newestValid ?? newestAny)?.window
 }
 
-/// The most-recent provably-FRESH window (resets_at still in the future), or nil
-/// when none of these snapshots carry a fresh value for `pick`. Unlike
-/// `currentWindow`, it does NOT fall back to a stale latest capture — callers that
-/// want that fallback layer it themselves.
-func freshWindow(_ snapshots: [UsageSnapshot],
-                 _ pick: (UsageSnapshot) -> CapturedWindow?,
-                 now: Date) -> CapturedWindow? {
-    var best: (at: Date, window: CapturedWindow)?
-    for snap in snapshots {
-        guard let window = pick(snap), let capturedAt = snap.capturedAt else { continue }
-        if let raw = window.resetsAt, let reset = parseISODate(raw), reset <= now { continue } // stale
-        if best == nil || capturedAt > best!.at { best = (capturedAt, window) }
-    }
-    return best?.window
-}
-
-/// Resolves ONE account's limit window for aggregation (FIX I2). Each account
-/// contributes whatever data it has, per window INDEPENDENTLY, with this priority:
-///   1. freshest statusline window (the live local source),
-///   2. freshest OAuth-fetched window (`sessionId == "oauth"`) — the fallback that
-///      lets an account whose statusline emits no `rate_limits` (e.g.
-///      "work-account") still contribute its OAuth weekly/sonnet to "Overall",
-///   3. a stale statusline window, then a stale OAuth window (last-known reading).
-/// Returns nil only when NEITHER source ever carried the window — then the account
-/// is correctly excluded for that window.
-public func accountWindow(_ snapshots: [UsageSnapshot],
-                          _ pick: (UsageSnapshot) -> CapturedWindow?,
-                          now: Date) -> CapturedWindow? {
-    let statusline = snapshots.filter { $0.sessionId != "oauth" }
-    let oauth = snapshots.filter { $0.sessionId == "oauth" }
-    // Fresh statusline, then fresh OAuth (never let a stale statusline reading mask
-    // a fresh OAuth window), then stale statusline, then stale OAuth.
-    return freshWindow(statusline, pick, now: now)
-        ?? freshWindow(oauth, pick, now: now)
-        ?? latestCapture(statusline).flatMap(pick)
-        ?? latestCapture(oauth).flatMap(pick)
-}
 
 // MARK: - Model breakdown (token share per model)
 
@@ -316,10 +347,13 @@ public struct DashboardColumn: Equatable, Sendable, Identifiable {
     /// 7-day Sonnet limit (reference's "Weekly Sonnet"). Rendered only when it has
     /// data — its source (OAuth) may be unavailable.
     public let weeklySonnet: LimitCard
-    /// 7-day model-specific limit (Weekly Opus / Weekly Fable / Weekly Sonnet) for the
-    /// account's ACTIVE model. Title and window are resolved from the latest capture's
-    /// modelId. Rendered only when it has data — its source (OAuth) may be unavailable.
-    public let weeklyModel: LimitCard
+    /// 7-day model-specific limits (Weekly Opus / Weekly Fable / Weekly Sonnet). An
+    /// account column carries at most ONE — its active model's, resolved from the
+    /// latest capture. "Overall" carries one per DISTINCT model across accounts, each
+    /// aggregating only the accounts on that model: averaging an Opus account into a
+    /// Fable bar would state a limit that no account actually has. Empty when the
+    /// source (OAuth) is unavailable.
+    public let weeklyModels: [LimitCard]
     public let daily: [DailyUsageBar]
     public let models: [ModelShare]
     public let tokens: [TokenRow]
@@ -423,6 +457,20 @@ func resolveLatestModelId(_ snapshots: [UsageSnapshot]) -> String? {
     return latestCapture(statusline)?.modelId
 }
 
+/// Like `modelWindow`, but yields the model DISPLAY NAME alongside the window and
+/// only when both exist — the shape "Overall" needs to group accounts by model.
+/// `modelWindow` deliberately still reports a title for a known model with no window
+/// (so a hidden card keeps its identity); grouping has nothing to group there.
+public func modelScopedWindow(latestModelId: String?, snapshots: [UsageSnapshot], now: Date)
+    -> (model: String, window: CapturedWindow)? {
+    let resolved = modelWindow(latestModelId: latestModelId, snapshots: snapshots, now: now)
+    guard let window = resolved.window else { return nil }
+    let prefix = "Weekly "
+    let model = resolved.title.hasPrefix(prefix)
+        ? String(resolved.title.dropFirst(prefix.count)) : resolved.title
+    return (model, window)
+}
+
 /// SF Symbol for the model-specific weekly card based on the resolved title.
 func modelSystemImage(_ title: String) -> String {
     switch title {
@@ -453,11 +501,14 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
                                  hasData: sonnet != nil, now: now)
     let activeModelId = resolveLatestModelId(snapshots)
     let mw = modelWindow(latestModelId: activeModelId, snapshots: snapshots, now: now)
-    let weeklyModelCard = LimitCard(window: .weeklyModel, title: mw.title,
-                                    systemImage: modelSystemImage(mw.title),
-                                    usedPercentage: mw.window?.usedPercentage ?? 0,
-                                    resetsAt: mw.window?.resetsAt,
-                                    hasData: mw.window != nil, now: now)
+    // An account runs ONE model at a time, so its column carries at most one model
+    // bar — and none at all when the window is missing (the card was hidden anyway).
+    let weeklyModelCards: [LimitCard] = mw.window.map { window in
+        [LimitCard(window: .weeklyModel, title: mw.title,
+                   systemImage: modelSystemImage(mw.title),
+                   usedPercentage: window.usedPercentage, resetsAt: window.resetsAt,
+                   hasData: true, now: now)]
+    } ?? []
     let todayKey = UsageCostLedger.utcCalendar.startOfDay(for: now)
     let lTodayCost: Double? = ledgerCostByDay.isEmpty ? nil : ledgerCostByDay[todayKey]
     let lMonthCost: Double? = ledgerCostByDay.isEmpty ? nil
@@ -467,7 +518,7 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
         fiveHour: five,
         weekly: weekly,
         weeklySonnet: weeklySonnet,
-        weeklyModel: weeklyModelCard,
+        weeklyModels: weeklyModelCards,
         daily: dailyUsageBars(mergeLedgerCost(analytics?.daily ?? [], ledgerCostByDay: ledgerCostByDay), now: now),
         models: modelShares(analytics?.sessions ?? [:]),
         tokens: tokenRows(today: analytics?.today ?? UsageTotals(),
@@ -477,45 +528,97 @@ public func accountDashboard(name: String, analytics: AccountUsageAnalytics?,
         costMonth: analytics?.thisMonth.cost ?? 0)
 }
 
-/// Builds the "Overall" column: limit bars from the tier-weighted aggregates,
-/// daily/models/tokens summed across accounts.
+/// One account's resolved limit windows plus its tier — the SINGLE input to every
+/// "Overall" aggregate. Both the panel and the menu-bar readout are computed from
+/// this same list, so the two numbers cannot drift apart.
+public struct AccountLimitInput: Equatable, Sendable {
+    public let account: String
+    public let tier: String?
+    public let fiveHour: CapturedWindow?
+    public let weekly: CapturedWindow?
+    public let weeklySonnet: CapturedWindow?
+    /// Display name of the account's active model ("Fable", "Opus"), when known.
+    public let scopedModel: String?
+    public let scopedWindow: CapturedWindow?
+
+    public init(account: String, tier: String?, fiveHour: CapturedWindow?,
+                weekly: CapturedWindow?, weeklySonnet: CapturedWindow?,
+                scopedModel: String?, scopedWindow: CapturedWindow?) {
+        self.account = account
+        self.tier = tier
+        self.fiveHour = fiveHour
+        self.weekly = weekly
+        self.weeklySonnet = weeklySonnet
+        self.scopedModel = scopedModel
+        self.scopedWindow = scopedWindow
+    }
+}
+
+/// The tier-weighted bar for one window across a set of accounts, plus the chips
+/// naming each contributor. Accounts without that window drop out entirely — they
+/// have nothing to say about it, and counting them as 0% would understate the load.
+func aggregateCard(window: LimitCard.Window, title: String, systemImage: String,
+                   inputs: [AccountLimitInput], pick: (AccountLimitInput) -> CapturedWindow?,
+                   now: Date, averagePercent: Double? = nil,
+                   previousPercent: Double? = nil) -> LimitCard {
+    let contributors = inputs.compactMap { input -> (AccountLimitInput, CapturedWindow)? in
+        guard let window = pick(input) else { return nil }
+        return (input, window)
+    }
+    let aggregate = RateLimitModel.aggregateRemaining(contributors.map {
+        RateLimitModel.AccountWindow(tier: $0.0.tier, usedPercentage: $0.1.usedPercentage)
+    })
+    let used = aggregate.total > 0 ? (1 - aggregate.fraction) * 100 : 0
+    // The SOONEST future reset: the next moment any account's headroom returns.
+    let reset = soonestReset(contributors.map(\.1), now: now)
+    let chips = contributors
+        .map { AccountLimitChip(account: $0.0.account, usedPercentage: $0.1.usedPercentage) }
+        .sorted { ($0.usedPercentage, $1.account) > ($1.usedPercentage, $0.account) }
+    return LimitCard(window: window, title: title, systemImage: systemImage,
+                     usedPercentage: used, resetsAt: reset, hasData: aggregate.total > 0,
+                     now: now, averagePercent: averagePercent, previousPercent: previousPercent,
+                     perAccount: chips)
+}
+
+/// One bar per DISTINCT active model across accounts, each aggregating only the
+/// accounts on that model. Ordered by group size descending (the model most accounts
+/// run leads), then by title — a total order, so the layout never reshuffles.
+func modelCards(_ inputs: [AccountLimitInput], now: Date) -> [LimitCard] {
+    var byModel: [String: [AccountLimitInput]] = [:]
+    for input in inputs {
+        guard let model = input.scopedModel, input.scopedWindow != nil else { continue }
+        byModel[model, default: []].append(input)
+    }
+    return byModel
+        .map { model, group -> (count: Int, card: LimitCard) in
+            let title = "Weekly \(model)"
+            return (group.count,
+                    aggregateCard(window: .weeklyModel, title: title,
+                                  systemImage: modelSystemImage(title),
+                                  inputs: group, pick: { $0.scopedWindow }, now: now))
+        }
+        .sorted { ($0.count, $1.card.title) > ($1.count, $0.card.title) }
+        .map(\.card)
+}
+
+/// Builds the "Overall" column: limit bars from the tier-weighted aggregates over
+/// `limitInputs`, daily/models/tokens summed across accounts.
 public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics],
                              snapshotsByAccount: [String: [UsageSnapshot]],
-                             aggregateFiveHour: RateLimitModel.Aggregate,
-                             aggregateWeekly: RateLimitModel.Aggregate,
-                             aggregateSonnet: RateLimitModel.Aggregate,
+                             limitInputs: [AccountLimitInput],
                              now: Date,
                              ledgerCostByAccount: [String: [Date: Double]] = [:]) -> DashboardColumn {
     let allCaptures = snapshotsByAccount.values.flatMap { $0 }
-    // Aggregate limit "used%" = 1 - tier-weighted remaining fraction.
-    let fiveUsed = aggregateFiveHour.total > 0 ? (1 - aggregateFiveHour.fraction) * 100 : 0
-    let weeklyUsed = aggregateWeekly.total > 0 ? (1 - aggregateWeekly.fraction) * 100 : 0
-    let sonnetUsed = aggregateSonnet.total > 0 ? (1 - aggregateSonnet.fraction) * 100 : 0
-    // Soonest reset across accounts for each window (most urgent shown).
-    let fiveReset = soonestReset(allCaptures.compactMap { $0.fiveHour }, now: now)
-    let weeklyReset = soonestReset(allCaptures.compactMap { $0.sevenDay }, now: now)
-    let sonnetReset = soonestReset(allCaptures.compactMap { $0.sevenDaySonnet }, now: now)
     let trend = fiveHourSessionTrend(allCaptures, now: now)
-    let five = LimitCard(window: .fiveHour, title: "5-Hour Session", systemImage: "clock",
-                         usedPercentage: fiveUsed, resetsAt: fiveReset,
-                         hasData: aggregateFiveHour.total > 0, now: now,
-                         averagePercent: trend.average, previousPercent: trend.previous)
-    let weekly = LimitCard(window: .weekly, title: "Weekly Limit", systemImage: "calendar",
-                           usedPercentage: weeklyUsed, resetsAt: weeklyReset,
-                           hasData: aggregateWeekly.total > 0, now: now)
-    let weeklySonnet = LimitCard(window: .weeklySonnet, title: "Weekly Sonnet", systemImage: "s.circle.fill",
-                                 usedPercentage: sonnetUsed, resetsAt: sonnetReset,
-                                 hasData: aggregateSonnet.total > 0, now: now)
-    // For "Overall": resolve active model from the most-recent live capture across ALL accounts.
-    // This picks whichever account's model was most recently captured, which is the best
-    // single-model proxy when accounts use different models.
-    let overallModelId = resolveLatestModelId(allCaptures)
-    let omw = modelWindow(latestModelId: overallModelId, snapshots: allCaptures, now: now)
-    let weeklyModelCard = LimitCard(window: .weeklyModel, title: omw.title,
-                                    systemImage: modelSystemImage(omw.title),
-                                    usedPercentage: omw.window?.usedPercentage ?? 0,
-                                    resetsAt: omw.window?.resetsAt,
-                                    hasData: omw.window != nil, now: now)
+    let five = aggregateCard(window: .fiveHour, title: "5-Hour Session", systemImage: "clock",
+                             inputs: limitInputs, pick: { $0.fiveHour }, now: now,
+                             averagePercent: trend.average, previousPercent: trend.previous)
+    let weekly = aggregateCard(window: .weekly, title: "Weekly Limit", systemImage: "calendar",
+                               inputs: limitInputs, pick: { $0.weekly }, now: now)
+    let weeklySonnet = aggregateCard(window: .weeklySonnet, title: "Weekly Sonnet",
+                                     systemImage: "s.circle.fill",
+                                     inputs: limitInputs, pick: { $0.weeklySonnet }, now: now)
+    let weeklyModelCards = modelCards(limitInputs, now: now)
 
     // Ledger-correct each account's daily COST before summing, so the overall bar height (cost)
     // reflects the snapshot-tracked recent days, not the empty transcript days.
@@ -541,7 +644,7 @@ public func overallDashboard(analyticsByAccount: [String: AccountUsageAnalytics]
         fiveHour: five,
         weekly: weekly,
         weeklySonnet: weeklySonnet,
-        weeklyModel: weeklyModelCard,
+        weeklyModels: weeklyModelCards,
         daily: dailyUsageBars(mergedDaily, now: now),
         models: modelShares(allSessions),
         tokens: tokenRows(today: today, thisMonth: month,

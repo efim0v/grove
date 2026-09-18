@@ -111,15 +111,15 @@ final class ModelWindowTests: XCTestCase {
                                    contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
                                    fiveHour: nil, sevenDay: nil)]
         let col = accountDashboard(name: "a", analytics: nil, snapshots: snaps, now: now)
-        XCTAssertEqual(col.weeklyModel.title, "Weekly Opus")
-        XCTAssertTrue(col.weeklyModel.hasData)
-        XCTAssertEqual(col.weeklyModel.usedPercentage, 35, accuracy: 1e-9)
+        XCTAssertEqual(col.weeklyModels.map(\.title), ["Weekly Opus"])
+        XCTAssertTrue(col.weeklyModels[0].hasData)
+        XCTAssertEqual(col.weeklyModels[0].usedPercentage, 35, accuracy: 1e-9)
     }
 
     func testAccountDashboardWeeklyModelHiddenWhenNoData() {
-        // No OAuth data → weeklyModel.hasData == false
+        // No OAuth data → no model bar at all
         let col = accountDashboard(name: "a", analytics: nil, snapshots: [], now: now)
-        XCTAssertFalse(col.weeklyModel.hasData)
+        XCTAssertTrue(col.weeklyModels.isEmpty)
     }
 
     func testAccountDashboardWeeklyModelSonnetWhenSonnetModel() {
@@ -136,7 +136,7 @@ final class ModelWindowTests: XCTestCase {
                                    contextUsedPercentage: nil, totalInputTokens: nil, totalCostUSD: nil,
                                    fiveHour: nil, sevenDay: nil)]
         let col = accountDashboard(name: "a", analytics: nil, snapshots: snaps, now: now)
-        XCTAssertEqual(col.weeklyModel.title, "Weekly Sonnet")
-        XCTAssertEqual(col.weeklyModel.usedPercentage, 12, accuracy: 1e-9)
+        XCTAssertEqual(col.weeklyModels.map(\.title), ["Weekly Sonnet"])
+        XCTAssertEqual(col.weeklyModels[0].usedPercentage, 12, accuracy: 1e-9)
     }
 }

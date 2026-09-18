@@ -35,9 +35,10 @@ public enum ClaudeActivity: Equatable {
 // MARK: - Badges
 
 public struct WorkspaceBadges: Equatable {
-    /// Whole days since the OLDEST fork point across the workspace's repos
-    /// (max over repos' meta.forkDate measured against `now`); nil when no
-    /// repo carries a fork date.
+    /// Whole days since the workspace's worktrees were CREATED on disk (max over
+    /// repos' `entry.createdAt` birthtime, measured against `now`); nil when no
+    /// repo carries a creation time. This is the worktree's own age — NOT the age
+    /// of the commit it forked from, so a fresh fork off a stale base reads "0d".
     public let ageDays: Int?
     public let ageBucket: AgeBucket
     /// Sum of repos' meta.dirtyCount (repos without meta contribute 0).
@@ -61,11 +62,13 @@ public struct WorkspaceBadges: Equatable {
 }
 
 public func badges(for ws: FeatureWorkspace, now: Date) -> WorkspaceBadges {
-    let forkAges: [Int] = ws.repos.compactMap { state in
-        guard let forkDate = state.meta?.forkDate else { return nil }
-        return max(0, Int(now.timeIntervalSince(forkDate) / 86_400))
+    // Age = how long the worktree has existed on disk (birthtime), not how old
+    // the commit it forked from is. The max across repos is the oldest worktree.
+    let createdAges: [Int] = ws.repos.compactMap { state in
+        guard let createdAt = state.entry.createdAt else { return nil }
+        return max(0, Int(now.timeIntervalSince(createdAt) / 86_400))
     }
-    let ageDays = forkAges.max()
+    let ageDays = createdAges.max()
 
     let ageBucket: AgeBucket
     switch ageDays {

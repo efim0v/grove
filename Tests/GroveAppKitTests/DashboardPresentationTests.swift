@@ -135,17 +135,18 @@ final class DashboardPresentationTests: XCTestCase {
                        "untracked day keeps its transcript cost")
     }
 
-    func testMergeDailyUsageSumsElementwise() {
+    func testMergeDailyUsageSumsAccountsDayByDay() {
         let c = cal()
-        let base = c.startOfDay(for: now)
-        let a = [DayUsage(day: base, inputTokens: 10, outputTokens: 1),
-                 DayUsage(day: base, inputTokens: 20)]
-        let b = [DayUsage(day: base, inputTokens: 5, outputTokens: 2)]
+        let day1 = c.startOfDay(for: now)
+        let day2 = c.date(byAdding: .day, value: 1, to: day1)!
+        let a = [DayUsage(day: day1, inputTokens: 10, outputTokens: 1),
+                 DayUsage(day: day2, inputTokens: 20)]
+        let b = [DayUsage(day: day1, inputTokens: 5, outputTokens: 2)]
         let merged = mergeDailyUsage([a, b])
         XCTAssertEqual(merged.count, 2)
         XCTAssertEqual(merged[0].inputTokens, 15)
         XCTAssertEqual(merged[0].outputTokens, 3)
-        XCTAssertEqual(merged[1].inputTokens, 20)   // b has no second day -> a only
+        XCTAssertEqual(merged[1].inputTokens, 20)   // b has no bucket for day2 -> a only
     }
 
     // MARK: - current (non-stale) limit window
@@ -305,7 +306,12 @@ final class DashboardPresentationTests: XCTestCase {
         let column = overallDashboard(
             analyticsByAccount: ["a": analytics],
             snapshotsByAccount: ["a": [snap(captured: now, five: CapturedWindow(usedPercentage: 25, resetsAt: nil))]],
-            aggregateFiveHour: aggregate, aggregateWeekly: aggregate, aggregateSonnet: aggregate, now: now)
+            limitInputs: [AccountLimitInput(account: "a", tier: "default_claude_max_5x",
+                                            fiveHour: CapturedWindow(usedPercentage: 25, resetsAt: nil),
+                                            weekly: CapturedWindow(usedPercentage: 25, resetsAt: nil),
+                                            weeklySonnet: CapturedWindow(usedPercentage: 25, resetsAt: nil),
+                                            scopedModel: nil, scopedWindow: nil)],
+            now: now)
         XCTAssertEqual(column.title, "Overall")
         XCTAssertEqual(column.fiveHour.usedPercentage, 25, accuracy: 1e-9)
         XCTAssertTrue(column.fiveHour.hasData)
@@ -318,8 +324,7 @@ final class DashboardPresentationTests: XCTestCase {
     func testOverallDashboardNoDataIsNeutral() {
         let empty = RateLimitModel.Aggregate(remaining: 0, total: 0)
         let column = overallDashboard(analyticsByAccount: [:], snapshotsByAccount: [:],
-                                      aggregateFiveHour: empty, aggregateWeekly: empty,
-                                      aggregateSonnet: empty, now: now)
+                                      limitInputs: [], now: now)
         XCTAssertEqual(column.fiveHour.level, .noData)
         XCTAssertFalse(column.weekly.hasData)
         XCTAssertFalse(column.weeklySonnet.hasData)

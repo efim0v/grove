@@ -44,20 +44,34 @@ final class TreeModelBadgesTests: XCTestCase {
 
     // MARK: - badges(for:now:)
 
-    func testAgeDaysIsMaxForkAgeAcrossRepos() {
+    func testAgeDaysIsMaxCreatedAgeAcrossRepos() {
+        // Age is the OLDEST worktree's birthtime — independent of fork/commit dates.
         let ws = Fix.workspace(name: "w", repos: [
-            Fix.repoState(dirName: "a", forkDate: Fix.now.addingTimeInterval(-Fix.days(2))),
-            Fix.repoState(dirName: "b", forkDate: Fix.now.addingTimeInterval(-Fix.days(5))),
+            Fix.repoState(dirName: "a", createdAt: Fix.now.addingTimeInterval(-Fix.days(2))),
+            Fix.repoState(dirName: "b", createdAt: Fix.now.addingTimeInterval(-Fix.days(5))),
         ])
         let result = badges(for: ws, now: Fix.now)
         XCTAssertEqual(result.ageDays, 5)
         XCTAssertEqual(result.ageBucket, .fresh)
     }
 
+    func testFreshForkOffStaleBaseReadsZeroDays() {
+        // The regression that motivated the change: a worktree CREATED today whose
+        // fork point (forkDate) is 15 days old must read as 0d / fresh, not 15d.
+        let ws = Fix.workspace(name: "w", repos: [
+            Fix.repoState(dirName: "a",
+                          forkDate: Fix.now.addingTimeInterval(-Fix.days(15)),
+                          createdAt: Fix.now),
+        ])
+        let result = badges(for: ws, now: Fix.now)
+        XCTAssertEqual(result.ageDays, 0)
+        XCTAssertEqual(result.ageBucket, .fresh)
+    }
+
     func testAgeBucketBoundaries() {
         func bucket(daysOld: Double) -> AgeBucket {
             let ws = Fix.workspace(name: "w", repos: [
-                Fix.repoState(forkDate: Fix.now.addingTimeInterval(-Fix.days(daysOld))),
+                Fix.repoState(createdAt: Fix.now.addingTimeInterval(-Fix.days(daysOld))),
             ])
             return badges(for: ws, now: Fix.now).ageBucket
         }
@@ -69,9 +83,9 @@ final class TreeModelBadgesTests: XCTestCase {
         XCTAssertEqual(bucket(daysOld: 400), .stale)
     }
 
-    func testNoForkDatesMeansUnknownBucketAndNilAge() {
+    func testNoCreatedAtMeansUnknownBucketAndNilAge() {
         let ws = Fix.workspace(name: "w", repos: [
-            Fix.repoState(dirName: "a", forkDate: nil),
+            Fix.repoState(dirName: "a", createdAt: nil),
             Fix.repoState(dirName: "b", hasMeta: false),
         ])
         let result = badges(for: ws, now: Fix.now)

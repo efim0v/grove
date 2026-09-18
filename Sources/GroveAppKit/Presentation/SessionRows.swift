@@ -68,6 +68,15 @@ public struct SessionRow: Identifiable, Equatable, Sendable {
     /// Live process start time (for the runtime column); nil when not live or unknown.
     public let startedAt: Date?
     public let lastActivity: Date
+    /// Git branch the session was opened on (from the transcript's first user
+    /// record); nil when unknown. Shown next to the location.
+    public let gitBranch: String?
+    /// Session creation moment (first transcript timestamp) — "created Nd ago".
+    public let createdAt: Date?
+    /// Human-prompt count — "N turns".
+    public let turnCount: Int
+    /// Last model the session ran on — shown short (e.g. "opus-4-8").
+    public let model: String?
     public let action: SessionRowAction
     /// For a `.go` row, the cmux workspace id to jump to (resolved from the hook
     /// map or a cmux workspace already sitting in the session's cwd). nil for
@@ -85,7 +94,9 @@ public struct SessionRow: Identifiable, Equatable, Sendable {
     public init(sessionId: String, title: String, location: String, accountName: String,
                 accounts: [String] = [],
                 cwd: String, liveStatus: SessionLiveStatus?, startedAt: Date?,
-                lastActivity: Date, action: SessionRowAction, cmuxWorkspaceId: String? = nil) {
+                lastActivity: Date, action: SessionRowAction, cmuxWorkspaceId: String? = nil,
+                gitBranch: String? = nil, createdAt: Date? = nil,
+                turnCount: Int = 0, model: String? = nil) {
         self.id = SessionRow.rowID(cwd: cwd, session: sessionId)
         self.sessionId = sessionId
         self.title = title
@@ -96,6 +107,10 @@ public struct SessionRow: Identifiable, Equatable, Sendable {
         self.liveStatus = liveStatus
         self.startedAt = startedAt
         self.lastActivity = lastActivity
+        self.gitBranch = gitBranch
+        self.createdAt = createdAt
+        self.turnCount = turnCount
+        self.model = model
         self.action = action
         self.cmuxWorkspaceId = cmuxWorkspaceId
     }
@@ -213,7 +228,11 @@ public func buildSessionRows(snapshot: ProjectSnapshot,
             startedAt: process?.startedAt,
             lastActivity: first.lastActivity,
             action: action,
-            cmuxWorkspaceId: isGo ? workspaceId : nil))
+            cmuxWorkspaceId: isGo ? workspaceId : nil,
+            gitBranch: first.gitBranch,
+            createdAt: first.createdAt,
+            turnCount: first.turnCount,
+            model: first.model))
     }
 
     rows.sort { lhs, rhs in
@@ -268,7 +287,11 @@ public func buildExternalSessionRows(snapshotRows: [SessionRow],
             startedAt: nil,
             lastActivity: s.lastActivity,
             action: .resume,
-            cmuxWorkspaceId: nil))
+            cmuxWorkspaceId: nil,
+            gitBranch: s.gitBranch,
+            createdAt: s.createdAt,
+            turnCount: s.turnCount,
+            model: s.model))
     }
     return result
 }
@@ -294,6 +317,10 @@ public func buildOtherSessionRows(sessions: [ClaudeSession]) -> [SessionRow] {
             startedAt: nil,
             lastActivity: s.lastActivity,
             action: .resume,
-            cmuxWorkspaceId: nil)
+            cmuxWorkspaceId: nil,
+            gitBranch: s.gitBranch,
+            createdAt: s.createdAt,
+            turnCount: s.turnCount,
+            model: s.model)
     }
 }

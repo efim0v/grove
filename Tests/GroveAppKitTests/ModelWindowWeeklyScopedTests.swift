@@ -77,7 +77,7 @@ final class ModelWindowWeeklyScopedTests: XCTestCase {
     func testModelWindowHiddenWhenNoScopedWindow() {
         // No OAuth scoped window, no model id → hidden (hasData=false)
         let col = accountDashboard(name: "a", analytics: nil, snapshots: [], now: now)
-        XCTAssertFalse(col.weeklyModel.hasData)
+        XCTAssertTrue(col.weeklyModels.isEmpty)
     }
 
     // MARK: - accountDashboard picks up weeklyScoped from OAuth snapshot
@@ -93,8 +93,8 @@ final class ModelWindowWeeklyScopedTests: XCTestCase {
                                       weeklyScopedWindow: scopedWindow,
                                       weeklyScopedModel: "Fable")
         let col = accountDashboard(name: "a", analytics: nil, snapshots: [oauthSnap], now: now)
-        XCTAssertEqual(col.weeklyModel.title, "Weekly Fable")
-        XCTAssertTrue(col.weeklyModel.hasData)
-        XCTAssertEqual(col.weeklyModel.usedPercentage, 100, accuracy: 1e-9)
+        XCTAssertEqual(col.weeklyModels.map(\.title), ["Weekly Fable"])
+        XCTAssertTrue(col.weeklyModels[0].hasData)
+        XCTAssertEqual(col.weeklyModels[0].usedPercentage, 100, accuracy: 1e-9)
     }
 }

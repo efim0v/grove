@@ -342,11 +342,11 @@ final class ClaudeServiceTests: XCTestCase {
 
     func testResumeSessionIdParsesUuidFromCommandLine() {
         XCTAssertEqual(
-            ClaudeService.resumeSessionId(in: "claude --resume 41f451c9-1658-4981-9465-a4dbb252ff11"),
+            ClaudeService.sessionId(in: "claude --resume 41f451c9-1658-4981-9465-a4dbb252ff11"),
             "41f451c9-1658-4981-9465-a4dbb252ff11")
         // flags after the id don't bleed in
         XCTAssertEqual(
-            ClaudeService.resumeSessionId(in: "/Users/x/.local/bin/claude --resume 2c07347f-f9bc-4d2c-afcf-1c295d20dd32 --dangerously-skip-permissions"),
+            ClaudeService.sessionId(in: "/Users/x/.local/bin/claude --resume 2c07347f-f9bc-4d2c-afcf-1c295d20dd32 --dangerously-skip-permissions"),
             "2c07347f-f9bc-4d2c-afcf-1c295d20dd32")
     }
 
@@ -442,11 +442,36 @@ final class ClaudeServiceTests: XCTestCase {
         // Both `--resume <id>` and `--resume=<id>` must resolve; the equals form would
         // otherwise leave the session unmatchable (read as fresh/closed).
         XCTAssertEqual(
-            ClaudeService.resumeSessionId(in: "claude --resume=41f451c9-1658-4981-9465-a4dbb252ff11"),
+            ClaudeService.sessionId(in: "claude --resume=41f451c9-1658-4981-9465-a4dbb252ff11"),
             "41f451c9-1658-4981-9465-a4dbb252ff11")
         XCTAssertEqual(
-            ClaudeService.resumeSessionId(in: "claude --resume=41f451c9-1658-4981-9465-a4dbb252ff11 --foo"),
+            ClaudeService.sessionId(in: "claude --resume=41f451c9-1658-4981-9465-a4dbb252ff11 --foo"),
             "41f451c9-1658-4981-9465-a4dbb252ff11")
+    }
+
+    func testSessionIdParsesSessionIdFlag() {
+        // cmux launches Claude with `--session-id <uuid>` (NOT `--resume`). The
+        // extractor must recognize it, otherwise the process is misread as a bare,
+        // ID-less `claude` and surfaces as an empty-id, cwd-only table row — which then
+        // colors EVERY closed session sharing that directory as "running" (the
+        // stuck-running bug; live witness pid 8148 was exactly this command).
+        XCTAssertEqual(
+            ClaudeService.sessionId(in: "/Users/x/.local/bin/claude --session-id 5561b7f2-1f5d-4ad9-8d73-25341dfaa5e5 --dangerously-skip-permissions"),
+            "5561b7f2-1f5d-4ad9-8d73-25341dfaa5e5")
+        // equals form too (parity with --resume=)
+        XCTAssertEqual(
+            ClaudeService.sessionId(in: "claude --session-id=5561b7f2-1f5d-4ad9-8d73-25341dfaa5e5"),
+            "5561b7f2-1f5d-4ad9-8d73-25341dfaa5e5")
+        // a non-uuid value is still rejected (no false matches)
+        XCTAssertNil(ClaudeService.sessionId(in: "claude --session-id not-a-uuid"))
+    }
+
+    func testIsBareClaudeCommandExcludesSessionIdProcess() {
+        // Defense-in-depth: a `claude --session-id <uuid>` process HAS an id, so it is
+        // NOT a bare/fresh CLI. It must never be classified bare (which would carry only
+        // its cwd and re-introduce the cross-session cwd mis-join).
+        XCTAssertFalse(ClaudeService.isBareClaudeCommand(
+            "/Users/x/.local/bin/claude --session-id 5561b7f2-1f5d-4ad9-8d73-25341dfaa5e5 --dangerously-skip-permissions"))
     }
 
     func testLaunchCommandTreatsEmptyModelEffortAsNil() {
@@ -498,11 +523,11 @@ final class ClaudeServiceTests: XCTestCase {
     }
 
     func testResumeSessionIdRejectsNonResumeAndWrappers() {
-        XCTAssertNil(ClaudeService.resumeSessionId(in: "claude"))                       // bare new session
-        XCTAssertNil(ClaudeService.resumeSessionId(in: "claude --print hello"))          // no --resume
+        XCTAssertNil(ClaudeService.sessionId(in: "claude"))                       // bare new session
+        XCTAssertNil(ClaudeService.sessionId(in: "claude --print hello"))          // no --resume
         // the cmux wrapper script path mentions claude + an id but has no --resume flag
-        XCTAssertNil(ClaudeService.resumeSessionId(in: "/bin/zsh /tmp/cmux-agent-resume/claude-2d6192be-e3d-9D80.zsh"))
-        XCTAssertNil(ClaudeService.resumeSessionId(in: "claude --resume not-a-uuid"))    // not a 36-char id
+        XCTAssertNil(ClaudeService.sessionId(in: "/bin/zsh /tmp/cmux-agent-resume/claude-2d6192be-e3d-9D80.zsh"))
+        XCTAssertNil(ClaudeService.sessionId(in: "claude --resume not-a-uuid"))    // not a 36-char id
     }
 
     // MARK: - launchCommand
@@ -568,6 +593,23 @@ final class ClaudeServiceTests: XCTestCase {
             // No model/effort -> unchanged from the resume-only form.
             XCTAssertEqual(ClaudeService.launchCommand(account: def, resume: "x"),
                            "'claude' --resume 'x'")
+        }
+    }
+
+    func testLaunchCommandAppendsSkipPermissionsFlag() {
+        withBareClaudeResolution {
+            let def = AccountConfig(name: "default", configDir: "~/.claude")
+            // Off by default: no flag.
+            XCTAssertEqual(ClaudeService.launchCommand(account: def), "'claude'")
+            // On: appended last, after resume/model/effort, on BOTH new and resume.
+            XCTAssertEqual(ClaudeService.launchCommand(account: def, skipPermissions: true),
+                           "'claude' --dangerously-skip-permissions")
+            XCTAssertEqual(
+                ClaudeService.launchCommand(account: def, resume: "x",
+                                            model: "claude-opus-4-6", effort: "high",
+                                            skipPermissions: true),
+                "'claude' --resume 'x' --model 'claude-opus-4-6' --effort 'high' "
+                + "--dangerously-skip-permissions")
         }
     }
 

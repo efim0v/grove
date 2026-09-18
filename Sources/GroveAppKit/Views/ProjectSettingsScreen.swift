@@ -99,6 +99,7 @@ struct ProjectSettingsScreen: View {
                 defaultAccountRow(project)
                 defaultModelRow(project)
                 defaultEffortRow(project)
+                skipPermissionsRow(project)
             }
 
             SettingsSection(title: "Repos") {
@@ -107,6 +108,7 @@ struct ProjectSettingsScreen: View {
             }
 
             SettingsSection(title: "Hooks") {
+                prebuiltHooks(project)
                 dictEditor(title: "Post-create hooks (zsh, run in the new worktree)",
                            dict: project.postCreateHooks,
                            keyTitle: "repo dir", valueTitle: "command",
@@ -235,6 +237,30 @@ struct ProjectSettingsScreen: View {
         }
     }
 
+    /// Per-project `--dangerously-skip-permissions` toggle: when ON, every Claude
+    /// session for this project (New AND Resume) launches with the flag, so a
+    /// fully-autonomous agent never stops for per-command confirmations. A toggle
+    /// renders as a placeholder under ImageRenderer, so snapshot mode shows a
+    /// static on/off lookalike.
+    private func skipPermissionsRow(_ project: ProjectConfig) -> some View {
+        LabeledRow(label: "Skip permissions") {
+            if isSnapshotRender {
+                Text(currentProject(project).dangerouslySkipPermissions ? "on" : "off")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Toggle("", isOn: Binding(
+                    get: { currentProject(project).dangerouslySkipPermissions },
+                    set: { state.setProjectSkipPermissions(projectID: project.id, $0) }))
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .toggleStyle(.switch)
+            }
+            Text("launch with --dangerously-skip-permissions")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
     /// Always the CURRENT copy from state.config (the captured `project`
     /// value goes stale after any edit in the same screen session).
     private func currentProject(_ project: ProjectConfig) -> ProjectConfig {
@@ -319,6 +345,77 @@ struct ProjectSettingsScreen: View {
                 state.updateProject(current)
             }
         )
+    }
+
+    // MARK: - Prebuilt hooks (one-click presets with a validity check)
+
+    /// The curated preset catalog. Each row carries a status dot — GREEN when the
+    /// preset can actually run for THIS project (its required input exists),
+    /// dimmed with a reason otherwise — so the user sees before adding whether it
+    /// will do anything. Installed presets show a checkmark + remove; available,
+    /// ready presets show a "+"; unavailable ones disable "+" and explain why.
+    private func prebuiltHooks(_ project: ProjectConfig) -> some View {
+        let current = currentProject(project)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Prebuilt")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(PrebuiltHook.all) { hook in
+                prebuiltHookRow(hook, project: current)
+            }
+        }
+        .padding(.bottom, 2)
+    }
+
+    @ViewBuilder
+    private func prebuiltHookRow(_ hook: PrebuiltHook, project: ProjectConfig) -> some View {
+        let installed = hook.isInstalled(in: project)
+        let status = hook.status(projectPath: project.path)
+        HStack(spacing: 8) {
+            // Validity dot: green = ready to run, neutral = can't run yet.
+            Circle()
+                .fill(status.isReady ? Palette.primary : Palette.neutral)
+                .frame(width: 7, height: 7)
+                .help(status.reason ?? "Ready — runs on the next fork")
+            Image(systemName: hook.systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(hook.title)
+                    .font(.caption.weight(.medium))
+                Text(status.reason ?? hook.summary)
+                    .font(.caption2)
+                    .foregroundStyle(status.isReady ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Palette.mid))
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 6)
+            if installed {
+                Label("Added", systemImage: "checkmark.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(Palette.primary)
+                    .help("Installed — copies on every new fork")
+                Button {
+                    var updated = currentProject(project)
+                    hook.remove(from: &updated)
+                    state.updateProject(updated)
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    var updated = currentProject(project)
+                    hook.install(into: &updated)
+                    state.updateProject(updated)
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .foregroundStyle(status.isReady ? Palette.primary : .secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!status.isReady)
+                .help(status.reason ?? "Add this hook")
+            }
+        }
     }
 
     // MARK: - Dictionary editor (post-create hooks)
