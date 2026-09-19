@@ -84,6 +84,28 @@ final class TokenKeeperTests: XCTestCase {
         XCTAssertTrue(runner.invocations.isEmpty)
     }
 
+    /// The default `~/.claude` is selected by CLAUDE_CONFIG_DIR being ABSENT. Set to that
+    /// very path the CLI reads a different, empty Keychain item — `doctor` then reports
+    /// "not logged in" forever and the token Brow reads is never refreshed.
+    func testDefaultDirRunsTheCLIWithTheVariableRemoved() async {
+        let home = NSHomeDirectory() + "/.claude"
+        let creds = MovableCreds(); creds.expiry = t0.addingTimeInterval(10 * 60)
+        let runner = FakeCLI(sideEffect: { _ in creds.expiry = self.t0.addingTimeInterval(8 * 3600) })
+        let keeper = TokenKeeper(runner: runner, credentials: creds, claudePath: "/x/claude",
+                                 allowPromptFallback: { true }, now: { self.t0 })
+        let out = await keeper.ensureFresh(configDir: home)
+        XCTAssertEqual(out, .refreshedByDoctor)
+        XCTAssertEqual(runner.invocations[0].executable, "/usr/bin/env")
+        XCTAssertEqual(runner.invocations[0].args, ["-u", "CLAUDE_CONFIG_DIR", "/x/claude", "doctor"])
+        XCTAssertNil(runner.invocations[0].env?["CLAUDE_CONFIG_DIR"])
+    }
+
+    func testIsDefaultClaudeDir() {
+        XCTAssertTrue(isDefaultClaudeDir("~/.claude"))
+        XCTAssertTrue(isDefaultClaudeDir(NSHomeDirectory() + "/.claude/"))
+        XCTAssertFalse(isDefaultClaudeDir("~/.claude-accounts/account-1"))
+    }
+
     func testDoctorRunsBelowThresholdAndSucceedsWhenExpiryMoves() async {
         let creds = MovableCreds(); creds.expiry = t0.addingTimeInterval(10 * 60)
         // The runner can't move the Keychain; emulate the CLI doing so as `doctor` runs,

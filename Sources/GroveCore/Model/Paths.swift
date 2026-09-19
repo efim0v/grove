@@ -30,3 +30,15 @@ public func shellQuote(_ s: String) -> String {
 public func canonicalPath(_ path: String) -> String {
     URL(fileURLWithPath: expandTilde(path)).resolvingSymlinksInPath().path
 }
+
+/// `~/.claude` — the one config dir Claude Code treats specially. With
+/// `CLAUDE_CONFIG_DIR` UNSET the CLI keeps its login in the Keychain item
+/// `Claude Code-credentials`; with the variable SET — even to this very path — it
+/// uses the hashed item `Claude Code-credentials-<accountKey>` instead, which is a
+/// different, normally empty login. So every command for the default dir must run
+/// with the variable absent, never with it pointing at `~/.claude`.
+public func isDefaultClaudeDir(_ configDir: String) -> Bool {
+    var dir = (configDir as NSString).expandingTildeInPath
+    if dir.count > 1 && dir.hasSuffix("/") { dir.removeLast() }
+    return dir == NSHomeDirectory() + "/.claude"
+}

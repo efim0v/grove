@@ -177,10 +177,10 @@ public actor TokenKeeper {
         // `previous` is what the could-not-attempt paths roll back to.
         let previous = record(configDir: configDir, at: at, failures: failures, forced: authRejected)
 
-        let env = ["CLAUDE_CONFIG_DIR": configDir]
         var details: [String] = []
         do {
-            let result = try await runner.run(claudePath(), ["doctor"], cwd: nil, env: env, timeout: Self.doctorTimeout)
+            let doctor = Self.invocation(claude: claudePath(), args: ["doctor"], configDir: configDir)
+            let result = try await runner.run(doctor.executable, doctor.args, cwd: nil, env: doctor.env, timeout: Self.doctorTimeout)
             // 127 is the shell's "command not found": a wrong "Path to claude", or a GUI
             // app's PATH without the CLI on it. The binary never ran.
             if result.exitCode == 127 {
@@ -217,8 +217,9 @@ public actor TokenKeeper {
             return fail("sign in again".appending(Self.suffix(details)), configDir: configDir, counts: true)
         }
         do {
-            let result = try await runner.run(claudePath(), ["-p", ".", "--model", "haiku", "--max-turns", "1"],
-                                              cwd: nil, env: env, timeout: Self.promptTimeout)
+            let prompt = Self.invocation(claude: claudePath(), args: ["-p", ".", "--model", "haiku", "--max-turns", "1"],
+                                         configDir: configDir)
+            let result = try await runner.run(prompt.executable, prompt.args, cwd: nil, env: prompt.env, timeout: Self.promptTimeout)
             switch reread(after: before, configDir: configDir) {
             case .advanced:   return succeed(.refreshedByPrompt, configDir: configDir)
             case .unreadable: return fail("token became unreadable after claude -p", configDir: configDir, counts: true)
@@ -229,6 +230,20 @@ public actor TokenKeeper {
         }
         return fail("neither claude doctor nor claude -p refreshed the token".appending(Self.suffix(details)),
                     configDir: configDir, counts: true)
+    }
+
+    /// How the CLI is run FOR `configDir`. An account folder is selected with
+    /// `CLAUDE_CONFIG_DIR`. The default dir is selected by the variable's ABSENCE — set
+    /// to `~/.claude` the CLI reads a different Keychain item (see `isDefaultClaudeDir`),
+    /// finds no login there, and `doctor` can never refresh the token Brow is reading.
+    /// `env -u` rather than an empty environment entry: the runner merges into this
+    /// process's environment, which may carry the variable itself.
+    static func invocation(claude: String, args: [String], configDir: String)
+        -> (executable: String, args: [String], env: [String: String]?) {
+        if isDefaultClaudeDir(configDir) {
+            return ("/usr/bin/env", ["-u", "CLAUDE_CONFIG_DIR", claude] + args, nil)
+        }
+        return (claude, args, ["CLAUDE_CONFIG_DIR": configDir])
     }
 
     /// A CLI that never ran: the spawn failed, or the watchdog killed it before it could
