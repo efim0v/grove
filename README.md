@@ -1,8 +1,8 @@
-# Grove
+# Grove — git-worktree workspaces for parallel Claude Code sessions
 
-A macOS menu-bar app for running [Claude Code](https://claude.com/claude-code) on a product that is split across several repositories.
+A macOS menu-bar app for running [Claude Code](https://claude.com/claude-code) and other AI coding agents on a product that is split across several repositories.
 
-Grove gives every feature its own **workspace**: one directory holding a git worktree of each repository. Claude Code starts in that directory and sees one consistent branch of the whole product, so parallel sessions never trip over each other's branches. Grove also moves a session from one Claude account to another.
+Grove gives every feature its own **workspace**: one directory holding a git worktree of each repository. Claude Code starts in that directory and sees one consistent branch of the whole product, so parallel agent sessions never trip over each other's branches. Grove also moves a session from one Claude account to another when a rate limit runs out.
 
 > **Companion app: [Brow](https://github.com/efim0v/brow).** Brow lives in the MacBook notch and shows the rate limits of every Claude account you have. Grove moves work between accounts; Brow tells you which account has room. Each runs on its own, and they are built to be used together.
 
