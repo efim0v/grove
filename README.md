@@ -72,19 +72,19 @@ Claude Code keeps each account in its own directory: `~/.claude` for the default
 
 ```mermaid
 flowchart LR
-    subgraph default["~/.claude  (default account, and the shared store)"]
+    subgraph acc_default["~/.claude  (default account, and the shared store)"]
         P["projects/&lt;workspace&gt;/&lt;session&gt;.jsonl<br/>transcripts"]
         F["file-history/  tasks/  session-env/"]
         M["grove/transcripts/&lt;account&gt;/…<br/>transcript mirror"]
     end
 
-    subgraph work["~/.claude-accounts/work"]
+    subgraph acc_work["~/.claude-accounts/work"]
         WP["projects/&lt;workspace&gt;"]
         WF["file-history  tasks  session-env"]
         WK["credentials · settings · plugins<br/>stay per account"]
     end
 
-    subgraph team["~/.claude-accounts/team"]
+    subgraph acc_team["~/.claude-accounts/team"]
         TP["projects/&lt;workspace&gt;"]
         TX["projects/&lt;other&gt;/&lt;session&gt;.jsonl"]
     end
