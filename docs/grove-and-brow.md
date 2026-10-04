@@ -1,7 +1,9 @@
-# Grove and Brow — two utilities, one package
+# Grove and Brow — two utilities, one shared core
 
 Grove and Brow are separate apps with separate jobs that share one picture of
-"what a Claude account on this Mac is". They live in one Swift package on purpose.
+"what a Claude account on this Mac is". They live in two repositories —
+[grove](https://github.com/efim0v/grove) and [brow](https://github.com/efim0v/brow) —
+and Brow depends on Grove's `GroveCore` library as a Swift package.
 
 | | Grove | Brow |
 |---|---|---|
@@ -9,6 +11,7 @@ Grove and Brow are separate apps with separate jobs that share one picture of
 | UI | Menu-bar tree → panel | Notch readouts → hover panel |
 | Targets | `GroveCore`, `GroveAppKit`, `GroveApp`, `grove-cli` | `BrowKit`, `BrowApp` (+ `GroveCore`) |
 | Bundle id | `dev.artemefimov.grove3` | `dev.artemefimov.brow` |
+| Repository | [efim0v/grove](https://github.com/efim0v/grove) | [efim0v/brow](https://github.com/efim0v/brow) |
 | Build | `Scripts/build-app.sh` → `dist/Grove.app` | `Scripts/build-brow.sh` → `dist/Brow.app` |
 | Own state | `~/Library/Application Support/Grove/` | `~/Library/Application Support/Brow/` |
 | Reads Claude's Keychain credentials | **never** | yes — the only one that does |
@@ -50,7 +53,8 @@ contracts — change one side and the other breaks silently, so change them toge
    One number, three users: Claude Code's Keychain item name
    (`Claude Code-credentials-<key>`), Grove's transcript mirror directory, and the
    Chrome profile directory. It is implemented **twice**: `GroveCore/Model/Paths.swift`
-   and, in shell, `Resources/brow-browser.sh`. Keep them identical.
+   in the grove repository and, in shell, `Resources/brow-browser.sh` in the brow
+   repository. Keep them identical.
 2. **Account folders** — `~/.claude` plus `~/.claude-accounts/*`. Brow creates
    `account-N` on sign-in; Grove creates named folders and adopts any it finds,
    Brow's included. Both stamp a fresh folder with `ClaudeService.ensureOnboarded`.
@@ -86,21 +90,22 @@ What is still refused, deliberately: anything that would give **one session** tw
 writers (sharing a session that is running; resuming under account B a session
 that is live under account A).
 
-## Should they be split?
+## Two repositories, one core
 
-Not into two repositories. Three of the five runtime contracts above are enforced
-only by the two sides being edited and tested together; two repos would turn each
-into a versioned protocol for no gain, and the package has no external dependencies
-or release cadence that would justify it.
+The apps are published separately, and `GroveCore` stays in the grove repository:
+Brow's `Package.swift` pulls it in as a dependency pinned to a Grove release.
 
-What is worth doing, inside this package, is making the shared part visible:
+That makes the runtime contracts above a versioned protocol. Three of the five are
+enforced only by the two sides agreeing, so a change to one of them is a change in
+both repositories: land it in grove, tag a release, then raise the version Brow
+depends on and adjust Brow in the same commit.
 
-- Extract a `ClaudeAccountsKit` target (working name) from `GroveCore`: the
+What would make the boundary cleaner:
+
+- Extract a `ClaudeAccountsKit` library (working name) from `GroveCore`: the
   Brow-only and used-by-both files listed above, with their tests. `GroveCore` and
-  `BrowKit` both depend on it; `BrowKit` stops depending on `GroveCore` at all.
-  The graph becomes `ClaudeAccountsKit ← {GroveCore, BrowKit}` and the name
-  "GroveCore" means Grove again.
-- Move the browser router there as a resource of the shared target, so Grove
+  `BrowKit` both depend on it, and "GroveCore" means Grove again.
+- Move the browser router there as a resource of the shared library, so Grove
   carries its own copy instead of reaching into `/Applications/Brow.app`, and add
   a test pinning the shell `accountKey` to the Swift one.
 - Give shared loggers a neutral subsystem (`ProcessRunner` and `TokenKeeper`

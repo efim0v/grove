@@ -1,145 +1,175 @@
 # Grove
 
-Menu-bar command center for git-worktree feature workspaces: one umbrella
-directory per feature across a multi-repo project, stacked workspaces derived
-from git itself, Claude Code sessions/processes per workspace (multi-account),
-and one-click jumps into [cmux](https://cmux.dev) terminals. macOS 26+,
-SwiftUI + Liquid Glass, zero external dependencies.
+A macOS menu-bar app for running [Claude Code](https://claude.com/claude-code) on a product that is split across several repositories.
 
-## Quickstart
+Grove gives every feature its own **workspace**: one directory holding a git worktree of each repository. Claude Code starts in that directory and sees one consistent branch of the whole product, so parallel sessions never trip over each other's branches. Grove also moves a session from one Claude account to another.
 
-    swift test                          # full suite (core + app), ~1 min
-    Scripts/build-app.sh                # builds + ad-hoc signs dist/Grove.app
-    cp -R dist/Grove.app /Applications/ # optional install
-    open /Applications/Grove.app        # or: open dist/Grove.app
+> **Companion app: [Brow](https://github.com/efim0v/brow).** Brow lives in the MacBook notch and shows the rate limits of every Claude account you have. Grove moves work between accounts; Brow tells you which account has room. Each runs on its own, and they are built to be used together.
 
-First run: click the tree icon in the menu bar, open Settings (gear), press
-"Add project…" and pick the directory that CONTAINS your repos (e.g.
-`~/Desktop/acme.shop`). Grove scans it immediately and re-scans every 15 s
-while the panel is open. Workspaces live under `~/Workspaces/<project>/<name>`
-by default (template configurable in Settings).
+<p align="center">
+  <img alt="Grove: workspaces of a multi-repo project" src="docs/screenshots/grove-workspaces.png" width="420" />
+  <a href="https://github.com/efim0v/brow"><img alt="Brow: limits of every account" src="https://raw.githubusercontent.com/efim0v/brow/main/docs/screenshots/brow-panel-reset-calendar.png" width="420" /></a>
+</p>
 
-Grant nothing: Grove uses no Apple Events and no TCC-protected APIs — cmux is
-driven through its CLI, Claude state is read from plain files in `~/.claude*`.
-Rebuilds/reinstalls are therefore prompt-free. Per-account rate limits and
-subscriptions are Brow's (below): it is the only one of the two apps that reads
-Claude Code's credentials.
+All screenshots show made-up demo data.
 
-## CLI
+## The problem
 
-    swift build -c release
-    .build/release/grove workspaces ~/Desktop/acme.shop
-    .build/release/grove scan ~/Desktop/acme.shop
-    .build/release/grove --help         # scan/workspaces/sessions/create/graph
+Claude Code works best when it can see the whole product in one directory. A monorepo gives it that. But many products are split across repositories — a client, a server, the server's configuration, an admin panel, a landing page, a handful of microservices — and merging millions of lines into one repository just for the agent is not always sensible, if only because of who should have access to what.
 
-## Brow
+Run several agents in parallel on a multi-repo project and they start tripping over branches: one checks out a branch in the server repository, and another agent working on a different feature is suddenly looking at the wrong code.
 
-A second, minimal app in this package: it shows every Claude account's rate
-limits from the notch (readouts beside the notch, hover for a per-account
-panel). Build with `Scripts/build-brow.sh` → `dist/Brow.app`.
+## Workspaces
 
-Grove and Brow are two related utilities that share one module and a handful of
-on-disk contracts (account folders, the per-account browser router, statusline
-captures). How they fit together, and what must change in lockstep:
-[`docs/grove-and-brow.md`](docs/grove-and-brow.md).
+Grove's answer is the **workspace**: an umbrella directory for one feature or epic that contains a git worktree of each repository you chose, all on the same branch.
 
-- Accounts are discovered from `~/.claude` and `~/.claude-accounts/*`; dirs that
-  belong to the same organisation are shown once.
-- On first launch macOS asks once per account for access to Claude Code's
-  Keychain item — choose "Always Allow".
-- Idle accounts' tokens are kept fresh by running `claude doctor` in that
-  account (no model call). If that ever stops working, the `claude -p` fallback
-  (Settings → Accounts, **on by default**) spends a little limit and starts the
-  account's 5-hour window. It is never used after a 401/403 or a `doctor` that
-  timed out — neither is evidence the token itself can be fixed — and it is
-  dropped for good after three ineffective rounds.
-- The usage endpoint is rate-limited server-side (measured: a small token bucket
-  refilled at roughly one request per 100 s, `retry-after: 0`, and 429s that do
-  not extend the window). Brow paces itself to it: background polls that arrive
-  before the window re-opens are served from the last reading, the ⟳ button
-  spends a small burst budget and otherwise queues itself for the moment a
-  request will go through (`Updated 2 min ago · retrying in 47 s`). Claude Code's
-  own usage numbers come from response headers, which is why it never "hits" this.
-- In the panel, every account carries two buttons: copy the command that runs
-  Claude Code as that account (`CLAUDE_CONFIG_DIR='…' claude`) and open it in
-  Terminal. The same command sits in each account's Settings card.
-- Add an account from Settings with one click (**Sign in…**): Brow creates
-  `~/.claude-accounts/account-N` itself and opens Terminal with `claude auth login`;
-  sign-in happens in Anthropic's own flow.
-- Limits are re-fetched every **60 s** by one timer that keeps running whether the
-  panel is open or shut, plus on wake, on the network returning, and on hover when
-  the data on screen is more than 60 s old. The footer always leads with the age
-  (`Updated 3 h ago`), so a number you can see is a number you can date.
-- **Settings → General → Ears** chooses where the two readouts sit on a built-in
-  display: `Beside the notch` (default — one wing each side, the notch itself left
-  clear) or `Below the notch` (one centred row in a 22 pt strip under it). It takes
-  effect as you click; an external display always shows the pill.
-- The strip is drawn as the notch outline (`NotchShape`), not a rectangle. Its
-  tuning knobs are constants in `Sources/BrowKit/Panel/NotchGeometry.swift` —
-  `flare` (concave top corners, 6), `collapsedBottomRadius` (12),
-  `expandedBottomRadius` (18), `wingWidth` (96), `belowStripHeight` (22). They are
-  meant to be tuned by eye against the physical bezel; no screenshot can show it.
-- Design: `docs/design/specs/2026-09-16-brow-design.md`, and
-  `docs/design/specs/2026-09-17-brow-freshness-and-notch-design.md`.
+```
+~/Workspaces/acme-shop/checkout-redesign/      <- start Claude Code here
+├── web-client/     worktree on feat/checkout-redesign
+├── api-server/     worktree on feat/checkout-redesign
+└── server-config/  worktree on feat/checkout-redesign
+```
 
-Toolchain note: if `swift`/`git` abort with the Xcode license message, either
-accept it (`sudo xcodebuild -license accept`) or `source Scripts/xcode-env.sh`
-and run tests with `Scripts/test.sh` (see the comments in both scripts).
+Claude Code is launched in the umbrella directory. It gets what is in effect a private copy of the whole project on that feature's branch, and nothing another session does can change the branch under it. Ten features in flight are ten directories.
 
-## Troubleshooting
+Creating one takes a name and a click: Grove runs `git worktree add` in each repository, applies your branch template, seeds shared files such as `CLAUDE.md`, and runs post-create hooks. Workspaces can be stacked — forked from another workspace rather than from the base branch — and Grove derives that tree from git itself.
 
-### "cmux unavailable" although cmux is running
+<p align="center">
+  <img alt="New workspace form" src="docs/screenshots/grove-new-workspace.png" width="420" />
+  <img alt="Projects and their running sessions" src="docs/screenshots/grove-projects.png" width="360" />
+</p>
 
-cmux's control socket only accepts clients whose process ancestry traces into
-the cmux app (`automation.socketControlMode`, default `"cmuxOnly"`). Commands
-work from any cmux-hosted terminal, but Grove launched from Finder/Dock/`open`
-descends from launchd, so the server rejects every call ("ERROR: Access denied
-— only processes started inside cmux can connect"; the cmux CLI surfaces this
-only as "Failed to write to socket (Broken pipe)"). One-time fix in cmux:
-Settings > Automation > Socket control mode -> "Automation" (allows external
-clients from your user account; equivalently set
-`"automation": {"socketControlMode": "automation"}` in `~/.config/cmux/cmux.json`
-and `cmux reload-config`). cmux applies the mode when its CLI listener starts,
-so afterwards run cmux's "Restart CLI Listener" palette command or restart
-cmux once. Alternatively set a socket password in the same settings pane —
-Grove reads `automation.socketPassword` from `~/.config/cmux/cmux.json` and
-forwards it as `CMUX_SOCKET_PASSWORD` automatically.
+## Moving a session between accounts
 
-Since the AppleScript fallback (`CmuxAppleScript`), a socket denial is also
-self-healing: Grove switches to driving cmux through its AppleScript
-dictionary (one-time macOS consent dialog: System Settings > Privacy &
-Security > Automation > Grove > cmux) and silently returns to the socket once
-it accepts Grove again. Workspaces created via the fallback keep cmux's
-cwd-derived tab title (the dictionary has no rename), and
-`Scripts/build-app.sh` signs with a stable development identity so the
-automation grant survives rebuilds.
+The second thing Grove is for. A project does not have to stay on the account it started on: when one account runs out of limit, continue the same session on another.
 
-### cmux diagnostic probe
+- **Resume as…** continues a session under a different account without copying anything.
+- **Migrate to…** makes a full copy of a session in another account — transcript, memory, file history, tasks — and works even while that account is in use.
+- **Share** moves a session into the shared store so every linked account can see it.
 
-`Grove.app` ships a hidden diagnostic flag that runs the exact production cmux
-call path (ping, ensure-running, list, create + close a probe workspace —
-exercising BOTH the socket backend and the AppleScript fallback) WITHOUT the
-error-swallowing the UI does, and writes a step-by-step report (environment,
-executable resolution, per-step stdout/stderr/error, raw-socket denial check,
-active backend):
+Each project has a default account, and every launch can pick its own account, model and effort.
 
-    Scripts/build-app.sh
-    open -nW dist/Grove.app --args --cmux-probe /tmp/cmux-probe.txt
-    cat /tmp/cmux-probe.txt
+<p align="center">
+  <img alt="Sessions across accounts" src="docs/screenshots/grove-sessions.png" width="420" />
+  <img alt="Accounts" src="docs/screenshots/grove-accounts.png" width="390" />
+</p>
 
-Launching through `open` (LaunchServices) is the point: it reproduces the real
-GUI context (no TTY, launchd ancestry). `-n` forces a new instance when Grove
-is already running. Running the binary directly
-(`dist/Grove.app/Contents/MacOS/Grove --cmux-probe /tmp/p.txt`) probes the
-terminal context instead — comparing the two reports isolates
-context-dependent failures like the socket access mode above.
+## Graph and statistics
+
+- **Graph** — the commit graph of a repository with its branches, remotes and tags. From a branch you can create a workspace or open Claude Code in its worktree.
+- **Stats** — lines of code across the project: totals, language breakdown, and growth over time stacked by repository.
+
+<p align="center">
+  <img alt="Commit graph" src="docs/screenshots/grove-branch-graph.png" width="420" />
+  <img alt="Code statistics" src="docs/screenshots/grove-code-stats.png" width="420" />
+</p>
+
+There is also a command-line tool, `grove`, with `scan`, `workspaces`, `sessions`, `create`, `graph` and `doctor`, each with `--json`.
+
+## How Grove and Brow fit together
+
+Claude Code keeps each account in its own directory: `~/.claude` for the default account and, here, `~/.claude-accounts/<name>` for the others. Both apps read those directories; neither talks to the other directly.
+
+```mermaid
+flowchart LR
+    subgraph default["~/.claude  (default account, and the shared store)"]
+        P["projects/&lt;workspace&gt;/&lt;session&gt;.jsonl<br/>transcripts"]
+        F["file-history/  tasks/  session-env/"]
+        M["grove/transcripts/&lt;account&gt;/…<br/>transcript mirror"]
+    end
+
+    subgraph work["~/.claude-accounts/work"]
+        WP["projects/&lt;workspace&gt;"]
+        WF["file-history  tasks  session-env"]
+        WK["credentials · settings · plugins<br/>stay per account"]
+    end
+
+    subgraph team["~/.claude-accounts/team"]
+        TP["projects/&lt;workspace&gt;"]
+        TX["projects/&lt;other&gt;/&lt;session&gt;.jsonl"]
+    end
+
+    WP -. symlink .-> P
+    WF -. symlink .-> F
+    TP -. symlink .-> P
+    P == hard link ==> M
+    TX == hard link ==> M
+    TX -- "Migrate: copy" --> WP
+```
+
+**The shared store (symbolic links).** There is no separate neutral directory: the default account's own `~/.claude` is the shared store. When an account is linked — by a button on the Accounts screen, or the first time you resume a session as another account — its `file-history`, `tasks` and `session-env` directories become symbolic links into `~/.claude`, and so does `projects/<workspace>` for each workspace involved. From then on a session started under one linked account is visible to the others, which is what makes **Resume as…** work without copying. Credentials, settings and plugins are never shared.
+
+**The transcript mirror (hard links).** Separately, Grove keeps a safety copy of every transcript under `~/.claude/grove/transcripts/`. Each entry is a hard link to the live file, so it costs no extra disk space while the original exists. If a transcript disappears from an account, the next pass restores it. Entries are kept for 90 days and up to 500 MB by default; **Purge** on the Sessions screen is the way to delete a transcript for good.
+
+**Migration (copy).** **Migrate to…** copies a session's data from one account directory into another.
+
+The other contracts between the two apps — the account key that names Keychain items and browser profiles, the browser router Grove borrows from an installed Brow, the status-line captures both read — are described in [`docs/grove-and-brow.md`](docs/grove-and-brow.md).
+
+## What Grove does on your machine
+
+Worth knowing before you run it:
+
+- **Grove edits each account's `settings.json`**, pointing `statusLine.command` at its own wrapper so it can read usage per session. It does this at launch.
+- **Linking an account moves its session files into `~/.claude`.** Anything that would be overwritten is backed up under `<account>/grove-backup/` first.
+- **A transcript deleted by hand comes back** while the mirror is on. Use Purge.
+- **Grove does not read Claude Code's credentials.** Rate limits and sign-in are Brow's job.
+
+This is an independent tool, not affiliated with or endorsed by Anthropic.
+
+## Requirements
+
+- macOS 26 or later.
+- Xcode with Swift 6.2, to build.
+- [Claude Code](https://claude.com/claude-code) and git.
+- [cmux](https://cmux.dev). Grove starts and resumes sessions in cmux terminals; there is no other launch path.
+- For cross-account resume and the transcript mirror: an account signed in at the default `~/.claude`.
+- Optional: [Brow](https://github.com/efim0v/brow), for per-account rate limits and for opening each account's sign-in in its own browser profile. When Brow is installed, Grove passes its browser router to every session it launches.
+
+## Build
+
+```sh
+git clone https://github.com/efim0v/grove.git
+cd grove
+
+swift test                 # full suite, about two minutes
+Scripts/build-app.sh       # -> dist/Grove.app
+cp -R dist/Grove.app /Applications/
+```
+
+The app is signed ad hoc by default. macOS then forgets the Automation permission on every rebuild; to keep it, set `GROVE_SIGN_IDENTITY` to your own `Apple Development: Name (TEAMID)` identity before building.
+
+First run: click the tree icon in the menu bar, open Settings, press **Add project…** and pick the directory that contains your repositories. Workspaces are created under `~/Workspaces/<project>/<name>` unless you change the template.
+
+The command-line tool:
+
+```sh
+swift build -c release
+.build/release/grove --help
+.build/release/grove workspaces ~/code/acme-shop
+```
+
+If cmux reports as unavailable, see [`docs/troubleshooting.md`](docs/troubleshooting.md).
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `Sources/GroveCore` | The core library: git and worktrees, cmux, Claude sessions, the shared store, the transcript mirror, migration, code statistics, credentials and usage. Brow depends on it too. |
+| `Sources/GroveAppKit`, `Sources/GroveApp` | The menu-bar app |
+| `Sources/grove-cli` | The `grove` command-line tool |
+| `Tests` | About 920 tests |
+| `docs` | How Grove and Brow fit together, snapshot testing, troubleshooting |
+
+There are no third-party dependencies.
 
 ## Development
 
-- `swift test` and `swift test -c release` must both stay green (a Swift -O
-  miscompile was once caught only in release mode).
-- Agent-verifiable UI: `swift run GroveApp --snapshot /tmp/grove-snap` renders
-  the fixture PNGs (one per `SnapshotScene`) without starting the app — see `docs/snapshot-testing.md`
-  for the workflow and the ImageRenderer caveats.
-- Config lives at `~/Library/Application Support/Grove/config.json`
-  (atomic writes, corrupt files are quarantined with a banner).
+- `swift test` and `swift test -c release` should both stay green.
+- `swift run GroveApp --snapshot /tmp/grove-snap` renders the app's screens to PNG without starting it; see [`docs/snapshot-testing.md`](docs/snapshot-testing.md).
+- The screenshots in this README are regenerated with
+  `DEMO_SCREENSHOTS_DIR="$PWD/docs/screenshots" swift test --filter DemoScreenshotTests`.
+- Grove's configuration lives at `~/Library/Application Support/Grove/config.json`.
+
+## License
+
+[MIT](LICENSE)

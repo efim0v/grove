@@ -55,8 +55,9 @@ PLIST
 # Sign with the stable development identity when present so the macOS
 # automation (Apple Events -> cmux) consent survives rebuilds: ad-hoc
 # signatures change every build, which voids the TCC grant each time.
-IDENTITY="Apple Development: Your Name (TEAMID)"
-if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$IDENTITY"; then
+# Set GROVE_SIGN_IDENTITY to your own "Apple Development: Name (TEAMID)" identity.
+IDENTITY="${GROVE_SIGN_IDENTITY:-}"
+if [[ -n "$IDENTITY" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -qF "$IDENTITY"; then
     codesign --force --sign "$IDENTITY" "$APP"
     echo "signed: $IDENTITY"
 else

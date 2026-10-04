@@ -26,13 +26,14 @@ fi
 
 # Keep in sync with Scripts/build-app.sh — the ACL entry is keyed on BOTH, so a
 # drift in either one silently reintroduces the prompt.
-IDENTITY="Apple Development: Your Name (TEAMID)"
+# Set GROVE_SIGN_IDENTITY to your own "Apple Development: Name (TEAMID)" identity.
+IDENTITY="${GROVE_SIGN_IDENTITY:-}"
 BUNDLE_ID="dev.artemefimov.grove3"
 
 swift build -c "$CONFIGURATION" --product GroveApp
 BINARY=".build/$CONFIGURATION/GroveApp"
 
-if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$IDENTITY"; then
+if [[ -n "$IDENTITY" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -qF "$IDENTITY"; then
     codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$BINARY"
     echo "signed: $IDENTITY ($BUNDLE_ID)"
 else

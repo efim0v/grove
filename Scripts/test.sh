@@ -4,8 +4,8 @@
 # Usage:
 #   Scripts/test.sh                                   # every bundle
 #   Scripts/test.sh GroveCoreTests                    # one bundle
-#   Scripts/test.sh BrowKitTests LimitsStoreTests     # one XCTestCase class
-#   Scripts/test.sh BrowKitTests LimitsStoreTests/testFoo
+#   Scripts/test.sh GroveCoreTests ConfigStoreTests     # one XCTestCase class
+#   Scripts/test.sh GroveCoreTests ConfigStoreTests/testFoo
 #
 # See Scripts/xcode-env.sh for why `swift test` is not used.
 set -uo pipefail
