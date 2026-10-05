@@ -4,6 +4,8 @@ A macOS menu-bar app for running [Claude Code](https://claude.com/claude-code) a
 
 Grove gives every feature its own **workspace**: one directory holding a git worktree of each repository. Claude Code starts in that directory and sees one consistent branch of the whole product, so parallel agent sessions never trip over each other's branches. Grove also moves a session from one Claude account to another when a rate limit runs out.
 
+**[Download Grove for macOS](https://github.com/efim0v/grove/releases/latest/download/Grove.zip)** · macOS 26 or later, Apple silicon · [install notes](#install)
+
 > **Companion app: [Brow](https://github.com/efim0v/brow).** Brow lives in the MacBook notch and shows the rate limits of every Claude account you have. Grove moves work between accounts; Brow tells you which account has room. Each runs on its own, and they are built to be used together.
 
 <p align="center">
@@ -125,6 +127,20 @@ This is an independent tool, not affiliated with or endorsed by Anthropic.
 - For cross-account resume and the transcript mirror: an account signed in at the default `~/.claude`.
 - Optional: [Brow](https://github.com/efim0v/brow), for per-account rate limits and for opening each account's sign-in in its own browser profile. When Brow is installed, Grove passes its browser router to every session it launches.
 
+## Install
+
+Download **[Grove.zip](https://github.com/efim0v/grove/releases/latest/download/Grove.zip)** from the [latest release](https://github.com/efim0v/grove/releases/latest), unzip it and move `Grove.app` to `/Applications`.
+
+The build is signed ad hoc and is not notarized by Apple, so macOS blocks the first launch. Open **System Settings → Privacy & Security**, find the message about Grove and press **Open Anyway** — or clear the quarantine flag yourself:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Grove.app
+```
+
+First run: click the tree icon in the menu bar, open Settings, press **Add project…** and pick the directory that contains your repositories. Workspaces are created under `~/Workspaces/<project>/<name>` unless you change the template.
+
+The release also has `grove-cli.zip`, the command-line tool, and `SHA256SUMS.txt` to check the downloads against.
+
 ## Build
 
 ```sh
@@ -137,8 +153,6 @@ cp -R dist/Grove.app /Applications/
 ```
 
 The app is signed ad hoc by default. macOS then forgets the Automation permission on every rebuild; to keep it, set `GROVE_SIGN_IDENTITY` to your own `Apple Development: Name (TEAMID)` identity before building.
-
-First run: click the tree icon in the menu bar, open Settings, press **Add project…** and pick the directory that contains your repositories. Workspaces are created under `~/Workspaces/<project>/<name>` unless you change the template.
 
 The command-line tool:
 
