@@ -186,4 +186,4 @@ There are no third-party dependencies.
 
 ## License
 
-[MIT](LICENSE)
+[GNU GPL v3](LICENSE). Version 0.2.0 and earlier were released under the MIT License.
