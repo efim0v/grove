@@ -15,7 +15,9 @@ source Scripts/xcode-env.sh
 BUNDLE="${1:-}"
 FILTER="${2:-}"
 
-swift build --build-tests 2>&1 | grep -E "error:|warning:|Build complete" | awk '!seen[$0]++' || true
+# Check swift's own exit code straight after the pipeline. Do not append `|| true`:
+# pipefail makes it run when the build fails, and it resets pipestatus to its own 0.
+swift build --build-tests 2>&1 | grep -E "error:|warning:|Build complete" | awk '!seen[$0]++'
 if [[ ${pipestatus[1]} -ne 0 ]]; then
     echo "BUILD FAILED" >&2
     exit 1
