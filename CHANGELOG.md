@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-13
+
+A source release: Brow 0.2.1 takes `GroveCore` from this tag. There is no `Grove.zip` or `grove-cli.zip` for 0.2.1; the next prebuilt Grove is 0.2.2.
+
 ### Added
 
 - An Install section in the README for the prebuilt `Grove.zip`. It covers the first launch, which macOS blocks because the build is not notarized, and names the release's other two files: `grove-cli.zip` with the command-line tool, and `SHA256SUMS.txt` for checking the downloads. A download link sits at the top of the README.
@@ -50,5 +54,6 @@ First public release: git-worktree workspaces for running parallel Claude Code s
 - The `grove` command-line tool: `scan`, `workspaces`, `sessions`, `create`, `graph` and `doctor`, each with `--json`.
 - Prebuilt downloads for macOS 26 or later on Apple silicon: `Grove.zip` with the app and `grove-cli.zip` with the command-line tool, plus `SHA256SUMS.txt` to verify them. The app is signed ad hoc and not notarized.
 
-[Unreleased]: https://github.com/efim0v/grove/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/efim0v/grove/compare/0.2.1...HEAD
+[0.2.1]: https://github.com/efim0v/grove/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/efim0v/grove/releases/tag/0.2.0
