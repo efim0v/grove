@@ -1,0 +1,38 @@
+name: Site
+
+# Checks the head of every page in site/: canonical, og:url, lang, description,
+# robots, JSON-LD, hreflang, and that sitemap.xml lists every page with a lastmod.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "Scripts/check_seo.py"
+      - ".github/workflows/site.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - "Scripts/check_seo.py"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check the site
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check tags, JSON-LD and the sitemap
+        run: python3 Scripts/check_seo.py site https://efim0v.github.io/grove/
