@@ -149,7 +149,8 @@
     /* Layout: one column of text, figures to the right of it, never flipped */
     .wrap { width: min(100% - 48px, 1032px); margin-inline: auto; }
     @media (max-width: 480px) { .wrap { width: calc(100% - 32px); } }
-    .prose { max-width: 40rem; }
+    /* One measure for all running text, also when a row stacks on a tablet */
+    .prose, .text { max-width: 40rem; }
     .prose > :first-child, .text > :first-child { margin-top: 0; }
     .prose > :last-child, .text > :last-child { margin-bottom: 0; }
     main > section > .wrap { padding-block: 72px; }
@@ -192,8 +193,9 @@
       display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
       margin: 0 0 6px; font-size: .875rem; color: var(--muted);
     }
+    /* The padding and negative margin make a 24px-tall tap target without moving the text */
     .copy {
-      flex: none; padding: 0; border: 0; background: none; cursor: pointer;
+      flex: none; padding: 4px 0; margin: -4px 0; border: 0; background: none; cursor: pointer;
       font: 500 .8125rem var(--sans); color: var(--muted);
       text-decoration: underline; text-underline-offset: .18em;
     }
