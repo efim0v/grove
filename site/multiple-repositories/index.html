@@ -233,13 +233,13 @@
       <section id="add-dir" aria-labelledby="add-dir-title">
         <div class="wrap">
           <div class="prose">
-            <h2 id="add-dir-title">Option 1: one session with extra directories (<code>--add-dir</code>)</h2>
-            <p>Start Claude Code in one repository and add the others with <code>--add-dir</code>:</p>
+            <h2 id="add-dir-title">Option 1: one session with extra directories (<code class="nowrap">--add-dir</code>)</h2>
+            <p>Start Claude Code in one repository and add the others with <code class="nowrap">--add-dir</code>:</p>
             <pre><code>cd ~/code/acme-shop/web-client
 claude --add-dir ../api-server ../server-config</code></pre>
-            <p>In a session that is already running, <code>/add-dir</code> adds a directory:</p>
+            <p>In a session that is already running, <code class="nowrap">/add-dir</code> adds a directory:</p>
             <pre><code>/add-dir ../api-server</code></pre>
-            <p>To have them added every time you start Claude Code in <code>web-client</code>, list them under <code>permissions.additionalDirectories</code> in its <code>.claude/settings.local.json</code>:</p>
+            <p>To have them added every time you start Claude Code in <code class="nowrap">web-client</code>, list them under <code>permissions.additionalDirectories</code> in its <code>.claude/settings.local.json</code>:</p>
             <pre><code>{
   "permissions": {
     "additionalDirectories": [
@@ -251,7 +251,7 @@ claude --add-dir ../api-server ../server-config</code></pre>
             <p>What this gives the session:</p>
             <ul class="points">
               <li><strong>File access.</strong> Claude can read and edit files in the added directories under the same permission rules as in the one you started in.</li>
-              <li><strong>Only some of their configuration.</strong> Claude Code <a href="https://code.claude.com/docs/en/permissions#additional-directories-grant-file-access-not-configuration">doesn’t discover most <code>.claude/</code> configuration</a> in added directories. Skills, commands and subagents load from directories added with <code>--add-dir</code> or <code>/add-dir</code>. Their <code>CLAUDE.md</code> files load only when <code>CLAUDE_CODE_<wbr>ADDITIONAL_<wbr>DIRECTORIES_<wbr>CLAUDE_MD=1</code> is set. Directories in <code>permissions.additionalDirectories</code> give file access and nothing else.</li>
+              <li><strong>Only some of their configuration.</strong> Claude Code <a href="https://code.claude.com/docs/en/permissions#additional-directories-grant-file-access-not-configuration">doesn’t discover most <code>.claude/</code> configuration</a> in added directories. Skills, commands and subagents load from directories added with <code class="nowrap">--add-dir</code> or <code class="nowrap">/add-dir</code>. Their <code>CLAUDE.md</code> files load only when <code>CLAUDE_CODE_<wbr>ADDITIONAL_<wbr>DIRECTORIES_<wbr>CLAUDE_MD=1</code> is set. Directories in <code>permissions.additionalDirectories</code> give file access and nothing else.</li>
               <li><strong>No branches of their own.</strong> The added directories are your usual checkouts. When another session checks out a branch in one of them, this session is looking at that branch too.</li>
             </ul>
             <p>To have the other repositories’ <code>CLAUDE.md</code> files loaded as well:</p>
@@ -275,7 +275,7 @@ claude</code></pre>
 └── web-client/   <span class="comment">feat/loyalty-points</span></code></pre>
             <p>Compared with option 1:</p>
             <ul class="points">
-              <li><strong>Each workspace has its own checkouts.</strong> A worktree has its own <code>HEAD</code>, so checking out a branch in your usual checkout, or in another workspace, leaves this one alone. git won’t check out <code>feat/loyalty-points</code> in any other worktree while this workspace has it.</li>
+              <li><strong>Each workspace has its own checkouts.</strong> A worktree has its own <code>HEAD</code>, so checking out a branch in your usual checkout, or in another workspace, leaves this one alone. git won’t check out <code class="nowrap">feat/loyalty-points</code> in any other worktree while this workspace has it.</li>
               <li><strong>Claude Code sees the whole product.</strong> Every repository is under the directory it starts in. A <code>CLAUDE.md</code> at the workspace root loads at launch, so it is the place for notes on how the repositories fit together. Each repository’s own <code>CLAUDE.md</code> and <a href="https://code.claude.com/docs/en/skills#discovery-from-parent-and-nested-directories">skills</a> load once Claude works on files in that repository.</li>
               <li><strong>Project settings come from the workspace directory.</strong> Claude Code <a href="https://code.claude.com/docs/en/settings#where-claude-code-looks-for-each-file">reads <code>.claude/settings.json</code> from the directory it starts in</a>, so hooks and permission rules committed in a repository don’t apply to a session started at the workspace root.</li>
             </ul>
@@ -302,7 +302,7 @@ claude</code></pre>
   --repos api-server,web-client
 cd ~/Workspaces/acme-shop/loyalty-points
 claude</code></pre>
-            <p><code>grove create</code> takes the folder that holds the repositories and a workspace name. <code>--repos</code> picks repositories by folder name; without it, every repository Grove finds in the folder goes in. <code>--branch</code> sets the branch name, and <code>--from</code> stacks the new workspace on another one. The CLI uses Grove’s default layout, <code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code> on <code>feat/&lt;name&gt;</code>, and none of the app’s per-project settings, so it links no seed files and runs no hooks.</p>
+            <p><code>grove create</code> takes the folder that holds the repositories and a workspace name. <code class="nowrap">--repos</code> picks repositories by folder name; without it, every repository Grove finds in the folder goes in. <code class="nowrap">--branch</code> sets the branch name, and <code class="nowrap">--from</code> stacks the new workspace on another one. The CLI uses Grove’s default layout, <code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code> on <code>feat/&lt;name&gt;</code>, and none of the app’s per-project settings, so it links no seed files and runs no hooks.</p>
           </div>
         </div>
       </section>
@@ -360,9 +360,9 @@ claude</code></pre>
                 <tr><th scope="row"><code>--worktree</code></th><td>A worktree of the repository you run it in, on a new branch</td><td>Parallel sessions in a single repository</td></tr>
               </tbody>
             </table>
-            <p>Claude Code’s own <a href="https://code.claude.com/docs/en/worktrees"><code>--worktree</code></a> starts a session in a new worktree, by default under <code>.claude/worktrees/&lt;name&gt;/</code> on a branch named <code>worktree-&lt;name&gt;</code>. If your product lives in one repository, that may be all you need:</p>
+            <p>Claude Code’s own <a href="https://code.claude.com/docs/en/worktrees"><code class="nowrap">--worktree</code></a> starts a session in a new worktree, by default under <code>.claude/worktrees/&lt;name&gt;/</code> on a branch named <code class="nowrap">worktree-&lt;name&gt;</code>. If your product lives in one repository, that may be all you need:</p>
             <pre><code>claude --worktree feature-auth</code></pre>
-            <p>For the differences in detail, see <a href="/grove/#vs-worktree">Grove workspaces vs <code>claude --worktree</code></a>.</p>
+            <p>For the differences in detail, see <a href="/grove/#vs-worktree">Grove workspaces vs <code class="nowrap">claude --worktree</code></a>.</p>
           </div>
         </div>
       </section>
@@ -394,7 +394,7 @@ ws=~/Workspaces/acme-shop/loyalty-points
 git -C api-server worktree remove "$ws/api-server"
 git -C web-client worktree remove "$ws/web-client"
 rmdir "$ws"</code></pre>
-            <p>git refuses to remove a worktree with modified or untracked files unless you add <code>--force</code>, and <code>rmdir</code> stops if anything else is left, such as a seeded <code>CLAUDE.md</code>. The branches stay until you delete them. Grove has no button for this: a workspace is made of ordinary worktrees and branches in your repositories.</p>
+            <p>git refuses to remove a worktree with modified or untracked files unless you add <code class="nowrap">--force</code>, and <code>rmdir</code> stops if anything else is left, such as a seeded <code>CLAUDE.md</code>. The branches stay until you delete them. Grove has no button for this: a workspace is made of ordinary worktrees and branches in your repositories.</p>
             <p>If a worktree’s directory was deleted first, <code>git worktree prune</code> clears what git still records about it:</p>
             <pre><code>git -C ~/code/acme-shop/api-server worktree prune</code></pre>
 
@@ -409,7 +409,7 @@ rmdir "$ws"</code></pre>
           <div class="prose">
             <h2 id="see-also-title">See also</h2>
             <ul class="points">
-              <li><a href="/grove/#vs-worktree">Grove workspaces vs <code>claude --worktree</code></a></li>
+              <li><a href="/grove/#vs-worktree">Grove workspaces vs <code class="nowrap">claude --worktree</code></a></li>
               <li><a href="/grove/#cli">The <code>grove</code> CLI: multi-repo worktrees from a terminal or a script</a></li>
               <li><a href="/grove/move-session-to-another-account/">Continue a Claude Code session on another account</a></li>
               <li><a href="https://efim0v.github.io/brow/">Brow — Claude Code usage limits in the MacBook notch</a></li>
