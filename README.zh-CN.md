@@ -137,7 +137,7 @@ flowchart LR
 - **在 `~/.claude` 以外的账号文件夹中，Grove 会把 Claude Code 的首次运行设置标记为已完成**：在这样的文件夹中启动 Claude Code 之前，它会在该文件夹的 `.claude.json` 里设置 `hasCompletedOnboarding`（如果该文件夹还没有主题，还会复制你的主题），这样会话就不会打开新手引导向导。
 - **Grove 不读取 Claude Code 的凭据**。限额和登录是 Brow 的工作。
 
-[卸载](#卸载)一节说明了如何撤销状态行、链接和镜像方面的改动。
+[卸载](#卸载)一节说明了如何撤销状态行、账号关联和镜像方面的改动。
 
 这是一个独立工具，与 Anthropic 没有关联，也未获得 Anthropic 的认可。
 
