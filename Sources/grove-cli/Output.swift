@@ -104,6 +104,7 @@ struct CommitJSON: Codable {
 
 struct ToolJSON: Codable {
     let name: String
+    let required: Bool
     let found: Bool
     let version: String?
 }

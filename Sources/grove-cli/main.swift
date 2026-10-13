@@ -270,18 +270,22 @@ func cmdGraph(_ rest: [String]) async -> Int32 {
     }
 }
 
-func checkTool(_ runner: ProcessRunner, name: String, candidates: [String]) async -> ToolJSON {
+func checkTool(_ runner: ProcessRunner, name: String, required: Bool,
+               candidates: [String]) async -> ToolJSON {
     for executable in candidates {
         do {
             let result = try await runner.run(executable, ["--version"], cwd: nil, env: nil, timeout: 10)
-            if result.exitCode == 127 { continue }  // /usr/bin/env: command not found
+            // 127 is /usr/bin/env's "command not found". Any other failure is a tool that
+            // is there but does not run — /usr/bin/git is an xcode-select shim, and it fails
+            // when there is no developer directory to run git from — so it counts as missing.
+            guard result.exitCode == 0 else { continue }
             let version = result.stdout.split(separator: "\n").first.map(String.init)
-            return ToolJSON(name: name, found: true, version: version)
+            return ToolJSON(name: name, required: required, found: true, version: version)
         } catch {
             continue
         }
     }
-    return ToolJSON(name: name, found: false, version: nil)
+    return ToolJSON(name: name, required: required, found: false, version: nil)
 }
 
 func cmdDoctor(_ rest: [String]) async -> Int32 {
@@ -291,10 +295,11 @@ func cmdDoctor(_ rest: [String]) async -> Int32 {
     let runner = ProcessRunner()
     let home = NSHomeDirectory()
     var tools: [ToolJSON] = []
-    tools.append(await checkTool(runner, name: "git", candidates: ["git"]))
-    tools.append(await checkTool(runner, name: "claude",
+    tools.append(await checkTool(runner, name: "git", required: true, candidates: ["git"]))
+    tools.append(await checkTool(runner, name: "claude", required: true,
                                  candidates: ["claude", "\(home)/.local/bin/claude"]))
-    tools.append(await checkTool(runner, name: "cmux",
+    // cmux is recommended, not required: the launch sheet can open a session in Terminal.app.
+    tools.append(await checkTool(runner, name: "cmux", required: false,
                                  candidates: ["cmux", "/Applications/cmux.app/Contents/Resources/bin/cmux"]))
     if parsed.flags.contains("--json") {
         printJSON(DoctorJSON(tools: tools))
@@ -303,11 +308,11 @@ func cmdDoctor(_ rest: [String]) async -> Int32 {
             if tool.found {
                 print("✓ \(tool.name)  \(tool.version ?? "(version unknown)")")
             } else {
-                print("✗ \(tool.name)  not found")
+                print("✗ \(tool.name)  not found\(tool.required ? "" : " (optional)")")
             }
         }
     }
-    return 0
+    return tools.contains { $0.required && !$0.found } ? 1 : 0
 }
 
 // MARK: - dispatch (top-level code)
@@ -322,10 +327,14 @@ usage:
   grove create <path> <name> [--repos a,b] [--branch x] [--from workspace] [--from-branch <repoDir>=<branch>] [--json]
   grove graph <repoPath> [--limit N] [--json]
   grove doctor [--json]
+  grove --version
 
 create flags:
   --from-branch <repoDir>=<branch>   Fork a specific repo from <branch> instead of the default
                                      start point. Repeatable; takes precedence over --from.
+
+doctor:
+  Exits 1 when it can't run git or claude. cmux is optional.
 """
 
 let argv = Array(CommandLine.arguments.dropFirst())
@@ -342,6 +351,9 @@ case "sessions":   status = await cmdSessions(rest)
 case "create":     status = await cmdCreate(rest)
 case "graph":      status = await cmdGraph(rest)
 case "doctor":     status = await cmdDoctor(rest)
+case "version", "--version":
+    print(GroveVersion.current)
+    status = 0
 case "help", "--help", "-h":
     print(usageText)
     status = 0

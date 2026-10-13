@@ -66,7 +66,7 @@ Each project has a default account, and every launch can pick its own account, m
   <img alt="Code statistics" src="docs/screenshots/grove-code-stats.png" width="420" />
 </p>
 
-There is also a command-line tool, `grove`, with `scan`, `workspaces`, `sessions`, `create`, `graph` and `doctor`, each with `--json`.
+There is also a command-line tool, `grove`, with `scan`, `workspaces`, `sessions`, `create`, `graph` and `doctor`, each with `--json`. `grove --version` prints its version, and `grove doctor` exits with status 1 when it can't run git or `claude`.
 
 ## How Grove and Brow fit together
 

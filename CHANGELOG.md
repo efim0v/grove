@@ -10,14 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - An Install section in the README for the prebuilt `Grove.zip`. It covers the first launch, which macOS blocks because the build is not notarized, and names the release's other two files: `grove-cli.zip` with the command-line tool, and `SHA256SUMS.txt` for checking the downloads. A download link sits at the top of the README.
+- `grove --version` and `grove version`, which print the version.
 
 ### Changed
 
 - Grove is now licensed under the [GNU GPL v3](LICENSE). Version 0.2.0 and earlier were released under the MIT License.
+- `grove doctor` exits with status 1 when it can't run git or `claude`, so a script can use it as a check. Before, it always exited 0. cmux is recommended, not required, because sessions can also open in Terminal: a missing cmux shows as `not found (optional)` and doesn't fail the check. In `--json` output each tool now has a `required` field.
 
 ### Fixed
 
 - The storage diagram in the README now renders on GitHub. Before, GitHub showed an error in its place: one of the diagram's subgraphs had the id `default`, which is a reserved word in Mermaid.
+- `grove doctor` no longer reports git as found when the `/usr/bin/git` shim has no developer directory to run git from. The shim then exits 1 and prints nothing on stdout, which `doctor` used to show as `✓ git  (version unknown)`. A tool whose `--version` fails now counts as missing.
 
 ## [0.2.0] - 2026-10-05
 
