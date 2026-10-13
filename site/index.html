@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <title>Grove — git-worktree workspaces for parallel Claude Code sessions</title>
+  <meta name="description" content="Free, open-source macOS menu-bar app and CLI that gives each feature a git-worktree workspace across all your repositories, for parallel Claude Code sessions.">
+  <link rel="canonical" href="https://efim0v.github.io/grove/">
+  <meta name="author" content="Artem Efimov">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fbfbf8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1210" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" sizes="64x64" href="favicon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Grove">
+  <meta property="og:title" content="Grove — git-worktree workspaces for parallel Claude Code sessions">
+  <meta property="og:description" content="A macOS menu-bar app and CLI: one directory per feature with a git worktree of each of your repositories, Claude Code sessions across accounts, and moving a session from one account to another.">
+  <meta property="og:url" content="https://efim0v.github.io/grove/">
+  <meta property="og:image" content="https://efim0v.github.io/grove/og.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="Grove: git-worktree workspaces for parallel Claude Code sessions, next to a screenshot of its Workspaces screen.">
+  <meta property="og:locale" content="en_US">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Grove — git-worktree workspaces for parallel Claude Code sessions">
+  <meta name="twitter:description" content="A macOS menu-bar app and CLI: one directory per feature with a git worktree of each of your repositories, Claude Code sessions across accounts, and moving a session from one account to another.">
+  <meta name="twitter:image" content="https://efim0v.github.io/grove/og.png">
+  <meta name="twitter:image:alt" content="Grove: git-worktree workspaces for parallel Claude Code sessions, next to a screenshot of its Workspaces screen.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Grove",
+    "description": "A macOS menu-bar app and command-line tool that gives every feature its own workspace: one directory holding a git worktree of each repository, all on the same branch, for running parallel Claude Code sessions. It also lists Claude Code sessions across accounts and moves a session from one account to another.",
+    "url": "https://efim0v.github.io/grove/",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS 26 or later",
+    "processorRequirements": "Apple silicon (arm64)",
+    "softwareRequirements": "Claude Code, git",
+    "downloadUrl": "https://github.com/efim0v/grove/releases/latest/download/Grove.zip",
+    "installUrl": "https://efim0v.github.io/grove/#install",
+    "image": "https://efim0v.github.io/grove/og.png",
+    "screenshot": "https://efim0v.github.io/grove/img/grove-workspaces.webp",
+    "license": "https://github.com/efim0v/grove/blob/main/LICENSE",
+    "isAccessibleForFree": true,
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "author": {
+      "@type": "Person",
+      "name": "Artem Efimov",
+      "url": "https://github.com/efim0v"
+    },
+    "sameAs": "https://github.com/efim0v/grove"
+  }
+  </script>
+
+  <style>
+    :root {
+      --bg: #fbfbf8;
+      --bg-soft: #f1f4ee;
+      --surface: #ffffff;
+      --text: #17201a;
+      --muted: #4a574e;
+      --border: #dde4dc;
+      --accent: #1d7a3e;
+      --accent-hover: #166331;
+      --on-accent: #ffffff;
+      --code-bg: #eef2ec;
+      --shadow: 0 1px 2px rgb(15 30 20 / 0.06), 0 10px 28px -14px rgb(15 30 20 / 0.28);
+      --shot-shadow: drop-shadow(0 18px 28px rgb(15 30 20 / 0.24)) drop-shadow(0 2px 4px rgb(15 30 20 / 0.12));
+      --radius: 14px;
+      --max: 1120px;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1210;
+        --bg-soft: #111814;
+        --surface: #141c17;
+        --text: #e6ece7;
+        --muted: #a3b0a7;
+        --border: #26322b;
+        --accent: #62cc86;
+        --accent-hover: #7ddb9c;
+        --on-accent: #06210f;
+        --code-bg: #1a241e;
+        --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 28px -14px rgb(0 0 0 / 0.7);
+        --shot-shadow: drop-shadow(0 18px 30px rgb(0 0 0 / 0.55)) drop-shadow(0 0 1px rgb(255 255 255 / 0.18));
+      }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 400 1rem/1.6 var(--font);
+      -webkit-font-smoothing: antialiased;
+    }
+    img { display: block; max-width: 100%; height: auto; }
+    a { color: var(--accent); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+    a:hover { color: var(--accent-hover); }
+    :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+    h1, h2, h3 { line-height: 1.15; letter-spacing: -0.02em; text-wrap: balance; }
+    h2 { font-size: clamp(1.7rem, 1.2rem + 1.7vw, 2.4rem); margin: 0.2em 0 0.55em; }
+    h3 { font-size: 1.2rem; margin: 0 0 0.5em; }
+    p, li, dd { overflow-wrap: break-word; }
+    code, pre, kbd { font-family: var(--mono); }
+    :not(pre) > code {
+      font-size: 0.88em;
+      background: var(--code-bg);
+      padding: 0.1em 0.35em;
+      border-radius: 5px;
+    }
+    pre {
+      margin: 0;
+      padding: 0.95rem 1.1rem;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow-x: auto;
+      font-size: 0.86rem;
+      line-height: 1.65;
+    }
+    .comment { color: var(--muted); }
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px; height: 1px;
+      margin: -1px; padding: 0; border: 0;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    }
+    .skip-link {
+      position: absolute; left: 1rem; top: -4rem; z-index: 20;
+      background: var(--accent); color: var(--on-accent);
+      padding: 0.6rem 1rem; border-radius: 8px; font-weight: 600;
+    }
+    .skip-link:focus { top: 1rem; color: var(--on-accent); }
+
+    .wrap { width: min(100% - 2rem, var(--max)); margin-inline: auto; }
+    @media (min-width: 640px) { .wrap { width: min(100% - 3rem, var(--max)); } }
+
+    /* Header */
+    .site-header {
+      position: sticky; top: 0; z-index: 10;
+      background: var(--bg);
+      background: color-mix(in srgb, var(--bg) 86%, transparent);
+      -webkit-backdrop-filter: saturate(1.4) blur(12px);
+      backdrop-filter: saturate(1.4) blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .site-header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 60px; }
+    .brand { display: inline-flex; align-items: center; gap: 0.55rem; color: var(--text); text-decoration: none; font-weight: 700; font-size: 1.1rem; }
+    .brand img { width: 30px; height: 30px; }
+    .site-nav ul { display: flex; align-items: center; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
+    .site-nav a { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.65rem; border-radius: 8px; color: var(--text); text-decoration: none; font-size: 0.95rem; }
+    .site-nav a:hover { background: var(--bg-soft); color: var(--text); }
+    .site-nav svg { width: 18px; height: 18px; }
+    @media (max-width: 719px) { .site-nav .optional { display: none; } }
+
+    /* Sections */
+    section { scroll-margin-top: 72px; }
+    .section { padding-block: clamp(3.5rem, 8vw, 6rem); }
+    .section.alt { background: var(--bg-soft); }
+    .kicker {
+      margin: 0;
+      font-size: 0.8rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--accent);
+    }
+    .intro { max-width: 44rem; }
+    .intro > p:not(.kicker) { color: var(--muted); font-size: 1.08rem; }
+    .row { display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(2rem, 5vw, 4rem); align-items: center; }
+    .row + .row { margin-top: clamp(3rem, 7vw, 5rem); }
+    @media (min-width: 900px) {
+      .row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+      .row.flip > :first-child { order: 2; }
+    }
+    .points { margin: 1.25rem 0 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.9rem; }
+    .points li { position: relative; padding-left: 1.4rem; }
+    .points li::before {
+      content: ""; position: absolute; left: 0.1rem; top: 0.62em;
+      width: 0.5rem; height: 0.5rem; border-radius: 2px; background: var(--accent);
+    }
+    .points strong { color: var(--text); }
+
+    /* Screenshots */
+    figure { margin: 0; }
+    .shot { filter: var(--shot-shadow); margin-inline: auto; }
+    .shot.fade {
+      -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent);
+      mask-image: linear-gradient(to bottom, #000 78%, transparent);
+    }
+    figcaption { margin-top: 0.9rem; color: var(--muted); font-size: 0.9rem; text-align: center; }
+    .pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2rem; align-items: start; margin-top: 2.5rem; }
+    @media (min-width: 760px) { .pair { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+    /* Hero */
+    .hero { padding-block: clamp(2.5rem, 7vw, 5.5rem) clamp(3.5rem, 8vw, 6rem); }
+    .hero .row { align-items: center; }
+    @media (min-width: 900px) { .hero .row { grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); } }
+    .hero h1 { font-size: clamp(2.1rem, 1.25rem + 3.3vw, 3.35rem); line-height: 1.06; letter-spacing: -0.03em; margin: 0.35em 0 0.45em; }
+    .lede { font-size: clamp(1.1rem, 1rem + 0.45vw, 1.3rem); color: var(--muted); margin: 0 0 0.9em; }
+    .hero-shot { max-width: min(100%, 470px); }
+
+    /* A command with a label and a copy button */
+    .cmd {
+      margin-top: 1.6rem; max-width: 30rem;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      box-shadow: var(--shadow); overflow: hidden;
+    }
+    .cmd-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+      min-height: 2.5rem; padding: 0.3rem 0.45rem 0.3rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem; font-weight: 600; color: var(--muted);
+    }
+    .cmd pre { border: 0; border-radius: 0; background: transparent; padding: 0.8rem 1rem; font-size: 0.9rem; }
+    .cmd pre code::before { content: "$ "; color: var(--muted); -webkit-user-select: none; user-select: none; }
+    .copy {
+      font: 600 0.78rem/1 var(--font);
+      padding: 0.45rem 0.7rem; border-radius: 7px;
+      border: 1px solid var(--border); background: var(--bg-soft); color: var(--text);
+      cursor: pointer;
+    }
+    .copy:hover { border-color: var(--accent); }
+    .card .cmd { margin-top: 0.8rem; max-width: none; box-shadow: none; background: var(--code-bg); }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1rem; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.7rem 1.1rem; border-radius: 10px;
+      font-weight: 600; text-decoration: none; line-height: 1.2;
+      border: 1px solid transparent;
+    }
+    .btn svg { width: 18px; height: 18px; flex: none; }
+    .btn-primary { background: var(--accent); color: var(--on-accent); }
+    .btn-primary:hover { background: var(--accent-hover); color: var(--on-accent); }
+    .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+    .btn-secondary:hover { color: var(--text); border-color: var(--accent); }
+    .meta { margin: 1.1rem 0 0; color: var(--muted); font-size: 0.92rem; }
+
+    /* Notes and cards */
+    .note {
+      margin-top: 1.5rem; padding: 1rem 1.15rem;
+      border-left: 3px solid var(--accent); border-radius: 0 10px 10px 0;
+      background: var(--surface); color: var(--muted); font-size: 0.95rem;
+    }
+    .section.alt .note { background: var(--bg); }
+    .cards { display: grid; gap: 1rem; margin-top: 2.25rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 1.25rem 1.35rem;
+    }
+    .card p { margin: 0; color: var(--muted); }
+    .card p + p { margin-top: 0.7em; }
+    .card.highlight { border-color: var(--accent); }
+    .cards .wide { grid-column: 1 / -1; }
+    details {
+      margin-top: 1.5rem; padding: 1rem 1.25rem;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    summary { cursor: pointer; font-weight: 600; }
+    details ol { margin: 1rem 0 0; padding-left: 1.3rem; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.6rem; color: var(--muted); }
+
+    /* Command line */
+    .cli { margin-top: 1.75rem; max-width: 52rem; }
+    .cli + .small { margin: 1rem 0 0; }
+
+    /* Install */
+    .install-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; margin-top: 2.25rem; }
+    @media (min-width: 900px) { .install-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .install-grid .card > p { margin-top: 0.8rem; }
+    .first-launch { margin-top: 1rem; }
+    .first-launch > p { margin-top: 0.8rem; }
+    .first-launch .quarantine { margin-top: 0.6rem; font-size: 0.82rem; }
+    .steps { margin: 0.8rem 0 0; padding-left: 1.3rem; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.55rem; color: var(--muted); }
+    .small { font-size: 0.9rem; color: var(--muted); }
+
+    /* Requirements */
+    .reqs { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.8rem; }
+    .reqs li { padding: 0.95rem 1.1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; color: var(--muted); }
+    .reqs strong { color: var(--text); }
+
+    /* Footer */
+    .site-footer { border-top: 1px solid var(--border); padding-block: 2.5rem 3rem; color: var(--muted); font-size: 0.92rem; }
+    .site-footer .wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+    .site-footer ul { display: flex; flex-wrap: wrap; gap: 0.4rem 1.25rem; margin: 0; padding: 0; list-style: none; }
+    .site-footer p { margin: 0; }
+
+    /* Phones */
+    @media (max-width: 480px) {
+      pre { font-size: 0.8rem; padding: 0.85rem 0.9rem; }
+      .cmd pre { font-size: 0.84rem; padding: 0.8rem 0.9rem; }
+      .card { padding: 1.1rem 1rem; }
+      .card .cmd pre { font-size: 0.8rem; padding: 0.75rem 0.8rem; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="./" aria-label="Grove home">
+        <img src="favicon.png" width="64" height="64" alt="">
+        <span>Grove</span>
+      </a>
+      <nav class="site-nav" aria-label="Main">
+        <ul>
+          <li class="optional"><a href="#workspaces">Workspaces</a></li>
+          <li class="optional"><a href="#sessions">Sessions</a></li>
+          <li><a href="#install">Install</a></li>
+          <li class="optional"><a href="#on-your-mac">Privacy</a></li>
+          <li>
+            <a href="https://github.com/efim0v/grove">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27.01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1.28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.31 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.38A7.995 7.995 0 0 1 0 8c0-4.42 3.58-8 8-8Z"/></svg>
+              <span>GitHub</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap row">
+        <div>
+          <p class="kicker">Menu-bar app and CLI for macOS</p>
+          <h1 id="hero-title">Git-worktree workspaces for parallel Claude&nbsp;Code sessions</h1>
+          <p class="lede">Grove gives every feature its own workspace: one directory holding a git worktree of each of your repositories, all on the same branch. Start Claude Code there and it sees the whole product, and parallel sessions never trip over each other’s branches.</p>
+          <p class="lede">It also keeps your Claude Code sessions in view across projects and accounts, and moves a session from one Claude account to another.</p>
+          <div class="cmd">
+            <div class="cmd-head">
+              <span>Install with Homebrew</span>
+              <button class="copy" type="button" data-copy="brew install --cask efim0v/tap/grove" aria-label="Copy brew install --cask efim0v/tap/grove" hidden>Copy</button>
+            </div>
+            <pre><code>brew install --cask efim0v/tap/grove</code></pre>
+          </div>
+          <div class="actions">
+            <a class="btn btn-primary" href="https://github.com/efim0v/grove/releases/latest/download/Grove.zip">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5v8.5m0 0L4.5 6.5M8 10l3.5-3.5M2.5 13.5h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Download Grove.zip
+            </a>
+            <a class="btn btn-secondary" href="https://github.com/efim0v/grove">Source on GitHub</a>
+          </div>
+          <p class="meta">Free and open source (GPL-3.0) · macOS 26 or later · Apple silicon · <a href="#install">Install notes</a></p>
+        </div>
+        <figure>
+          <img class="shot hero-shot" src="img/grove-workspaces.webp" width="1200" height="1520" fetchpriority="high"
+               alt="Grove’s Workspaces screen for a project called acme-shop: five workspaces in a tree, one opened to show worktrees of web-client and api-server on feat/checkout-redesign and the two Claude Code sessions in it.">
+          <figcaption>Screenshots show made-up demo data.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="workspaces" class="section alt" aria-labelledby="workspaces-title">
+      <div class="wrap">
+        <div class="row">
+          <div>
+            <p class="kicker">Workspaces</p>
+            <h2 id="workspaces-title">One directory per feature, one branch across every repository</h2>
+            <p>Claude Code works best when it sees the whole product in one directory. When the product is split across repositories, parallel sessions start tripping over branches: one checks out a branch in the server repository, and another, working on a different feature, is suddenly looking at the wrong code.</p>
+            <p>A Grove workspace is a directory for one feature that holds a git worktree of each repository you pick, all on the same branch. Claude Code starts in that directory with its own working copy of the whole product, and nothing another session does can switch the branch under it.</p>
+            <pre role="img" aria-label="A workspace directory, Workspaces/acme-shop/checkout-redesign, holding worktrees of web-client, api-server and server-config, each on the branch feat/checkout-redesign. Claude Code starts in the workspace directory."><code><span class="comment"># start Claude Code here:</span>
+~/Workspaces/acme-shop/checkout-redesign/
+├── web-client/     <span class="comment">feat/checkout-redesign</span>
+├── api-server/     <span class="comment">feat/checkout-redesign</span>
+└── server-config/  <span class="comment">feat/checkout-redesign</span></code></pre>
+            <p class="note">Claude Code’s own <code>--worktree</code> flag starts a session in a new worktree of the one repository you run it in. A Grove workspace spans all the repositories of a product, under one directory.</p>
+          </div>
+          <figure>
+            <img class="shot" src="img/grove-new-workspace.webp" width="1080" height="722" loading="lazy" decoding="async"
+                 alt="The New Workspace form: the name loyalty-points, the branch feat/loyalty-points from the template feat/{name}, Fork from set to base branches, and five repositories ticked, each with its own base branch.">
+            <figcaption>A name and a click: Grove runs <code>git worktree add</code> in each repository.</figcaption>
+          </figure>
+        </div>
+
+        <div class="row flip">
+          <div>
+            <h3>Set up the way your project works</h3>
+            <ul class="points">
+              <li><strong>Branches from the right place.</strong> Each repository starts from its own base branch, detected from <code>origin/HEAD</code> or set per repository, or from another workspace’s branches, so workspaces can be stacked.</li>
+              <li><strong>Branch names from a template,</strong> <code>feat/{name}</code> by default.</li>
+              <li><strong>Shared files in every workspace.</strong> Files such as <code>CLAUDE.md</code> are linked or copied into each new workspace.</li>
+              <li><strong>Post-create hooks.</strong> Each repository can run its own shell command in its new worktree.</li>
+              <li><strong>Launch defaults.</strong> Each project has a default Claude account, model and effort.</li>
+              <li><strong>State at a glance.</strong> Every workspace shows its age, its uncommitted changes and its sessions.</li>
+            </ul>
+          </div>
+          <figure>
+            <img class="shot fade" src="img/grove-project-settings.webp" width="1120" height="1575" loading="lazy" decoding="async"
+                 alt="A project’s settings: workspaces root, branch template feat/{name}, seed files, the default Claude account, model and effort, base-branch overrides for each repository, and post-create hooks.">
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="sessions" class="section" aria-labelledby="sessions-title">
+      <div class="wrap">
+        <div class="intro">
+          <p class="kicker">Sessions</p>
+          <h2 id="sessions-title">Every Claude Code session in view</h2>
+          <p>Grove finds the Claude Code sessions of every project and workspace, across your accounts. It shows which are running, which are waiting for you and which are closed. On the Projects screen, one click takes you to a running session, in cmux or Terminal.app.</p>
+          <ul class="points">
+            <li><strong>New or resumed, your way.</strong> The launch sheet picks the account, model and effort, and opens the session in cmux or Terminal.app.</li>
+            <li><strong>Grouped by where the work is:</strong> by project and by workspace, with each session’s branch and account.</li>
+          </ul>
+        </div>
+        <div class="pair">
+          <figure>
+            <img class="shot" src="img/grove-projects.webp" width="920" height="1040" loading="lazy" decoding="async"
+                 alt="The Projects screen: two projects, acme-shop and field-notes, with their running and waiting sessions and a Go button for each.">
+            <figcaption>Projects and the sessions running in them.</figcaption>
+          </figure>
+          <figure>
+            <img class="shot fade" src="img/grove-sessions.webp" width="1200" height="1347" loading="lazy" decoding="async"
+                 alt="A project’s Claude tab: sessions with their status, workspace, branch and account, each with a Go or Resume button.">
+            <figcaption>A project’s sessions, newest first.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="accounts" class="section alt" aria-labelledby="accounts-title">
+      <div class="wrap row">
+        <div>
+          <p class="kicker">Accounts</p>
+          <h2 id="accounts-title">Move a session to another account</h2>
+          <p>Claude Code keeps each account in a folder of its own: <code>~/.claude</code> for the default account, and <code>~/.claude-accounts/&lt;name&gt;</code> for each account you add in Grove. A session doesn’t have to stay on the account it started on. Continue it under another of your accounts, for example when one has used up its limit.</p>
+          <ul class="points">
+            <li><strong>Resume as…</strong> continues a session under another account without copying anything: linked accounts share their session folders through <code>~/.claude</code>.</li>
+            <li><strong>Migrate to…</strong> copies a session into another account (transcript, memory, file history, tasks), even while that account is in use.</li>
+            <li><strong>Share</strong> moves a session into the shared store, where every linked account can see it.</li>
+            <li><strong>One writer per session.</strong> Grove refuses a move that would give a session two writers, such as resuming under one account a session that is still running under another.</li>
+          </ul>
+        </div>
+        <figure>
+          <img class="shot fade" src="img/grove-accounts.webp" width="1120" height="1362" loading="lazy" decoding="async"
+               alt="The Accounts screen: the personal account, marked canonical, with its sessions and their model and effort pickers, and below it the work account, marked shared.">
+        </figure>
+      </div>
+    </section>
+
+    <section id="graph" class="section" aria-labelledby="graph-title">
+      <div class="wrap">
+        <div class="intro">
+          <p class="kicker">Graph and stats</p>
+          <h2 id="graph-title">The repositories behind the work</h2>
+          <ul class="points">
+            <li><strong>Graph:</strong> the commit graph of each repository, with branches, remotes and tags. From a branch, create a workspace or open Claude Code in its worktree.</li>
+            <li><strong>Stats:</strong> lines of code across the project, with totals, languages and growth over time, stacked by repository.</li>
+          </ul>
+        </div>
+        <div class="pair">
+          <figure>
+            <img class="shot" src="img/grove-branch-graph.webp" width="1200" height="1080" loading="lazy" decoding="async"
+                 alt="The Graph tab: the commit graph of the web-client repository with feature branches, develop, origin/develop and release tags.">
+            <figcaption>The commit graph of one repository.</figcaption>
+          </figure>
+          <figure>
+            <img class="shot fade" src="img/grove-code-stats.webp" width="1200" height="1246" loading="lazy" decoding="async"
+                 alt="The Stats tab: 137,850 lines across the project, split into code and data, and a chart of lines over time stacked by repository.">
+            <figcaption>Lines of code across five repositories.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="cli" class="section alt" aria-labelledby="cli-title">
+      <div class="wrap">
+        <div class="intro">
+          <p class="kicker">Command line</p>
+          <h2 id="cli-title">Workspaces from a terminal or a script</h2>
+          <p>The <code>grove</code> command-line tool works with the same workspaces: <code>scan</code>, <code>workspaces</code>, <code>sessions</code>, <code>create</code>, <code>graph</code> and <code>doctor</code>. Each command takes <code>--json</code>.</p>
+        </div>
+        <pre class="cli"><code><span class="comment"># repositories and their worktrees</span>
+grove scan ~/code/acme-shop
+
+<span class="comment"># the project’s workspaces, as a tree</span>
+grove workspaces ~/code/acme-shop
+
+<span class="comment"># a workspace with two of the repositories</span>
+grove create ~/code/acme-shop loyalty-points \
+  --repos api-server,web-client
+
+<span class="comment"># sessions in a directory, as JSON</span>
+grove sessions ~/Workspaces/acme-shop/loyalty-points --json
+
+<span class="comment"># are git, claude and cmux installed?</span>
+grove doctor</code></pre>
+        <p class="small">The CLI uses Grove’s default layout, <code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code> on <code>feat/&lt;name&gt;</code>, rather than the app’s per-project settings.</p>
+      </div>
+    </section>
+
+    <section id="install" class="section" aria-labelledby="install-title">
+      <div class="wrap">
+        <div class="intro">
+          <p class="kicker">Install</p>
+          <h2 id="install-title">Install Grove</h2>
+          <p>Grove is free and open source. It needs macOS 26 or later on a Mac with Apple silicon.</p>
+        </div>
+        <div class="install-grid">
+          <div class="card">
+            <h3>With Homebrew</h3>
+            <div class="cmd">
+              <div class="cmd-head">
+                <span>The menu-bar app</span>
+                <button class="copy" type="button" data-copy="brew install --cask efim0v/tap/grove" aria-label="Copy brew install --cask efim0v/tap/grove" hidden>Copy</button>
+              </div>
+              <pre><code>brew install --cask efim0v/tap/grove</code></pre>
+            </div>
+            <div class="cmd">
+              <div class="cmd-head">
+                <span>The <code>grove</code> command-line tool, if you want it</span>
+                <button class="copy" type="button" data-copy="brew install efim0v/tap/grove-cli" aria-label="Copy brew install efim0v/tap/grove-cli" hidden>Copy</button>
+              </div>
+              <pre><code>brew install efim0v/tap/grove-cli</code></pre>
+            </div>
+          </div>
+          <div class="card">
+            <h3>From the release</h3>
+            <p>Download <a href="https://github.com/efim0v/grove/releases/latest/download/Grove.zip">Grove.zip</a> from the <a href="https://github.com/efim0v/grove/releases/latest">latest release</a>, unzip it and move <code>Grove.app</code> to <code>/Applications</code>. The release also has <code>grove-cli.zip</code>, the command-line tool, and <code>SHA256SUMS.txt</code>.</p>
+            <div class="cmd">
+              <div class="cmd-head">
+                <span>Check what you downloaded</span>
+                <button class="copy" type="button" data-copy="shasum -a 256 -c --ignore-missing SHA256SUMS.txt" aria-label="Copy shasum -a 256 -c --ignore-missing SHA256SUMS.txt" hidden>Copy</button>
+              </div>
+              <pre><code>shasum -a 256 -c --ignore-missing SHA256SUMS.txt</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="card first-launch" id="first-launch">
+          <h3>First launch</h3>
+          <p>Grove is signed ad hoc and is not notarized by Apple, so macOS blocks the first launch. That holds for the Homebrew install too, because Homebrew puts macOS’s quarantine flag on cask downloads.</p>
+          <ol class="steps">
+            <li>Open Grove from your Applications folder; macOS blocks it.</li>
+            <li>Open <strong>System Settings → Privacy &amp; Security</strong>, find the message about Grove, click <strong>Open Anyway</strong> and confirm with <strong>Open</strong>.</li>
+            <li>Click the tree icon in the menu bar, open Settings, press <strong>Add project…</strong> and pick the folder that contains your repositories. Workspaces go to <code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code> unless you change the template.</li>
+          </ol>
+          <p class="small">Or clear the quarantine flag yourself, on the app and on a <code>grove</code> binary you downloaded through a browser:</p>
+          <pre class="quarantine"><code>xattr -dr com.apple.quarantine /Applications/Grove.app
+xattr -d com.apple.quarantine grove</code></pre>
+          <p class="small">macOS may also ask you to let Grove control cmux or Terminal (System Settings → Privacy &amp; Security → Automation).</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="requirements" class="section alt" aria-labelledby="requirements-title">
+      <div class="wrap row">
+        <div>
+          <p class="kicker">Requirements</p>
+          <h2 id="requirements-title">What you need</h2>
+          <h3>cmux or Terminal.app</h3>
+          <p>Grove is built around <a href="https://cmux.dev">cmux</a>: it opens each session in a cmux workspace of its own and switches to a running session in one click. Terminal.app works too. The launch sheet, which opens for <strong>New Claude</strong>, for the gear next to a closed session and for a closed session on the Projects screen, has an <strong>Open in: Terminal</strong> option, and Grove can bring a session running in Terminal.app to the front. Every other button that starts or resumes a session, such as <strong>Resume</strong>, <strong>Resume as…</strong> and <strong>Add &amp; log in</strong>, opens it in cmux.</p>
+          <p>A workspace is an ordinary directory, so you can also start Claude Code in it from any terminal yourself.</p>
+        </div>
+        <ul class="reqs">
+          <li><strong>macOS 26 or later</strong> on a Mac with <strong>Apple silicon</strong>.</li>
+          <li><strong><a href="https://claude.com/claude-code">Claude Code</a> and git.</strong></li>
+          <li><strong>cmux</strong> (recommended) <strong>or Terminal.app</strong> for the sessions.</li>
+          <li><strong>An account signed in at the default <code>~/.claude</code></strong> for <strong>Resume as…</strong> across accounts and for the transcript mirror.</li>
+          <li><strong>Optional: <a href="https://github.com/efim0v/brow">Brow</a>.</strong> When it is installed, Grove passes Brow’s browser router to the sessions it launches, so a sign-in opens in that account’s own browser profile.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="on-your-mac" class="section" aria-labelledby="privacy-title">
+      <div class="wrap">
+        <div class="intro">
+          <p class="kicker">Privacy</p>
+          <h2 id="privacy-title">What Grove changes on your Mac</h2>
+          <p>Grove works inside Claude Code’s own folders. This is everything it changes there, and how to undo it.</p>
+        </div>
+        <div class="cards">
+          <div class="card">
+            <h3>The status line in each account</h3>
+            <p>At launch, Grove points <code>statusLine.command</code> in each account’s <code>settings.json</code> at a small wrapper script in <code>~/Library/Application Support/Grove/bin/</code>. The wrapper saves what Claude Code sends to the status line (model, context, cost) in the account’s <code>grove/usage/</code> folder, then runs the command you had with the same input, so your own status line keeps working.</p>
+            <p><strong>Stop</strong> next to <em>monitoring</em> on the Accounts screen puts your command back.</p>
+          </div>
+          <div class="card">
+            <h3>Linked accounts share session folders</h3>
+            <p>When you link an account, with a button on the Accounts screen or the first time you resume a session as another account, its <code>file-history</code>, <code>tasks</code> and <code>session-env</code> folders, and <code>projects/&lt;workspace&gt;</code> for each workspace involved, become symbolic links into <code>~/.claude</code>.</p>
+            <p>Anything that would be overwritten is moved to <code>&lt;account&gt;/grove-backup/</code> first. Credentials, settings and plugins are never shared.</p>
+          </div>
+          <div class="card">
+            <h3>Migrate to… writes into the other account</h3>
+            <p>Besides the session’s own files, <strong>Migrate to…</strong> merges into the target account that project’s entry in <code>.claude.json</code>, a few <code>settings.json</code> keys such as enabled plugins, model and theme, and the source account’s plugins. It never overwrites what the target account already has.</p>
+          </div>
+          <div class="card highlight">
+            <h3>The transcript mirror outlasts Claude Code’s cleanup</h3>
+            <p>Grove keeps a hard link to every session transcript in <code>~/.claude/grove/transcripts/</code> and restores a transcript that disappears from an account, whether you deleted it or Claude Code’s own cleanup did. Claude Code deletes transcripts older than <a href="https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically"><code>cleanupPeriodDays</code></a>, 30 days by default; Grove keeps them for up to 90 days and 500&nbsp;MB by default.</p>
+            <p><strong>Purge</strong> on the Sessions screen deletes a transcript for good. To leave retention to Claude Code, turn off <em>Keep a backup of every session</em> in Settings → Transcript safety-net, then delete <code>~/.claude/grove/transcripts/</code>.</p>
+          </div>
+          <div class="card">
+            <h3>A first-run flag in other account folders</h3>
+            <p>Before it starts Claude Code in an account folder other than <code>~/.claude</code>, Grove sets <code>hasCompletedOnboarding</code> in that folder’s <code>.claude.json</code>, and copies your theme from <code>~/.claude.json</code> if the folder has none, so the session doesn’t open Claude Code’s first-run setup.</p>
+          </div>
+          <div class="card">
+            <h3>Grove’s own files</h3>
+            <p><code>~/Library/Application Support/Grove/</code> holds Grove’s settings (<code>config.json</code>), the status-line wrappers (<code>bin/</code>) and code statistics (<code>stats/</code>).</p>
+            <p>Workspaces are ordinary git worktrees and branches in your repositories.</p>
+          </div>
+          <div class="card wide">
+            <h3>What Grove doesn’t do</h3>
+            <p>It doesn’t read Claude Code’s credentials; sign-in and rate limits are Brow’s job. It has no telemetry and makes no network requests of its own, and its git commands never fetch, pull or push.</p>
+          </div>
+        </div>
+
+        <details>
+          <summary>How to undo these changes</summary>
+          <ol>
+            <li>On the Accounts screen, press <strong>Stop</strong> next to <em>monitoring</em> on each account. Grove puts back the status-line command it saved, or removes the key if there was none.</li>
+            <li>Quit Grove and remove it: <code>brew uninstall --cask grove</code> (and <code>brew uninstall grove-cli</code> for the command-line tool), or move <code>Grove.app</code> to the Trash. <code>defaults delete dev.artemefimov.grove3</code> removes its preferences.</li>
+            <li>Delete <code>~/.claude/grove/</code> (the transcript mirror and status-line captures), the <code>grove/</code> folder in every other account folder, and <code>~/Library/Application Support/Grove/</code>. A transcript that only the mirror still holds goes with it. If you use Brow, keep <code>oauth-usage-ledger.json</code> in that last folder: it is Brow’s.</li>
+            <li>Linked accounts keep working without Grove. Look through any <code>grove-backup/</code> folder before you delete it.</li>
+            <li>Workspaces stay: they are git worktrees. Remove one with <code>git worktree remove</code> in each of its repositories, then delete its directory.</li>
+          </ol>
+        </details>
+      </div>
+    </section>
+
+    <section id="brow" class="section alt" aria-labelledby="brow-title">
+      <div class="wrap">
+        <div class="intro">
+          <p class="kicker">Companion app</p>
+          <h2 id="brow-title">Brow shows which account has room</h2>
+          <p>Brow lives in the MacBook notch and shows the rate limits of every Claude account you have. Grove moves work between accounts; Brow tells you which account has room. Each runs on its own, and they are built to be used together.</p>
+          <p><a class="btn btn-secondary" href="https://github.com/efim0v/brow">Brow on GitHub</a></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <ul>
+        <li><a href="https://github.com/efim0v/grove">Source code</a></li>
+        <li><a href="https://github.com/efim0v/grove/releases">Releases</a></li>
+        <li><a href="https://github.com/efim0v/grove/issues">Issues</a></li>
+        <li><a href="https://github.com/efim0v/grove/discussions">Discussions</a></li>
+        <li><a href="https://github.com/efim0v/grove/blob/main/LICENSE">License: GPL-3.0</a></li>
+        <li><a href="https://github.com/efim0v/brow">Brow</a></li>
+      </ul>
+      <p>Grove is made by <a href="https://github.com/efim0v">Artem Efimov</a>. It is an independent tool, not affiliated with or endorsed by Anthropic. Screenshots show made-up demo data.</p>
+    </div>
+  </footer>
+
+  <p class="visually-hidden" id="copy-status" aria-live="polite"></p>
+  <script>
+    (function () {
+      if (!navigator.clipboard || !window.isSecureContext) return;
+      var status = document.getElementById("copy-status");
+      document.querySelectorAll("button[data-copy]").forEach(function (button) {
+        button.hidden = false;
+        button.addEventListener("click", function () {
+          navigator.clipboard.writeText(button.getAttribute("data-copy")).then(function () {
+            button.textContent = "Copied";
+            status.textContent = "Copied to the clipboard.";
+            setTimeout(function () {
+              button.textContent = "Copy";
+              status.textContent = "";
+            }, 2000);
+          }, function () {});
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
