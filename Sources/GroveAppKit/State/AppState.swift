@@ -171,7 +171,9 @@ public final class AppState: ObservableObject {
     /// Test seam: injects a fixed live-process list into adoptSession's liveness
     /// guard, bypassing both file-record reads AND the process-table scan. Required
     /// for testing the table-only live path (cwd=="", sessionId set) without a real
-    /// process. nil means the real allLiveProcesses call.
+    /// process. Resume as… (sessionLiveUnderOtherAccount) uses it for its id-or-cwd
+    /// check too; its account attribution still reads the file records. nil means
+    /// the real allLiveProcesses call.
     internal var allLiveProcessesOverride: [LiveProcess]?
 
     /// Test seam: the app-support dir the statusline wrapper script is shipped
@@ -1090,10 +1092,11 @@ extension AppState {
         await refreshSessionIndex()
     }
 
-    /// The name of an account (other than `launchAccount`) under which `sessionId`
-    /// has a live process, or nil. Used to BLOCK a cross-account launch that would
-    /// have two processes writing one transcript (the one real corruption case).
-    private func sessionLiveUnderOtherAccount(_ sessionId: String,
+    /// The name of an account (other than `launchAccount`) under which the session
+    /// (`sessionId`, or a fresh claude in `cwd`) has a live process, or nil. Used to
+    /// BLOCK a cross-account launch that would have two processes writing one
+    /// transcript (the one real corruption case).
+    private func sessionLiveUnderOtherAccount(_ sessionId: String, cwd: String,
                                               launchAccount: AccountConfig) -> String? {
         let service = liveProcessValidatorOverride
             .map { ClaudeService().withProcessValidator($0) } ?? ClaudeService()
@@ -1104,12 +1107,16 @@ extension AppState {
             }
         }
         // The session may be live via the process TABLE (which the often-empty file
-        // records miss, and which can't attribute an account). If it's running
-        // anywhere and NOT under the launch account's own records, still refuse — a
-        // second `--resume` would have two processes writing one transcript.
-        let liveInTable = service.liveProcessesFromTable().contains { $0.sessionId == sessionId }
+        // records miss, and which can't attribute an account): by id when it was
+        // resumed, by cwd when it's a fresh `claude` (no --resume), which the table
+        // lists with its folder but no session id. Same id-or-cwd check as Share
+        // (adoptSession). If it's running anywhere and NOT under the launch account's
+        // own records, still refuse — a second `--resume` would have two processes
+        // writing one transcript, and linking would move it from under the running one.
+        let live = allLiveProcessesOverride ?? service.allLiveProcesses(accounts: config.accounts)
+        let liveAnywhere = ClaudeService.isSessionLive(among: live, cwd: cwd, sessionId: sessionId)
         let liveUnderLaunch = service.liveProcesses(account: launchAccount).contains { $0.sessionId == sessionId }
-        if liveInTable && !liveUnderLaunch { return "a running session" }
+        if liveAnywhere && !liveUnderLaunch { return "a running session" }
         return nil
     }
 
@@ -1140,7 +1147,7 @@ extension AppState {
     private func prepareResumeAccount(sessionId: String, cwd: String,
                                       fromAccount: String, to account: AccountConfig) -> Bool {
         guard account.name != fromAccount else { return true }
-        if let other = sessionLiveUnderOtherAccount(sessionId, launchAccount: account) {
+        if let other = sessionLiveUnderOtherAccount(sessionId, cwd: cwd, launchAccount: account) {
             actionError = "This session is live under “\(other)” — close it first, "
                 + "then resume as \(account.name)."
             return false

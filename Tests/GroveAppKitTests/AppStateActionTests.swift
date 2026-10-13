@@ -484,6 +484,101 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)
     }
 
+    /// Cross-account resume fixture: a canonical (default) account, an owner whose
+    /// transcript for `sessionId` sits in a REAL projects/<mangled> dir (so a
+    /// resume would move it), and a target account named "work".
+    private func saveResumeAsFixture(_ label: String, cwd: String, sessionId: String) throws
+        -> (canonicalDir: URL, ownerProjects: URL, target: AccountConfig) {
+        let canonicalDir = root.appendingPathComponent("canon-\(label)")
+        let ownerDir = root.appendingPathComponent("acc-owner-\(label)")
+        try FileManager.default.createDirectory(at: canonicalDir, withIntermediateDirectories: true)
+        let ownerProjects = ownerDir.appendingPathComponent("projects/\(ClaudeService.mangle(cwd))")
+        try FileManager.default.createDirectory(at: ownerProjects, withIntermediateDirectories: true)
+        try "transcript".write(to: ownerProjects.appendingPathComponent("\(sessionId).jsonl"),
+                               atomically: true, encoding: .utf8)
+        let target = AccountConfig(name: "work",
+                                   configDir: root.appendingPathComponent("acc-target-\(label)").path)
+        try ConfigStore(url: configURL).save(GroveConfig(
+            version: 1, workspacesRootTemplate: "~/Workspaces/{project}", projects: [],
+            accounts: [AccountConfig(name: "default", configDir: canonicalDir.path),
+                       AccountConfig(name: "owner", configDir: ownerDir.path), target]))
+        return (canonicalDir, ownerProjects, target)
+    }
+
+    /// #25: a session still open in a plain `claude` (no --resume) is in the
+    /// process table with its folder but no session id, and the file records are
+    /// often missing. Resume as… must still refuse, the way Share does: linking
+    /// would move the transcript out from under the running claude.
+    func testResumeSessionBlockedWhenFreshClaudeIsLiveInTheSessionFolder() async throws {
+        let cwd = "/ws/feat-x"
+        let id = "sess-fresh"
+        let fixture = try saveResumeAsFixture("fresh", cwd: cwd, sessionId: id)
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        state.canonicalDirOverride = fixture.canonicalDir.path
+        // How the table lists a fresh claude: cwd only, no session id, no account.
+        state.allLiveProcessesOverride = [LiveProcess(pid: 4242, sessionId: "", cwd: cwd,
+                                                      status: "idle", accountName: "")]
+        let session = ClaudeSession(id: id, cwd: cwd, title: nil,
+                                    lastActivity: Date(), accountName: "owner", gitBranch: nil)
+
+        await state.resumeSession(session, as: fixture.target)
+
+        let error = try XCTUnwrap(state.actionError)
+        XCTAssertTrue(error.lowercased().contains("live"), "got: \(error)")
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty,
+                      "a claude running in the session's folder blocks the launch")
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: fixture.ownerProjects.path),
+                     "the owner's folder must not be linked away while a claude writes in it")
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.ownerProjects.appendingPathComponent("\(id).jsonl").path))
+    }
+
+    /// The other side of #25: with nothing running in the session's folder or
+    /// under its id (only other sessions are live), Resume as… goes ahead.
+    func testResumeSessionAsAnotherAccountGoesAheadWhenTheSessionIsNotLive() async throws {
+        let cwd = "/ws/feat-x"
+        let id = "sess-quiet"
+        let fixture = try saveResumeAsFixture("quiet", cwd: cwd, sessionId: id)
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        state.canonicalDirOverride = fixture.canonicalDir.path
+        state.allLiveProcessesOverride = [
+            LiveProcess(pid: 4243, sessionId: "", cwd: "/ws/feat-y", status: "idle", accountName: ""),
+            LiveProcess(pid: 4244, sessionId: "sess-other", cwd: "", status: "busy", accountName: ""),
+        ]
+        let session = ClaudeSession(id: id, cwd: cwd, title: nil,
+                                    lastActivity: Date(), accountName: "owner", gitBranch: nil)
+
+        await state.resumeSession(session, as: fixture.target)
+
+        XCTAssertNil(state.actionError)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: fixture.ownerProjects.path),
+                       fixture.canonicalDir.appendingPathComponent("projects/\(ClaudeService.mangle(cwd))").path)
+        let args = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first).args
+        let commandIndex = try XCTUnwrap(args.firstIndex(of: "--command"))
+        XCTAssertTrue(args[commandIndex + 1].contains("--resume '\(id)'"))
+    }
+
+    /// Resuming under the session's OWN account links and moves nothing, so a
+    /// claude running in the same folder doesn't stop it: the #25 check guards
+    /// only the cross-account path.
+    func testResumeSessionSameAccountIgnoresClaudeLiveInTheSessionFolder() async throws {
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        state.allLiveProcessesOverride = [LiveProcess(pid: 4245, sessionId: "", cwd: "/ws/feat-x",
+                                                      status: "idle", accountName: "")]
+        let session = ClaudeSession(id: "sess-same-live", cwd: "/ws/feat-x", title: nil,
+                                    lastActivity: Date(), accountName: "work", gitBranch: nil)
+
+        await state.resumeSession(session, as: account)   // account.name == "work"
+
+        XCTAssertNil(state.actionError)
+        let args = try XCTUnwrap(runner.calls(startingWith: "new-workspace").first).args
+        let commandIndex = try XCTUnwrap(args.firstIndex(of: "--command"))
+        XCTAssertTrue(args[commandIndex + 1].contains("--resume 'sess-same-live'"))
+    }
+
     // MARK: - model/effort defaults + relaunch
 
     func testSetProjectModelAndEffortPersist() async throws {
