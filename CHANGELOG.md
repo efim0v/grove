@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Grove is now licensed under the [GNU GPL v3](LICENSE). Version 0.2.0 and earlier were released under the MIT License.
-- `grove doctor` exits with status 1 when it can't run git or `claude`, so a script can use it as a check. Before, it always exited 0. cmux is recommended, not required, because sessions can also open in Terminal: a missing cmux shows as `not found (optional)` and doesn't fail the check. In `--json` output each tool now has a `required` field.
+- `grove doctor` exits with status 1 when it can't run git or `claude`, so a script can use it as a check. Before, it exited 0 whatever it found. cmux is recommended, not required, because sessions can also open in Terminal: a missing cmux shows as `not found (optional)` and doesn't fail the check. In `--json` output each tool now has a `required` field.
 
 ### Fixed
 
