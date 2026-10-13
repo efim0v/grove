@@ -373,9 +373,10 @@ claude</code></pre>
             <h2 id="questions-title">Questions</h2>
 
             <h3>Does every repository need the same base branch?</h3>
-            <p>No. Each repository starts from its own. In Grove it is detected from <code>origin/HEAD</code>, set per repository in the project’s settings, or picked on the New Workspace form. With the CLI, <code>--from-branch</code> sets it for one repository:</p>
+            <p>No. Each repository starts from its own. In Grove it is detected from <code>origin/HEAD</code>, set per repository in the project’s settings, or picked on the New Workspace form. With the CLI, <code class="nowrap">--from-branch</code> sets it for one repository, and you can repeat it:</p>
             <pre><code>grove create ~/code/acme-shop loyalty-points \
-  --from-branch api-server=develop</code></pre>
+  --from-branch api-server=origin/develop</code></pre>
+            <p>Write <code>origin/develop</code> unless the repository has a local <code>develop</code> branch. Given a name that exists only on the remote, <code>git worktree add</code> puts the worktree on that branch and doesn’t create the feature branch.</p>
 
             <h3>What if the feature branch already exists?</h3>
             <p>Grove checks it out in the new worktree instead of creating it. By hand, leave out <code>-b</code> and <code>--no-track</code>, and name the branch in place of the start point:</p>
