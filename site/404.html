@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page not found – Grove</title>
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141514" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" sizes="64x64" href="/grove/favicon.png">
+  <!-- GitHub Pages serves this page at any depth, so every path is absolute. -->
+  <style>
+    :root {
+      --paper: #faf9f5;
+      --ink: #1b1d1a;
+      --forest: #2d6a40;
+      --serif: Charter, "Iowan Old Style", Georgia, serif;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --paper: #141514; --ink: #e7e8e3; --forest: #8fc79e; }
+    }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 400 1.0625rem/1.6 var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    main { max-width: 40rem; margin: 15vh auto; padding: 0 24px; }
+    @media (max-width: 480px) { main { padding: 0 16px; } }
+    h1 { font: 700 clamp(2rem, 1.35rem + 2.4vw, 2.75rem)/1.08 var(--serif); margin: 0 0 20px; }
+    p { margin: 0 0 1rem; }
+    a { color: var(--forest); text-decoration-thickness: 1px; text-underline-offset: .18em; }
+    a:hover { text-decoration-thickness: 2px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Page not found</h1>
+    <p>Go to <a href="/grove/">Grove — parallel Claude Code sessions across multiple repositories</a>.</p>
+    <p><a href="https://github.com/efim0v/grove">Grove on GitHub</a> · <a href="/brow/">Brow — Claude Code usage limits in the MacBook notch</a></p>
+  </main>
+</body>
+</html>

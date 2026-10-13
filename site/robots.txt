@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://efim0v.github.io/grove/sitemap.xml

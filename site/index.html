@@ -7,6 +7,7 @@
   <title>Grove — git-worktree workspaces for parallel Claude Code sessions</title>
   <meta name="description" content="Free, open-source macOS menu-bar app and CLI that gives each feature a git-worktree workspace across all your repositories, for parallel Claude Code sessions.">
   <link rel="canonical" href="https://efim0v.github.io/grove/">
+  <meta name="robots" content="max-image-preview:large">
   <meta name="author" content="Artem Efimov">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
@@ -34,31 +35,71 @@
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    "name": "Grove",
-    "description": "A macOS menu-bar app and command-line tool that gives every feature its own workspace: one directory holding a git worktree of each repository, all on the same branch, for running parallel Claude Code sessions. It also lists Claude Code sessions across accounts and moves a session from one account to another.",
-    "url": "https://efim0v.github.io/grove/",
-    "applicationCategory": "DeveloperApplication",
-    "operatingSystem": "macOS 26 or later",
-    "processorRequirements": "Apple silicon (arm64)",
-    "softwareRequirements": "Claude Code, git",
-    "downloadUrl": "https://github.com/efim0v/grove/releases/latest/download/Grove.zip",
-    "installUrl": "https://efim0v.github.io/grove/#install",
-    "image": "https://efim0v.github.io/grove/og.png",
-    "screenshot": "https://efim0v.github.io/grove/img/grove-workspaces.webp",
-    "license": "https://github.com/efim0v/grove/blob/main/LICENSE",
-    "isAccessibleForFree": true,
-    "offers": {
-      "@type": "Offer",
-      "price": "0",
-      "priceCurrency": "USD"
-    },
-    "author": {
-      "@type": "Person",
-      "name": "Artem Efimov",
-      "url": "https://github.com/efim0v"
-    },
-    "sameAs": "https://github.com/efim0v/grove"
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "@id": "https://efim0v.github.io/grove/#app",
+        "name": "Grove",
+        "description": "A macOS menu-bar app and command-line tool that gives every feature its own workspace: one directory holding a git worktree of each of your repositories, all on the same branch, for parallel Claude Code sessions. It also keeps Claude Code sessions in view across projects and accounts, and moves a session from one Claude account to another.",
+        "url": "https://efim0v.github.io/grove/",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS 26 or later",
+        "processorRequirements": "Apple silicon (arm64)",
+        "softwareRequirements": "Claude Code, git",
+        "softwareVersion": "0.2.0",
+        "releaseNotes": "https://github.com/efim0v/grove/releases/tag/0.2.0",
+        "downloadUrl": "https://github.com/efim0v/grove/releases/latest/download/Grove.zip",
+        "inLanguage": "en",
+        "isAccessibleForFree": true,
+        "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "image": "https://efim0v.github.io/grove/img/grove-workspaces.webp",
+        "screenshot": [
+          { "@type": "ImageObject", "url": "https://efim0v.github.io/grove/img/grove-workspaces.webp", "width": 1200, "height": 1520,
+            "caption": "Grove’s Workspaces screen for a project called acme-shop: five workspaces in a tree, one opened to show worktrees of web-client and api-server on feat/checkout-redesign and the two Claude Code sessions in it" },
+          { "@type": "ImageObject", "url": "https://efim0v.github.io/grove/img/grove-new-workspace.webp", "width": 1080, "height": 722,
+            "caption": "The New Workspace form: the branch feat/loyalty-points from the template feat/{name} and five repositories, each with its own base branch" },
+          { "@type": "ImageObject", "url": "https://efim0v.github.io/grove/img/grove-accounts.webp", "width": 1120, "height": 1362,
+            "caption": "The Accounts screen: the personal account, marked canonical, with its sessions, and below it the work account, marked shared" }
+        ],
+        "featureList": [
+          "One workspace per feature: a directory with a git worktree of each repository you pick, all on the same branch",
+          "A base branch per repository, branch names from a template, shared files such as CLAUDE.md, post-create hooks and stacked workspaces",
+          "The Claude Code sessions of every project and workspace, across accounts",
+          "Resume as…, Migrate to… and Share: continue a session under another Claude account, copy it into another account, or move it into the shared store",
+          "A transcript mirror that keeps transcripts for up to 90 days and 500 MB by default",
+          "The commit graph of each repository, and lines of code across the project",
+          "The grove command-line tool: scan, workspaces, sessions, create, graph and doctor, each with --json"
+        ],
+        "author": { "@id": "https://efim0v.github.io/#person" },
+        "sameAs": ["https://github.com/efim0v/grove"]
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "@id": "https://efim0v.github.io/grove/#source",
+        "name": "Grove source code",
+        "codeRepository": "https://github.com/efim0v/grove",
+        "programmingLanguage": "Swift",
+        "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+        "author": { "@id": "https://efim0v.github.io/#person" },
+        "targetProduct": { "@id": "https://efim0v.github.io/grove/#app" }
+      },
+      {
+        "@type": "Person",
+        "@id": "https://efim0v.github.io/#person",
+        "name": "Artem Efimov",
+        "url": "https://github.com/efim0v",
+        "sameAs": ["https://github.com/efim0v"]
+      },
+      {
+        "@type": "WebPage",
+        "@id": "https://efim0v.github.io/grove/#webpage",
+        "url": "https://efim0v.github.io/grove/",
+        "name": "Grove — git-worktree workspaces for parallel Claude Code sessions",
+        "inLanguage": "en",
+        "about": { "@id": "https://efim0v.github.io/grove/#app" }
+      }
+    ]
   }
   </script>
 
