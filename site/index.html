@@ -304,8 +304,9 @@
     .tools + .small { max-width: 40rem; margin-bottom: 32px; }
 
     /* Where the columns don't fit, each row becomes a block: its name, then
-       each value after its column name, the way the term lists stack */
-    @media (max-width: 640px) {
+       each value after its column name, the way the term lists stack. The paths
+       in the worktree table don't wrap, so it needs the full width from 760px. */
+    @media (max-width: 759px) {
       .versus thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
       .versus, .versus tbody, .versus tr, .versus th, .versus td { display: block; }
       .versus tr { padding: 12px 0 13px; border-top: 1px solid var(--rule); }
