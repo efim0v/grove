@@ -1,3 +1,5 @@
+English · [Русский](README.ru.md) · [简体中文](README.zh-CN.md)
+
 # Grove — git-worktree workspaces for parallel Claude Code sessions
 
 [![CI](https://github.com/efim0v/grove/actions/workflows/ci.yml/badge.svg)](https://github.com/efim0v/grove/actions/workflows/ci.yml)
