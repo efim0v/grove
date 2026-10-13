@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 public struct AccountIdentity: Sendable, Equatable {
     public let email: String?
@@ -780,26 +781,39 @@ public final class ClaudeService: @unchecked Sendable {
     /// were signed in. Stamps `hasCompletedOnboarding` (and the theme, copied from
     /// the default account) into `<configDir>/.claude.json`, touching nothing else.
     /// Never for the default dir itself. Returns whether the file was written.
+    ///
+    /// The merge goes through `HotJSONFile`: under Claude Code's lock, through a
+    /// symlink, keeping the file's mode, and no write for a dir already onboarded. A
+    /// `.claude.json` that exists but doesn't parse (caught mid-write, or a bad hand
+    /// edit) is left alone and logged, and this returns false: rewriting it with these
+    /// two keys would drop the sign-in, the MCP servers and every project's trust.
     @discardableResult
     public static func ensureOnboarded(configDir: String, home: String = NSHomeDirectory()) -> Bool {
         let dir = expandTilde(configDir)
         guard dir != home + "/.claude" else { return false }
         let path = dir + "/.claude.json"
         let fm = FileManager.default
-        var object = (fm.contents(atPath: path))
-            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] } ?? [:]
-        guard object["hasCompletedOnboarding"] as? Bool != true else { return false }
-        object["hasCompletedOnboarding"] = true
-        if object["theme"] == nil,
-           let canonical = fm.contents(atPath: home + "/.claude.json"),
-           let canonicalObject = (try? JSONSerialization.jsonObject(with: canonical)) as? [String: Any],
-           let theme = canonicalObject["theme"] {
-            object["theme"] = theme
+        do {
+            let outcome = try HotJSONFile.update(path: path) { existing in
+                guard existing["hasCompletedOnboarding"] as? Bool != true else { return existing }
+                var object = existing
+                object["hasCompletedOnboarding"] = true
+                if object["theme"] == nil,
+                   let canonical = fm.contents(atPath: home + "/.claude.json"),
+                   let canonicalObject = (try? JSONSerialization.jsonObject(with: canonical)) as? [String: Any],
+                   let theme = canonicalObject["theme"] {
+                    object["theme"] = theme
+                }
+                return object
+            }
+            return outcome == .written
+        } catch {
+            log.error("onboarding not marked done: \(error.localizedDescription, privacy: .public)")
+            return false
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) else { return false }
-        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        return (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
     }
+
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "grove", category: "ClaudeService")
 
     /// `browser`: the executable `claude auth login` should open (`$BROWSER`) — Brow's
     /// per-account router, so a re-login from a Grove-launched session lands in

@@ -52,6 +52,61 @@ final class ClaudeServiceGapTests: XCTestCase {
         XCTAssertFalse(ClaudeService.ensureOnboarded(configDir: home.path + "/.claude", home: home.path), "never the default dir")
     }
 
+    /// A `.claude.json` caught mid-write (or broken by hand) doesn't parse. It used to be
+    /// read as `{}` and replaced by the two onboarding keys, which signed the account out
+    /// and dropped its MCP servers and project trust. Now it keeps every byte.
+    func testEnsureOnboardedLeavesAClaudeJsonThatDoesNotParseAlone() throws {
+        let home = dir.appendingPathComponent("home")
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        try #"{"theme":"dark"}"#
+            .write(to: home.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let work = home.appendingPathComponent(".claude-accounts/work")
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        let file = work.appendingPathComponent(".claude.json")
+        let truncated = Data((#"{"oauthAccount":{"emailAddress":"me@example.com","organizationUuid":"org-1"},"#
+            + #""mcpServers":{"db":{"command":"db-mcp"}},"projects":{"/home/me/app":{"hasTrustDialogAccepted":true"#).utf8)
+        try truncated.write(to: file)
+
+        XCTAssertFalse(ClaudeService.ensureOnboarded(configDir: work.path, home: home.path))
+        XCTAssertEqual(try Data(contentsOf: file), truncated)
+    }
+
+    /// A symlinked `.claude.json` stays a link: the stamp lands in its target, which keeps
+    /// its mode, and `/` is not written as `\/`. Once onboarded it isn't written again.
+    func testEnsureOnboardedWritesThroughASymlinkedClaudeJson() throws {
+        let home = dir.appendingPathComponent("home")
+        try fm.createDirectory(at: home, withIntermediateDirectories: true)
+        try #"{"theme":"dark"}"#
+            .write(to: home.appendingPathComponent(".claude.json"), atomically: true, encoding: .utf8)
+        let target = dir.appendingPathComponent("dotfiles/claude.json")
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"oauthAccount":{"emailAddress":"f@x"},"projects":{"/srv/app":{"hasTrustDialogAccepted":true}}}"#
+            .write(to: target, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path)
+        let work = home.appendingPathComponent(".claude-accounts/work")
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        let link = work.appendingPathComponent(".claude.json")
+        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: target.path)
+
+        XCTAssertTrue(ClaudeService.ensureOnboarded(configDir: work.path, home: home.path))
+
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: link.path), target.path)
+        let text = try String(contentsOf: target, encoding: .utf8)
+        XCTAssertFalse(text.contains(#"\/"#), text)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual(obj["hasCompletedOnboarding"] as? Bool, true)
+        XCTAssertEqual(obj["theme"] as? String, "dark")
+        XCTAssertEqual((obj["oauthAccount"] as? [String: Any])?["emailAddress"] as? String, "f@x")
+        XCTAssertNotNil((obj["projects"] as? [String: Any])?["/srv/app"])
+        XCTAssertEqual(try fm.attributesOfItem(atPath: target.path)[.posixPermissions] as? Int, 0o644)
+
+        let before = try fm.attributesOfItem(atPath: target.path)
+        XCTAssertFalse(ClaudeService.ensureOnboarded(configDir: work.path, home: home.path))
+        let after = try fm.attributesOfItem(atPath: target.path)
+        XCTAssertEqual(before[.systemFileNumber] as? Int, after[.systemFileNumber] as? Int)
+        XCTAssertEqual(before[.modificationDate] as? Date, after[.modificationDate] as? Date)
+    }
+
     func testLaunchCommandCarriesTheBrowserRouter() {
         let account = AccountConfig(name: "w", configDir: "/tmp/w")
         let command = ClaudeService.launchCommand(account: account, browser: "/Applications/Brow.app/Contents/Resources/brow-browser")
