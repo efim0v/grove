@@ -496,7 +496,7 @@
             <tr><th scope="row">账号</th><td data-label="claude --worktree">—</td><td data-label="Grove 工作区"><strong>Resume as…</strong>、<strong>Migrate to…</strong>、<strong>Share</strong></td></tr>
           </tbody>
         </table>
-        <p class="small">关于 Claude Code 的内容依据它的 <a href="https://code.claude.com/docs/en/worktrees">worktree 文档</a>，于 2026 年 10 月 13 日核对。</p>
+        <p class="small">Claude Code 的相关信息来自它的 <a href="https://code.claude.com/docs/en/worktrees">worktree 文档</a>，于 2026 年 10 月 13 日核对。</p>
       </div>
     </section>
 
@@ -565,7 +565,7 @@
             </div>
             <div>
               <dt>每个会话一个写入方</dt>
-              <dd>如果某次迁移会让一个会话同时有两个写入方，Grove 会拒绝执行，例如在一个账号下恢复一个仍在另一个账号下运行的会话。</dd>
+              <dd>如果某次迁移会让一个会话同时有两个写入方，例如在一个账号下恢复仍在另一个账号下运行的会话，Grove 会拒绝执行。</dd>
             </div>
           </dl>
         </div>
@@ -580,7 +580,7 @@
       <div class="wrap">
         <div class="prose">
           <h2 id="transcripts-title">比 <span class="nowrap">Claude Code</span> 30&nbsp;天清理<wbr>保留更久的会话记录</h2>
-          <p>Claude Code 会删除早于 <a href="https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically"><code>cleanupPeriodDays</code></a> 的会话记录，默认是 30 天。Grove 在 <code>~/.claude/grove/transcripts/</code> 中为每份会话记录保留一个硬链接；如果某个账号中的会话记录不见了，无论是你删的还是 Claude Code 的清理删的，Grove 都会把它恢复。默认最多保留 90 天，总量上限 500&nbsp;MB。</p>
+          <p>Claude Code 会删除超过 <a href="https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically"><code>cleanupPeriodDays</code></a> 天的会话记录，默认是 30 天。Grove 在 <code>~/.claude/grove/transcripts/</code> 中为每份会话记录保留一个硬链接；如果某个账号中的会话记录不见了，无论是你删的还是 Claude Code 的清理删的，Grove 都会把它恢复。默认最多保留 90 天，总量上限 500&nbsp;MB。</p>
           <p>在 Settings → Transcript safety-net 中可以修改这两项限制，或关闭会话记录镜像。要彻底删除一份会话记录，请使用 Sessions 界面上的 <strong>Purge</strong>。</p>
         </div>
       </div>
@@ -660,7 +660,7 @@ grove doctor</code></pre>
             </tr>
           </thead>
           <tbody>
-            <tr><th scope="row"><a href="https://code.claude.com/docs/en/worktrees"><code>claude --worktree</code></a></th><td>Claude Code 内置：在新的 worktree 中启动会话</td><td data-label="平台">同 Claude Code</td><td data-label="每个任务的仓库">当前仓库</td><td data-label="智能体">Claude Code</td><td data-label="把会话迁移到另一个账号">—</td><td data-label="许可证">属于 Claude Code</td></tr>
+            <tr><th scope="row"><a href="https://code.claude.com/docs/en/worktrees"><code>claude --worktree</code></a></th><td>Claude Code 内置：在新的 worktree 中启动会话</td><td data-label="平台">同 Claude Code</td><td data-label="每个任务的仓库">当前仓库</td><td data-label="智能体">Claude Code</td><td data-label="把会话迁移到另一个账号">—</td><td data-label="许可证">Claude Code 的一部分</td></tr>
             <tr><th scope="row"><a href="https://www.conductor.build/">Conductor</a></th><td>Mac 应用，在相互隔离的工作区中并行运行编程智能体；智能体也可以在云端沙盒中运行</td><td data-label="平台">macOS、iOS</td><td data-label="每个任务的仓库">未说明</td><td data-label="智能体">Claude Code、Codex、Cursor、OpenCode</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">未说明</td></tr>
             <tr><th scope="row"><a href="https://github.com/smtg-ai/claude-squad">Claude Squad</a></th><td>基于 tmux 和 git worktree 的终端应用</td><td data-label="平台">未说明；需要 tmux</td><td data-label="每个任务的仓库">未说明</td><td data-label="智能体">Claude Code、Codex、Gemini、Aider 等</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">AGPL-3.0</td></tr>
             <tr><th scope="row"><a href="https://nimbalyst.com/">Nimbalyst</a></th><td>可视化的工作环境；任何会话都可以拥有自己的 worktree</td><td data-label="平台">macOS、Windows、Linux、iOS</td><td data-label="每个任务的仓库">未说明</td><td data-label="智能体">Claude Code、Codex；OpenCode 和 Copilot 处于 alpha 阶段</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">MIT</td></tr>
@@ -675,7 +675,7 @@ grove doctor</code></pre>
             <tr><th scope="row">Grove</th><td>菜单栏应用和 CLI：多仓库工作区，跨账号的 Claude Code 会话</td><td data-label="平台">macOS 26 或更高版本，Apple 芯片</td><td data-label="每个任务的仓库">多个，同一分支</td><td data-label="智能体">启动并列出 Claude Code 会话；工作区就是普通目录</td><td data-label="把会话迁移到另一个账号"><strong>Resume as…</strong>、<strong>Migrate to…</strong>、<strong>Share</strong></td><td data-label="许可证">GPL-3.0</td></tr>
           </tbody>
         </table>
-        <p class="small">于 2026 年 10 月 13 日核对。“未说明”表示该工具自己的页面或 README 中没有提到；短横线表示该列不适用于该工具。</p>
+        <p class="small">于 2026 年 10 月 13 日核对。“未说明”表示该工具自己的页面或 README 中没有提到；“—”表示该列不适用于该工具。</p>
         <div class="prose">
           <p>以下情况，其他工具更合适：</p>
           <ul class="points">
@@ -723,7 +723,7 @@ grove doctor</code></pre>
           <p>关联账号通过 <code>~/.claude</code> 共享会话文件夹，所以在一个关联账号下启动的会话，其他关联账号也能看到。凭据、设置和插件仍由各个账号分别保留。</p>
 
           <h3><span class="nowrap">Claude Code 的</span>旧会话为什么不见了？<wbr>能保留下来吗？</h3>
-          <p>Claude Code 会删除早于 <code>cleanupPeriodDays</code> 的会话记录，默认是 30 天。Grove 的<a href="#transcripts">会话记录镜像</a>默认最多保留 90 天、500&nbsp;MB，也可以关闭。</p>
+          <p>Claude Code 会删除超过 <code>cleanupPeriodDays</code> 天的会话记录，默认是 30 天。Grove 的<a href="#transcripts">会话记录镜像</a>默认最多保留 90 天、500&nbsp;MB，也可以关闭。</p>
 
           <h3>最多能同时运行多少个 Claude Code 会话？</h3>
           <p>Grove 本身不设上限。每个会话都会计入它所用账号的用量限额。Grove 按项目和工作区列出会话，并显示哪些正在运行、哪些在等你回应。</p>
@@ -816,7 +816,7 @@ xattr -d com.apple.quarantine grove</code></pre>
         <div class="prose">
           <h2 id="privacy-title">Grove 会在你的 Mac 上改动什么</h2>
           <p>Grove 在 Claude Code 自己的文件夹里工作。下面列出了它在那里做的全部改动，以及如何撤销。</p>
-          <p><strong>Grove 不会做的事。</strong>它不读取 Claude Code 的凭据，登录和限额是 Brow 的工作。它没有遥测，自己也不发出任何网络请求；它运行的 git 命令从不执行 fetch、pull 或 push。</p>
+          <p><strong>Grove 不会做的事。</strong>它不读取 Claude Code 的凭据；登录和限额是 Brow 的工作。它没有遥测，自己也不发出任何网络请求；它运行的 git 命令从不执行 fetch、pull 或 push。</p>
         </div>
         <dl class="changes">
           <div>
