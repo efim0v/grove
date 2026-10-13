@@ -35,6 +35,7 @@ public struct StatuslineInstaller: Sendable {
     /// would drop the account's permissions, hooks and env.
     @discardableResult
     public func install(configDir: String) throws -> String? {
+        try StatuslineInstaller.requireConfigDir(configDir)
         let settingsPath = configDir + "/settings.json"
         let scriptPath = self.scriptPath(forConfigDir: configDir)
         // The command MUST be shell-quoted: Claude Code runs statusLine.command via
@@ -91,6 +92,7 @@ public struct StatuslineInstaller: Sendable {
     /// `HotJSONFile` like `install`: a settings.json that doesn't parse is left as it
     /// is and this throws.
     public func uninstall(configDir: String, savedStatusline: String?) throws {
+        try StatuslineInstaller.requireConfigDir(configDir)
         let settingsPath = configDir + "/settings.json"
         try HotJSONFile.update(path: settingsPath) { existing in
             var settings = existing
@@ -100,6 +102,16 @@ public struct StatuslineInstaller: Sendable {
                 settings.removeValue(forKey: "statusLine")
             }
             return settings
+        }
+    }
+
+    /// `HotJSONFile` creates a missing parent folder. An account folder that isn't there
+    /// (an alias folder the user deleted) isn't the installer's to recreate, so install
+    /// and uninstall fail on it, as the plain write did. Callers create a new account's
+    /// folder before they install.
+    private static func requireConfigDir(_ configDir: String) throws {
+        guard FileManager.default.fileExists(atPath: configDir) else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: configDir])
         }
     }
 

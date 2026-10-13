@@ -173,6 +173,17 @@ final class StatuslineInstallerTests: XCTestCase {
         XCTAssertEqual(before[.modificationDate] as? Date, after[.modificationDate] as? Date)
     }
 
+    /// HotJSONFile creates a missing parent folder; the installer doesn't. An account
+    /// folder that isn't there, such as an alias folder the user deleted, makes install
+    /// and uninstall throw, as before, and isn't recreated.
+    func testInstallAndUninstallDoNotRecreateAMissingConfigDir() throws {
+        let gone = configDir.appendingPathComponent("gone").path
+        XCTAssertThrowsError(try installer.install(configDir: gone))
+        XCTAssertThrowsError(try installer.uninstall(configDir: gone, savedStatusline: "/bin/echo mine"))
+        XCTAssertThrowsError(try installer.uninstall(configDir: gone, savedStatusline: nil))
+        XCTAssertFalse(fm.fileExists(atPath: gone))
+    }
+
     // MARK: - the wrapper SCRIPT writes a snapshot then calls through (end-to-end)
 
     func testWrapperScriptTeesStdinToUsageSnapshotThenExecsOriginal() throws {
