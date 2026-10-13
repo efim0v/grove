@@ -130,6 +130,24 @@ final class HotJSONFileTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: lock))
     }
 
+    /// Paths and URLs keep their `/` (JSONSerialization writes `\/` by default), and the
+    /// keys come out sorted, so their order stays the same from one write to the next.
+    func testWritesSlashesAsTheyAreAndKeysSorted() throws {
+        let file = root.appendingPathComponent("settings.json")
+        try HotJSONFile.update(path: file.path) { _ in
+            ["model": "opus",
+             "$schema": "https://json.schemastore.org/claude-code-settings.json",
+             "apiKeyHelper": "/usr/local/bin/key-helper"]
+        }
+        let text = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertFalse(text.contains(#"\/"#), text)
+        XCTAssertTrue(text.contains(#""https://json.schemastore.org/claude-code-settings.json""#), text)
+        let offsets = try ["$schema", "apiKeyHelper", "model"].map {
+            try XCTUnwrap(text.range(of: "\"\($0)\"")).lowerBound
+        }
+        XCTAssertEqual(offsets, offsets.sorted(), text)
+    }
+
     /// A symlinked config is written THROUGH, not replaced by a regular file.
     func testWritesThroughASymlink() throws {
         let real = root.appendingPathComponent("real.json")

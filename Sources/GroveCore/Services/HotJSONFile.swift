@@ -83,8 +83,10 @@ public enum HotJSONFile {
             let merged = transform(current)
             if before != nil || merged.isEmpty, NSDictionary(dictionary: merged).isEqual(to: current) { return .unchanged }
 
+            // The file's own key order can't be kept; sorted keys at least stay put from one
+            // write to the next. `/` is written as is, not as `\/`, in paths and URLs.
             let outData: Data
-            do { outData = try JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted]) }
+            do { outData = try JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) }
             catch { throw Failure.io("encode \(path): \(error.localizedDescription)") }
 
             let tmp = parent + "/." + (path as NSString).lastPathComponent + ".grove-\(getpid())-\(UUID().uuidString.prefix(8))"
