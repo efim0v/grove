@@ -228,7 +228,7 @@
 
       <section id="where-sessions-live" aria-labelledby="where-title">
         <h2 id="where-title">Where Claude Code keeps an account’s sessions</h2>
-        <p>Claude Code keeps an account’s settings, session history and plugins in one folder: <code>~/.claude</code> by default, or the folder that <code>CLAUDE_CONFIG_DIR</code> names. On a Mac, the Keychain entry for the account’s sign-in is keyed to that folder too, so each folder is signed in on its own. Anthropic documents both under <a href="https://code.claude.com/docs/en/env-vars#variables"><code>CLAUDE_CONFIG_DIR</code></a> and <a href="https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts">Log in with multiple accounts</a>.</p>
+        <p>Claude Code keeps an account’s settings, session history and plugins in one folder: <code>~/.claude</code> by default, or the folder that <a href="https://code.claude.com/docs/en/env-vars#variables"><code>CLAUDE_CONFIG_DIR</code></a> names. Each folder also has its own sign-in: on a Mac, Claude Code keys the Keychain entry to the folder. Anthropic describes this under <a href="https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts">Log in with multiple accounts</a> and <a href="https://code.claude.com/docs/en/authentication#credential-management">Credential management</a>.</p>
         <p>Grove and Brow keep each extra account in <code>~/.claude-accounts/&lt;name&gt;</code>.</p>
         <div class="snippet">
           <p class="label">Start Claude Code as the default account</p>
@@ -248,7 +248,7 @@
 
       <section id="three-ways" aria-labelledby="three-ways-title">
         <h2 id="three-ways-title">Three ways to move a session in Grove</h2>
-        <p>On a project’s <strong>Claude</strong> tab, a session you can resume has a <strong>Resume</strong> button, which continues it under its own account. Beside it, the tray icon opens <strong>Migrate to…</strong> and the chevron opens <strong>Resume as…</strong>, each with a line for every other account. <strong>Share</strong> appears beside sessions of accounts other than <code>~/.claude</code>, for example in a workspace’s list of sessions.</p>
+        <p>On a project’s <strong>Claude</strong> tab, a session you can resume has a <strong>Resume</strong> button, which continues it under its own account. Beside it, the tray icon opens <strong>Migrate to…</strong> and the chevron opens <strong>Resume as…</strong>, each with a line for every other account. <strong>Share</strong> is the share icon beside a session of an account other than <code>~/.claude</code>, for example in an open workspace’s list of sessions on the <strong>Workspaces</strong> tab.</p>
         <figure>
           <img class="shot" src="../img/grove-sessions.webp" width="1200" height="1347" loading="lazy" decoding="async"
                alt="A project’s Claude tab with six sessions, each with its status, workspace, branch and account. The first has a Go button; each of the others has a gear, Resume, a tray icon and a chevron.">
@@ -295,7 +295,7 @@
         <p><strong>Migrate to…</strong> starts nothing and doesn’t link the accounts. The copy is listed as a session of the target account: resume it from that account’s sessions on the <strong>Accounts</strong> screen, or from the workspace’s list of sessions, where it appears under the target account’s name.</p>
 
         <h3 id="share">Share</h3>
-        <p><strong>Share</strong> is for a session that belongs to an account other than <code>~/.claude</code>. Grove links that account to the shared store: the session’s files move into <code>~/.claude</code>, and links take their place in the account’s folder. From then on the default account sees the session too, and <strong>Resume as…</strong> opens it under any other account without a copy. <strong>Share</strong> refuses a session that is running, and it starts nothing.</p>
+        <p><strong>Share</strong> is for a session that belongs to an account other than <code>~/.claude</code>. It links that account to the shared store (<a href="#linking">what linking changes on disk</a>): the session’s project folder moves into <code>~/.claude</code> with the account’s other sessions from the same directory, and a link takes its place. From then on the default account sees those sessions too, and <strong>Resume as…</strong> opens this one under any other account without a copy. <strong>Share</strong> refuses a session that is running, and it starts nothing.</p>
       </section>
 
       <section id="linking" aria-labelledby="linking-title">
