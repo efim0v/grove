@@ -425,7 +425,7 @@
           <figure>
             <img class="shot fade" src="img/grove-sessions.webp" width="1200" height="1347" loading="lazy" decoding="async"
                  alt="A project’s Claude tab: sessions with their status, workspace, branch and account, each with a Go or Resume button.">
-            <figcaption>A project’s sessions, newest first.</figcaption>
+            <figcaption>A project’s sessions, live ones first.</figcaption>
           </figure>
         </div>
       </div>
@@ -590,7 +590,7 @@ xattr -d com.apple.quarantine grove</code></pre>
           </div>
           <div class="card">
             <h3>Linked accounts share session folders</h3>
-            <p>When you link an account, with a button on the Accounts screen or the first time you resume a session as another account, its <code>file-history</code>, <code>tasks</code> and <code>session-env</code> folders, and <code>projects/&lt;workspace&gt;</code> for each workspace involved, become symbolic links into <code>~/.claude</code>.</p>
+            <p>An account is linked when you press <strong>Link to shared store</strong> on the Accounts screen, share one of its sessions, or resume a session as another account for the first time. Its <code>file-history</code>, <code>tasks</code> and <code>session-env</code> folders, and <code>projects/&lt;workspace&gt;</code> for each workspace involved, then become symbolic links into <code>~/.claude</code>.</p>
             <p>Anything that would be overwritten is moved to <code>&lt;account&gt;/grove-backup/</code> first. Credentials, settings and plugins are never shared.</p>
           </div>
           <div class="card">
