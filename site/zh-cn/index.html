@@ -580,7 +580,7 @@
       <div class="wrap">
         <div class="prose">
           <h2 id="transcripts-title">比 <span class="nowrap">Claude Code</span> 30&nbsp;天清理<wbr>保留更久的会话记录</h2>
-          <p>Claude Code 会删除超过 <a href="https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically"><code>cleanupPeriodDays</code></a> 天的会话记录，默认是 30 天。Grove 在 <code>~/.claude/grove/transcripts/</code> 中为每份会话记录保留一个硬链接；如果某个账号中的会话记录不见了，无论是你删的还是 Claude Code 的清理删的，Grove 都会把它恢复。默认最多保留 90 天，总量上限 500&nbsp;MB。</p>
+          <p>Claude Code 会删除超过 <a href="https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically"><code>cleanupPeriodDays</code></a> 天的会话记录，默认是 30&nbsp;天。Grove 在 <code>~/.claude/grove/transcripts/</code> 中为每份会话记录保留一个硬链接；如果某个账号中的会话记录不见了，无论是你删的还是 Claude Code 的清理删的，Grove 都会把它恢复。默认最多保留 90&nbsp;天，总量上限 500&nbsp;MB。</p>
           <p>在 Settings → Transcript safety-net 中可以修改这两项限制，或关闭会话记录镜像。要彻底删除一份会话记录，请使用 Sessions 界面上的 <strong>Purge</strong>。</p>
         </div>
       </div>
@@ -667,7 +667,7 @@ grove doctor</code></pre>
             <tr><th scope="row"><a href="https://superset.sh/">Superset</a></th><td>并行运行多个编程智能体，每个都有自己的 worktree</td><td data-label="平台">macOS、iOS；Linux 为实验性支持；暂不支持 Windows</td><td data-label="每个任务的仓库">未说明</td><td data-label="智能体">任意 CLI 智能体</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">Elastic License 2.0（源码可用）</td></tr>
             <tr><th scope="row"><a href="https://emdash.com/">Emdash</a></th><td>开源的智能体开发环境；并行任务各有独立的 worktree</td><td data-label="平台">macOS、Windows、Linux</td><td data-label="每个任务的仓库">未说明</td><td data-label="智能体">25 种以上智能体</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">Apache-2.0</td></tr>
             <tr><th scope="row"><a href="https://github.com/BloopAI/vibe-kanban">Vibe Kanban</a></th><td>面向编程智能体的看板；其 README 称项目即将停止维护</td><td data-label="平台">未说明</td><td data-label="每个任务的仓库">未说明</td><td data-label="智能体">Claude Code、Codex 等</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">Apache-2.0</td></tr>
-            <tr><th scope="row"><a href="https://worktrunk.dev/">Worktrunk</a></th><td>用于管理 git worktree 的 CLI</td><td data-label="平台">macOS、Linux、Windows</td><td data-label="每个任务的仓库">未说明</td><td data-label="智能体">Claude Code、Codex 等</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">MIT 或 Apache-2.0</td></tr>
+            <tr><th scope="row"><a href="https://worktrunk.dev/">Worktrunk</a></th><td>用于管理 git worktree 的 CLI</td><td data-label="平台">macOS、Linux、Windows</td><td data-label="每个任务的仓库">未说明</td><td data-label="智能体">Claude Code、Codex 等</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">MIT 或 <span class="nowrap">Apache-2.0</span></td></tr>
             <tr><th scope="row"><a href="https://ivar.run/">ivar</a></th><td>CLI：一个功能横跨多个仓库，一个分支、一份计划，每个仓库一个 PR</td><td data-label="平台">macOS、Linux</td><td data-label="每个任务的仓库">多个，同一分支</td><td data-label="智能体">Claude Code、OpenCode、OMP</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">Apache-2.0</td></tr>
             <tr><th scope="row"><a href="https://github.com/nicksenap/grove">gw</a>（nicksenap/grove）</th><td>CLI：一个工作区文件夹，内含多个仓库在同一分支上的 worktree</td><td data-label="平台">macOS、Linux</td><td data-label="每个任务的仓库">多个，同一分支</td><td data-label="智能体">不绑定特定厂商</td><td data-label="把会话迁移到另一个账号">未说明</td><td data-label="许可证">MIT</td></tr>
             <tr><th scope="row"><a href="https://github.com/realiti4/claude-swap">claude-swap</a></th><td>切换当前 Claude Code 账号的 CLI，可选配 macOS 菜单栏；能在触及限额前切换；带用量仪表盘</td><td data-label="平台">Windows、macOS、Linux/WSL</td><td data-label="每个任务的仓库">—</td><td data-label="智能体">Claude Code</td><td data-label="把会话迁移到另一个账号">切换账号；当前会话可以继续</td><td data-label="许可证">MIT</td></tr>
@@ -683,7 +683,7 @@ grove doctor</code></pre>
             <li>Windows 或 Linux：Emdash 或 Nimbalyst。</li>
             <li>在 Linux 上用命令行管理多仓库 worktree：ivar 或 gw。</li>
             <li>在一个窗口里使用多种不同的智能体 CLI：Claude Squad、Superset 或 Emdash。</li>
-            <li>在触及限额前自动切换账号：claude-swap。</li>
+            <li>在触及限额前自动切换账号：<span class="nowrap">claude-swap</span>。</li>
             <li>围绕智能体打造的终端：cmux，Grove 也在其中打开会话。</li>
           </ul>
           <p>Grove 适合拆分在多个仓库中的产品：你在 Mac 上用 Claude Code 开发它，无论用一个账号还是多个账号。</p>
@@ -723,7 +723,7 @@ grove doctor</code></pre>
           <p>关联账号通过 <code>~/.claude</code> 共享会话文件夹，所以在一个关联账号下启动的会话，其他关联账号也能看到。凭据、设置和插件仍由各个账号分别保留。</p>
 
           <h3><span class="nowrap">Claude Code 的</span>旧会话为什么不见了？<wbr>能保留下来吗？</h3>
-          <p>Claude Code 会删除超过 <code>cleanupPeriodDays</code> 天的会话记录，默认是 30 天。Grove 的<a href="#transcripts">会话记录镜像</a>默认最多保留 90 天、500&nbsp;MB，也可以关闭。</p>
+          <p>Claude Code 会删除超过 <code>cleanupPeriodDays</code> 天的会话记录，默认是 30&nbsp;天。Grove 的<a href="#transcripts">会话记录镜像</a>默认最多保留 90&nbsp;天、500&nbsp;MB，也可以关闭。</p>
 
           <h3>最多能同时运行多少个 Claude Code 会话？</h3>
           <p>Grove 本身不设上限。每个会话都会计入它所用账号的用量限额。Grove 按项目和工作区列出会话，并显示哪些正在运行、哪些在等你回应。</p>
@@ -842,7 +842,7 @@ xattr -d com.apple.quarantine grove</code></pre>
           <div>
             <dt>会话记录镜像比 Claude Code 的清理保留更久</dt>
             <dd>
-              <p>Grove 在 <code>~/.claude/grove/transcripts/</code> 中为每份会话记录保留一个硬链接；某个账号中的会话记录不见了，Grove 会把它恢复，包括你自己删除的。只要原文件还在，硬链接就不额外占用磁盘空间。镜像默认最多保留 90 天、500&nbsp;MB 的会话记录。</p>
+              <p>Grove 在 <code>~/.claude/grove/transcripts/</code> 中为每份会话记录保留一个硬链接；某个账号中的会话记录不见了，Grove 会把它恢复，包括你自己删除的。只要原文件还在，硬链接就不额外占用磁盘空间。镜像默认最多保留 90&nbsp;天、500&nbsp;MB 的会话记录。</p>
               <p>要彻底删除一份会话记录，请使用 Sessions 界面上的 <strong>Purge</strong>。若想把保留策略交还给 Claude Code，请在 Settings → Transcript safety-net 中关闭 <em>Keep a backup of every session</em>，然后删除 <code>~/.claude/grove/transcripts/</code>。</p>
             </dd>
           </div>
