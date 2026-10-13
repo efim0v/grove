@@ -1,0 +1,182 @@
+name: Bug report
+description: Something in Grove or the grove command-line tool does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Before you start:
+
+        - **Security problems** go through [private reporting](https://github.com/efim0v/grove/security/advisories/new), never a public issue. See [SECURITY.md](https://github.com/efim0v/grove/blob/main/SECURITY.md).
+        - **Rate limits, the notch and one-click sign-in** are [Brow](https://github.com/efim0v/brow/issues)'s.
+        - **"cmux unavailable" while cmux is running** has a known cause and fix in [troubleshooting](https://github.com/efim0v/grove/blob/main/docs/troubleshooting.md).
+
+        Logs and command output can contain account emails, project paths and repository names. Look through what you paste and replace anything you'd rather keep private.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a project in Grove
+        2. Create a workspace from …
+        3. …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where in Grove
+      multiple: true
+      options:
+        - Workspaces
+        - "Sessions: the Claude tab, starting or resuming one"
+        - "Resume as…, Migrate to… or Share"
+        - Accounts
+        - Transcript mirror
+        - Graph
+        - Stats
+        - Menu-bar icon or panel
+        - Settings
+        - grove command-line tool
+        - Something else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: open-in
+    attributes:
+      label: Where your sessions open
+      description: The "Open in" choice when you start or resume a session.
+      options:
+        - cmux
+        - Terminal
+        - Both
+        - Doesn't apply
+    validations:
+      required: true
+
+  - type: input
+    id: grove-version
+    attributes:
+      label: Grove version
+      description: Shown at the bottom of Grove's panel, next to Quit. If you built Grove yourself, give the commit.
+      placeholder: v0.2.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed Grove
+      options:
+        - Grove.zip from the GitHub release
+        - "Homebrew: brew install --cask efim0v/tap/grove"
+        - Built from source
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: "`sw_vers -productVersion` prints it."
+      placeholder: "26.4"
+    validations:
+      required: true
+
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model
+      description: Apple menu → About This Mac.
+      placeholder: MacBook Air, M2
+    validations:
+      required: true
+
+  - type: input
+    id: claude-code-version
+    attributes:
+      label: Claude Code version
+      description: "`claude --version` prints it."
+      placeholder: 2.1.x (Claude Code)
+    validations:
+      required: true
+
+  - type: input
+    id: accounts
+    attributes:
+      label: Number of Claude accounts
+      description: How many accounts the Accounts screen lists (the Accounts button at the bottom of the panel).
+      placeholder: "2"
+    validations:
+      required: true
+
+  - type: input
+    id: cmux-version
+    attributes:
+      label: cmux version
+      description: "`cmux --version` in a cmux terminal. Leave it empty if you don't use cmux."
+      placeholder: cmux 0.x
+
+  - type: dropdown
+    id: brow
+    attributes:
+      label: Is Brow installed?
+      description: When it is, Grove starts sessions with Brow's browser router.
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of grove doctor
+      description: If you have the command-line tool (`grove-cli.zip` from the release, or `brew install efim0v/tap/grove-cli`), paste what `grove doctor` prints. It shows the git, Claude Code and cmux that Grove finds.
+      render: text
+
+  - type: markdown
+    attributes:
+      value: |
+        **Logs.** Run this in Terminal, reproduce the problem, then press Control-C and paste the output below:
+
+        ```sh
+        log stream --level info --predicate 'subsystem == "dev.artemefimov.grove" OR (process BEGINSWITH "Grove" AND subsystem == "dev.artemefimov.brow")'
+        ```
+
+        Grove logs under `dev.artemefimov.grove`. The code it shares with Brow reports problems reading a command's output under Brow's identifier, which the second half of the filter picks up.
+
+        For cmux problems, a probe report helps most. Run `open -nW /Applications/Grove.app --args --cmux-probe /tmp/cmux-probe.txt` and attach `/tmp/cmux-probe.txt` ([more on the probe](https://github.com/efim0v/grove/blob/main/docs/troubleshooting.md#cmux-diagnostic-probe)). The probe opens and closes a test workspace in cmux, and the report lists your environment variables, so remove secrets before you attach it.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, how your repositories are laid out (how many, side by side or nested), or anything else that seems related.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues for this problem.
+          required: true
+        - label: I removed tokens, emails and private paths from what I pasted.
+          required: true

@@ -1,0 +1,55 @@
+name: Feature request
+description: Suggest an idea or an improvement for Grove or the grove command-line tool.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Want to talk an idea through first? [Discussions → Ideas](https://github.com/efim0v/grove/discussions/categories/ideas) is the place for that. Rate limits, the notch and one-click sign-in are [Brow](https://github.com/efim0v/brow)'s side.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like Grove to do
+      description: Describe the change. Sketches and examples are welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds and alternatives
+      description: What you do today instead, or other tools that solve this.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where in Grove
+      multiple: true
+      options:
+        - Workspaces
+        - "Sessions: the Claude tab, starting or resuming one"
+        - "Resume as…, Migrate to… or Share"
+        - Accounts
+        - Transcript mirror
+        - Graph
+        - Stats
+        - Menu-bar icon or panel
+        - Settings
+        - grove command-line tool
+        - Something new
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to work on this myself.

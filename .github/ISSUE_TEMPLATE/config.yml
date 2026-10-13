@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and setup help
+    url: https://github.com/efim0v/grove/discussions/categories/q-a
+    about: Ask in Discussions → Q&A.
+  - name: Report a security vulnerability
+    url: https://github.com/efim0v/grove/security/advisories/new
+    about: Report it privately here, never in a public issue.
+  - name: Rate limits, the notch and sign-in
+    url: https://github.com/efim0v/brow/issues
+    about: Those are Brow's, which has its own issue tracker.
