@@ -330,7 +330,7 @@ claude</code></pre>
             <ul class="points">
               <li><code>git worktree add</code> creates the missing directories, so there is no <code>mkdir</code> step.</li>
               <li>Put each repository’s own base branch in place of <code>origin/main</code>.</li>
-              <li><code>--no-track</code> keeps git from making <code>origin/main</code> the new branch’s upstream, which it does by default when the start point is a remote-tracking branch. With that upstream, a plain <code>git push</code> refuses and suggests pushing to <code>main</code>.</li>
+              <li><code class="nowrap">--no-track</code> keeps git from making <code>origin/main</code> the new branch’s upstream, which it does by default when the start point is a remote-tracking branch. With that upstream, <code>git status</code> compares the branch with <code>origin/main</code>, and a plain <code>git push</code> refuses by default because the names differ. A branch Grove creates from <code>origin/main</code> does get that upstream: Grove doesn’t pass <code class="nowrap">--no-track</code>. Either way, the first push is <code>git push -u origin feat/loyalty-points</code>.</li>
               <li><code>git fetch</code> comes first because nothing else here fetches: the worktree starts from <code>origin/main</code> as your clone last saw it. Grove doesn’t fetch either; its git commands never fetch, pull or push.</li>
             </ul>
             <p>What Grove adds to these commands:</p>
