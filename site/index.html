@@ -7,6 +7,10 @@
   <title>Grove: parallel Claude Code sessions in multi-repo worktrees</title>
   <meta name="description" content="Run parallel Claude Code sessions on a multi-repo project: each feature gets a git worktree of each repo on one branch. Free macOS menu-bar app and CLI.">
   <link rel="canonical" href="https://efim0v.github.io/grove/">
+  <link rel="alternate" hreflang="en" href="https://efim0v.github.io/grove/">
+  <link rel="alternate" hreflang="ru" href="https://efim0v.github.io/grove/ru/">
+  <link rel="alternate" hreflang="zh-Hans" href="https://efim0v.github.io/grove/zh-cn/">
+  <link rel="alternate" hreflang="x-default" href="https://efim0v.github.io/grove/">
   <meta name="robots" content="max-image-preview:large">
   <meta name="author" content="Artem Efimov">
   <meta name="color-scheme" content="light dark">
@@ -26,6 +30,8 @@
   <meta property="og:image:height" content="640">
   <meta property="og:image:alt" content="Grove: git-worktree workspaces for parallel Claude Code sessions, next to a screenshot of its Workspaces screen.">
   <meta property="og:locale" content="en_US">
+  <meta property="og:locale:alternate" content="ru_RU">
+  <meta property="og:locale:alternate" content="zh_CN">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Grove: parallel Claude Code sessions in multi-repo worktrees">
   <meta name="twitter:description" content="A macOS menu-bar app and CLI: one directory per feature with a git worktree of each of your repositories, Claude Code sessions across accounts, and moving a session from one account to another.">
@@ -210,10 +216,25 @@
     .site-header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 56px; }
     .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font: 700 1.125rem/1 var(--serif); }
     .brand img { width: 24px; height: 24px; }
+    .site-nav { margin-left: auto; }
     .site-nav ul { display: flex; gap: 20px; margin: 0; padding: 0; list-style: none; }
     .site-nav a { color: var(--muted); font-size: .9375rem; text-decoration: none; }
     .site-nav a:hover { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
-    @media (max-width: 719px) { .site-nav .optional { display: none; } }
+    /* The section links share the row with the language switcher, so they give
+       way below 900px rather than below 720px */
+    @media (max-width: 899px) { .site-nav .optional { display: none; } }
+
+    /* Language switcher: after the main navigation in the header, and in the footer */
+    .lang { color: var(--muted); white-space: nowrap; }
+    .lang a { color: inherit; text-decoration: none; }
+    .lang a:hover { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
+    .lang a[aria-current="page"] { color: var(--ink); }
+    .site-header .lang { padding-left: 16px; border-left: 1px solid var(--rule); font-size: .9375rem; }
+    /* On a phone the switcher gets a line of its own under the brand */
+    @media (max-width: 559px) {
+      .site-header .wrap { flex-wrap: wrap; height: auto; padding-block: 14px 12px; row-gap: 6px; }
+      .site-header .lang { flex-basis: 100%; padding-left: 0; border-left: 0; }
+    }
 
     /* Hero */
     .hero .wrap { padding-block: 64px 72px; }
@@ -346,6 +367,8 @@
     .site-footer .wrap { border-top: 1px solid var(--rule); padding-block: 28px 48px; font-size: .875rem; color: var(--muted); }
     .site-footer ul { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0 0 10px; padding: 0; list-style: none; }
     .site-footer p { margin: 0; }
+    .site-footer .lang { margin: 0 0 10px; }
+    .site-footer .lang a:not([aria-current]) { text-decoration: underline; }
     .site-footer a { color: inherit; }
     .site-footer a:hover { color: var(--ink); }
 
@@ -373,6 +396,13 @@
           <li class="optional"><a href="#on-your-mac">Privacy</a></li>
           <li><a href="https://github.com/efim0v/grove">GitHub</a></li>
         </ul>
+      </nav>
+      <nav class="lang" aria-label="Language">
+        <a href="/grove/" hreflang="en" lang="en" aria-current="page">English</a>
+        <span aria-hidden="true">·</span>
+        <a href="/grove/ru/" hreflang="ru" lang="ru">Русский</a>
+        <span aria-hidden="true">·</span>
+        <a href="/grove/zh-cn/" hreflang="zh-Hans" lang="zh-Hans">简体中文</a>
       </nav>
     </div>
   </header>
@@ -849,6 +879,13 @@ xattr -d com.apple.quarantine grove</code></pre>
         <li><a href="https://github.com/efim0v/grove/blob/main/LICENSE">License: GPL-3.0</a></li>
         <li><a href="https://efim0v.github.io/brow/">Brow</a></li>
       </ul>
+      <nav class="lang" aria-label="Language">
+        <a href="/grove/" hreflang="en" lang="en" aria-current="page">English</a>
+        <span aria-hidden="true">·</span>
+        <a href="/grove/ru/" hreflang="ru" lang="ru">Русский</a>
+        <span aria-hidden="true">·</span>
+        <a href="/grove/zh-cn/" hreflang="zh-Hans" lang="zh-Hans">简体中文</a>
+      </nav>
       <p>Grove is made by <a href="https://github.com/efim0v">Artem Efimov</a>. It is an independent tool, not affiliated with or endorsed by Anthropic. Screenshots show made-up demo data.</p>
     </div>
   </footer>
