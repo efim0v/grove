@@ -299,6 +299,10 @@
     .versus { width: min(100%, 46rem); margin: 24px 0 16px; }
     @media (min-width: 760px) { .versus tbody th { white-space: nowrap; padding-right: 32px; } }
 
+    /* How Grove compares: seven columns, the full width of the page */
+    .tools { width: 100%; margin: 24px 0 16px; font-size: .9375rem; }
+    .tools + .small { max-width: 40rem; margin-bottom: 32px; }
+
     /* Where the columns don't fit, each row becomes a block: its name, then
        each value after its column name, the way the term lists stack */
     @media (max-width: 640px) {
@@ -310,6 +314,16 @@
       .versus th { margin-bottom: 4px; }
       .versus td + td { margin-top: 4px; }
       .versus td::before { content: attr(data-label) ": "; color: var(--muted); }
+    }
+    @media (max-width: 959px) {
+      .tools thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .tools, .tools tbody, .tools tr, .tools th, .tools td { display: block; }
+      .tools tr { padding: 14px 0 15px; border-top: 1px solid var(--rule); }
+      .tools tbody tr:last-child { border-bottom: 1px solid var(--rule); }
+      .tools tr > *, .tools tbody tr:last-child > * { padding: 0; border: 0; }
+      .tools th { margin-bottom: 4px; font-size: 1rem; }
+      .tools td + td { margin-top: 2px; }
+      .tools td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); }
     }
 
     /* What changes on your Mac */
@@ -352,6 +366,7 @@
         <ul>
           <li class="optional"><a href="#workspaces">Workspaces</a></li>
           <li class="optional"><a href="#sessions">Sessions</a></li>
+          <li class="optional"><a href="#compare">Compare</a></li>
           <li><a href="#install">Install</a></li>
           <li class="optional"><a href="#on-your-mac">Privacy</a></li>
           <li><a href="https://github.com/efim0v/grove">GitHub</a></li>
@@ -572,6 +587,56 @@ grove sessions ~/Workspaces/acme-shop/loyalty-points --json
 <span class="comment"># are git, claude and cmux installed?</span>
 grove doctor</code></pre>
           <p class="small">The CLI uses Grove’s default layout, <code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code> on <code>feat/&lt;name&gt;</code>, rather than the app’s per-project settings.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="compare" aria-labelledby="compare-title">
+      <div class="wrap">
+        <div class="prose">
+          <h2 id="compare-title">How Grove compares</h2>
+          <p>Many tools run Claude Code in parallel. The facts below come from each tool’s own site or README.</p>
+        </div>
+        <table class="ruled tools">
+          <thead>
+            <tr>
+              <th scope="col">Tool</th>
+              <th scope="col">What it is</th>
+              <th scope="col">Platforms</th>
+              <th scope="col">Repositories per task</th>
+              <th scope="col">Agents</th>
+              <th scope="col">Moves a session to another account</th>
+              <th scope="col">License</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row"><a href="https://code.claude.com/docs/en/worktrees"><code>claude --worktree</code></a></th><td>Built into Claude Code: a session in a new worktree</td><td data-label="Platforms">Wherever Claude Code runs</td><td data-label="Repositories per task">The repository you run it in</td><td data-label="Agents">Claude Code</td><td data-label="Moves a session to another account">—</td><td data-label="License">Part of Claude Code</td></tr>
+            <tr><th scope="row"><a href="https://www.conductor.build/">Conductor</a></th><td>Mac app for parallel coding agents in isolated workspaces</td><td data-label="Platforms">Mac</td><td data-label="Repositories per task">Not stated</td><td data-label="Agents">Claude Code, Codex, Cursor</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">Not stated</td></tr>
+            <tr><th scope="row"><a href="https://github.com/smtg-ai/claude-squad">Claude Squad</a></th><td>Terminal app on tmux and git worktrees</td><td data-label="Platforms">Not stated; needs tmux</td><td data-label="Repositories per task">Not stated</td><td data-label="Agents">Claude Code, Codex, Gemini, Aider, others</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">AGPL-3.0</td></tr>
+            <tr><th scope="row"><a href="https://nimbalyst.com/">Nimbalyst</a></th><td>Visual workspace; any session can get its own worktree</td><td data-label="Platforms">macOS, Windows, Linux, iOS</td><td data-label="Repositories per task">Not stated</td><td data-label="Agents">Claude Code, Codex; OpenCode and Copilot in alpha</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">MIT</td></tr>
+            <tr><th scope="row"><a href="https://superset.sh/">Superset</a></th><td>Runs many coding agents in parallel, each in its own worktree</td><td data-label="Platforms">macOS; Linux experimental; no Windows yet</td><td data-label="Repositories per task">Not stated</td><td data-label="Agents">Any CLI agent</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">Elastic License 2.0 (source-available)</td></tr>
+            <tr><th scope="row"><a href="https://emdash.com/">Emdash</a></th><td>Open-source agentic development environment; parallel tasks in separate worktrees</td><td data-label="Platforms">macOS, Windows, Linux</td><td data-label="Repositories per task">Not stated</td><td data-label="Agents">25+ agents</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">Apache-2.0</td></tr>
+            <tr><th scope="row"><a href="https://github.com/BloopAI/vibe-kanban">Vibe Kanban</a></th><td>Kanban board for coding agents; its README says it is sunsetting</td><td data-label="Platforms">Not stated</td><td data-label="Repositories per task">Not stated</td><td data-label="Agents">Claude Code, Codex, others</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">Apache-2.0</td></tr>
+            <tr><th scope="row"><a href="https://worktrunk.dev/">Worktrunk</a></th><td>CLI for git worktree management</td><td data-label="Platforms">macOS, Linux, Windows</td><td data-label="Repositories per task">Not stated</td><td data-label="Agents">Not stated</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">MIT or Apache-2.0</td></tr>
+            <tr><th scope="row"><a href="https://ivar.run/">ivar</a></th><td>CLI: one feature across repos, one branch, one plan, one PR per repo</td><td data-label="Platforms">macOS, Linux</td><td data-label="Repositories per task">Several, on one branch</td><td data-label="Agents">Claude Code, OpenCode, OMP</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">Apache-2.0</td></tr>
+            <tr><th scope="row"><a href="https://github.com/nicksenap/grove">gw</a> (nicksenap/grove)</th><td>CLI: a workspace folder with worktrees from several repos on one branch</td><td data-label="Platforms">macOS, Linux</td><td data-label="Repositories per task">Several, on one branch</td><td data-label="Agents">Vendor-neutral</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">MIT</td></tr>
+            <tr><th scope="row"><a href="https://github.com/realiti4/claude-swap">claude-swap</a></th><td>CLI, with an optional macOS menu bar, that switches the active Claude Code account; can switch before a limit; usage dashboard</td><td data-label="Platforms">Windows, macOS, Linux/WSL</td><td data-label="Repositories per task">—</td><td data-label="Agents">Claude Code</td><td data-label="Moves a session to another account">Switches the account; the current session can continue</td><td data-label="License">MIT</td></tr>
+            <tr><th scope="row"><a href="https://cmux.com/">cmux</a> (works with Grove)</th><td>macOS terminal for AI coding agents</td><td data-label="Platforms">macOS</td><td data-label="Repositories per task">—</td><td data-label="Agents">Any CLI agent</td><td data-label="Moves a session to another account">Not stated</td><td data-label="License">See <a href="https://github.com/manaflow-ai/cmux">its repository</a></td></tr>
+            <tr><th scope="row">Grove</th><td>Menu-bar app and CLI: multi-repo workspaces, Claude Code sessions across accounts</td><td data-label="Platforms">macOS 26 or later, Apple silicon</td><td data-label="Repositories per task">Several, on one branch</td><td data-label="Agents">Starts and lists Claude Code; a workspace is an ordinary directory</td><td data-label="Moves a session to another account"><strong>Resume as…</strong>, <strong>Migrate to…</strong>, <strong>Share</strong></td><td data-label="License">GPL-3.0</td></tr>
+          </tbody>
+        </table>
+        <p class="small">Checked on 13 October 2026. “Not stated” means the tool’s own page or README doesn’t say; a dash means the column doesn’t apply to that tool.</p>
+        <div class="prose">
+          <p>When another tool fits better:</p>
+          <ul class="points">
+            <li>One repository: <code>claude --worktree</code>.</li>
+            <li>Windows or Linux: Emdash or Nimbalyst.</li>
+            <li>Multi-repo worktrees from the command line on Linux: ivar or gw.</li>
+            <li>Several different agent CLIs in one window: Claude Squad, Superset or Emdash.</li>
+            <li>Automatic account switching before a limit: claude-swap.</li>
+            <li>A terminal built around agents: cmux, which Grove opens sessions in.</li>
+          </ul>
+          <p>Grove fits a product split across several repositories, run from the Mac menu bar, with Claude Code sessions across accounts.</p>
         </div>
       </div>
     </section>
