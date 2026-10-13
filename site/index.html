@@ -266,7 +266,7 @@
     .steps, details ol { padding-left: 1.5em; }
 
     /* Terms: names on the left, what they do on the right */
-    .terms { margin: 24px 0 0; border-bottom: 1px solid var(--rule); }
+    .terms { margin: 24px 0; border-bottom: 1px solid var(--rule); }
     .terms > div {
       display: grid; grid-template-columns: 10rem minmax(0, 1fr); column-gap: 24px;
       padding: 12px 0 13px; border-top: 1px solid var(--rule);
@@ -520,6 +520,7 @@
               <dd>Grove refuses a move that would give a session two writers, such as resuming under one account a session that is still running under another.</dd>
             </div>
           </dl>
+          <p>Step by step: <a href="/grove/move-session-to-another-account/">Continue a Claude Code session on another account</a>.</p>
         </div>
         <figure class="fig-accounts">
           <img class="shot" src="img/grove-accounts.webp" width="1120" height="1362" loading="lazy" decoding="async"
@@ -652,7 +653,7 @@ grove doctor</code></pre>
           <p>Give each task its own working copy, a git worktree; Anthropic <a href="https://code.claude.com/docs/en/worktrees">documents this</a> for parallel sessions. For a product split across repositories, a Grove workspace holds a worktree of each repository on one branch. Start Claude Code in that directory.</p>
 
           <h3>Can Claude Code work on multiple repositories at once?</h3>
-          <p><a href="https://code.claude.com/docs/en/cli-reference"><code>--add-dir</code></a> gives a session access to more directories, and <code>permissions.additionalDirectories</code> makes that persistent. It grants file access, and Claude Code doesn’t pick up most <code>.claude/</code> configuration from those directories. A Grove workspace puts every repository, already on the feature’s branch, under the directory Claude Code starts in.</p>
+          <p><a href="https://code.claude.com/docs/en/cli-reference"><code>--add-dir</code></a> gives a session access to more directories, and <code>permissions.additionalDirectories</code> makes that persistent. It grants file access, and Claude Code doesn’t pick up most <code>.claude/</code> configuration from those directories. A Grove workspace puts every repository, already on the feature’s branch, under the directory Claude Code starts in. Guide: <a href="/grove/multiple-repositories/">Run Claude Code across multiple repositories</a>.</p>
 
           <h3>How is a Grove workspace different from <code>claude --worktree</code>?</h3>
           <p>See <a href="#vs-worktree">the table above</a>. In short, <code>--worktree</code> covers one repository, and a workspace covers every repository you pick, on one branch.</p>
@@ -669,7 +670,7 @@ grove doctor</code></pre>
             <li><strong>Migrate to…</strong> makes a full copy.</li>
             <li><strong>Share</strong> moves it into the shared store.</li>
           </ul>
-          <p>Grove refuses a move that would give a session two writers.</p>
+          <p>Grove refuses a move that would give a session two writers. Guide: <a href="/grove/move-session-to-another-account/">Continue a Claude Code session on another account</a>.</p>
 
           <h3>Will I lose session history when I switch accounts?</h3>
           <p>Linked accounts share their session folders through <code>~/.claude</code>, so a session started under one linked account is visible to the others. Credentials, settings and plugins stay with each account.</p>
@@ -830,7 +831,7 @@ xattr -d com.apple.quarantine grove</code></pre>
       <div class="wrap">
         <div class="prose">
           <h2 id="brow-title" class="companion"><img src="brow-mark.svg" width="20" height="20" alt=""><span>Brow shows which account has room</span></h2>
-          <p>Brow lives in the MacBook notch and shows the usage limits of every Claude account you have. Grove moves work between accounts; Brow tells you which account has room. Each runs on its own, and they are built to be used together.</p>
+          <p>Brow lives in the MacBook notch and shows the usage limits of every Claude account you have. Grove moves work between accounts; Brow tells you which account has room. Each runs on its own, and they are built to be used together. Brow’s guide explains how to <a href="/brow/multiple-claude-accounts/">use multiple Claude Code accounts on one Mac</a>.</p>
           <p><a href="https://efim0v.github.io/brow/">Brow — Claude Code usage limits in the MacBook notch</a> · <a href="https://github.com/efim0v/brow">Brow on GitHub</a></p>
         </div>
       </div>
