@@ -182,8 +182,10 @@
       .plain th, .plain td { padding-right: 12px; overflow-wrap: anywhere; }
     }
 
-    /* Screenshots: whole windows with a plain shadow */
-    .article figure { margin: 32px 0; max-width: 420px; }
+    /* Screenshots: whole windows with a plain shadow, at the landing page's sizes */
+    .article figure { margin: 32px 0; }
+    .article figure.fig-wide { max-width: 540px; }
+    .article figure.fig-accounts { max-width: 440px; }
     .shot { filter: var(--shot); }
     figcaption { margin-top: 12px; font-size: .875rem; color: var(--muted); }
 
@@ -249,7 +251,7 @@
       <section id="three-ways" aria-labelledby="three-ways-title">
         <h2 id="three-ways-title">Three ways to move a session in Grove</h2>
         <p>On a project’s <strong>Claude</strong> tab, a session you can resume has a <strong>Resume</strong> button, which continues it under its own account. Beside it, the tray icon opens <strong>Migrate to…</strong> and the chevron opens <strong>Resume as…</strong>, each with a line for every other account. <strong>Share</strong> is the share icon beside a session of an account other than <code>~/.claude</code>, for example in an open workspace’s list of sessions on the <strong>Workspaces</strong> tab.</p>
-        <figure>
+        <figure class="fig-wide">
           <img class="shot" src="../img/grove-sessions.webp" width="1200" height="1347" loading="lazy" decoding="async"
                alt="A project’s Claude tab with six sessions, each with its status, workspace, branch and account. The first has a Go button; each of the others has a gear, Resume, a tray icon and a chevron.">
           <figcaption>A project’s Claude tab. Screenshots show made-up demo data.</figcaption>
@@ -314,7 +316,7 @@
         <p><strong>Link to shared store</strong> links <code>file-history</code>, <code>tasks</code> and <code>session-env</code>. A <code>projects/&lt;project&gt;</code> folder becomes a link only when a session in it is resumed under another account or shared. The sign-in stays with each account: Grove doesn’t read Claude Code’s credentials.</p>
         <p>Before a real folder becomes a link, Grove moves into <code>~/.claude</code> whatever <code>~/.claude</code> doesn’t have yet. Where both sides have an entry, <code>~/.claude</code> keeps its own, and the account’s copy goes to <code>grove-backup/</code> in the account’s folder.</p>
         <p><code>~/.claude</code> itself is never a link: it is the store. The <strong>Accounts</strong> screen marks the default account <strong>canonical</strong> and each linked account <strong>shared</strong>.</p>
-        <figure>
+        <figure class="fig-accounts">
           <img class="shot" src="../img/grove-accounts.webp" width="1120" height="1362" loading="lazy" decoding="async"
                alt="The Accounts screen: the personal account, marked canonical, with its sessions and their model and effort pickers, and below it the work account, marked shared.">
           <figcaption>The default account is the canonical one; the work account is linked.</figcaption>
