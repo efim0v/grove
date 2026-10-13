@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <title>How to run Claude Code across multiple repositories – Grove</title>
+  <meta name="description" content="Two ways to give one Claude Code session several repositories: --add-dir for file access, or a workspace with a git worktree of each repo on one branch.">
+  <link rel="canonical" href="https://efim0v.github.io/grove/multiple-repositories/">
+  <meta name="robots" content="max-image-preview:large">
+  <meta name="author" content="Artem Efimov">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141514" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" sizes="64x64" href="/grove/favicon.png">
+  <link rel="apple-touch-icon" href="/grove/apple-touch-icon.png">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Grove">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:url" content="https://efim0v.github.io/grove/multiple-repositories/">
+  <meta property="og:title" content="How to run Claude Code across multiple repositories – Grove">
+  <meta property="og:description" content="Two ways to give one Claude Code session several repositories: --add-dir for file access, or a workspace with a git worktree of each repo on one branch.">
+  <meta property="og:image" content="https://efim0v.github.io/grove/og.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="Grove: git-worktree workspaces for parallel Claude Code sessions, next to a screenshot of its Workspaces screen.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="How to run Claude Code across multiple repositories – Grove">
+  <meta name="twitter:description" content="Two ways to give one Claude Code session several repositories: --add-dir for file access, or a workspace with a git worktree of each repo on one branch.">
+  <meta name="twitter:image" content="https://efim0v.github.io/grove/og.png">
+  <meta name="twitter:image:alt" content="Grove: git-worktree workspaces for parallel Claude Code sessions, next to a screenshot of its Workspaces screen.">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "headline": "Run Claude Code across multiple repositories",
+    "description": "Two ways to give one Claude Code session several repositories: --add-dir for file access, or a workspace with a git worktree of each repo on one branch.",
+    "url": "https://efim0v.github.io/grove/multiple-repositories/",
+    "mainEntityOfPage": "https://efim0v.github.io/grove/multiple-repositories/",
+    "inLanguage": "en",
+    "datePublished": "2026-10-13",
+    "dateModified": "2026-10-13",
+    "image": ["https://efim0v.github.io/grove/img/grove-workspaces.webp"],
+    "author": {
+      "@type": "Person",
+      "name": "Artem Efimov",
+      "url": "https://github.com/efim0v"
+    },
+    "about": { "@id": "https://efim0v.github.io/grove/#app" }
+  }
+  </script>
+
+  <style>
+    /* Paper, ink and one forest green, as on the Grove landing page */
+    :root {
+      --paper: #faf9f5;
+      --ink: #1b1d1a;
+      --muted: #5b5f58;
+      --rule: #e2e0d8;
+      --code-bg: #f1f0ea;
+      --forest: #2d6a40;
+      --shot: drop-shadow(0 1px 1px rgba(0, 0, 0, .16)) drop-shadow(0 6px 16px rgba(0, 0, 0, .10));
+      --serif: Charter, "Iowan Old Style", Georgia, serif;
+      --sans: system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #141514;
+        --ink: #e7e8e3;
+        --muted: #a4a79f;
+        --rule: #2a2c28;
+        --code-bg: #1c1e1b;
+        --forest: #8fc79e;
+        /* A hairline edge so the dark window doesn't sink into the dark page */
+        --shot: drop-shadow(0 0 1px rgba(255, 255, 255, .28)) drop-shadow(0 6px 16px rgba(0, 0, 0, .5));
+      }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 400 1.0625rem/1.6 var(--sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    img { display: block; max-width: 100%; height: auto; }
+    a { color: var(--forest); text-decoration-thickness: 1px; text-underline-offset: .18em; }
+    a:hover { text-decoration-thickness: 2px; }
+    :focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+    p, ul, ol, dl, pre, table { margin: 0 0 1rem; }
+    figure { margin: 0; }
+    p, li, dd, td, th { overflow-wrap: break-word; }
+    strong { font-weight: 600; }
+
+    h1, h2 { font-family: var(--serif); font-weight: 700; letter-spacing: -.005em; text-wrap: balance; }
+    h1 { font-size: clamp(2rem, 1.35rem + 2.4vw, 2.75rem); line-height: 1.08; margin: 0 0 16px; }
+    h2 { font-size: clamp(1.5rem, 1.25rem + 1vw, 1.875rem); line-height: 1.2; margin: 0 0 16px; }
+    h3 { font: 600 1.125rem/1.35 var(--sans); margin: 36px 0 8px; }
+
+    code, pre { font-family: var(--mono); }
+    code { font-size: .9em; }
+    :not(pre) > code { background: var(--code-bg); padding: .08em .3em; border-radius: 3px; }
+    @media (min-width: 641px) { :not(pre) > code { white-space: nowrap; } }
+    @media (max-width: 640px) { :not(pre) > code { overflow-wrap: anywhere; } }
+    pre {
+      font-size: 14px; line-height: 1.55;
+      background: var(--code-bg); border-radius: 6px;
+      padding: 12px 14px; overflow-x: auto;
+    }
+    pre code { font-size: inherit; }
+    h2 code { font-size: .8em; }
+    .comment { color: var(--muted); }
+    .small { font-size: .9375rem; color: var(--muted); }
+    .nowrap { white-space: nowrap; }
+
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px; height: 1px;
+      margin: -1px; padding: 0; border: 0;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    }
+    .skip-link {
+      position: absolute; left: 16px; top: -48px; z-index: 2;
+      padding: 8px 12px; border-radius: 6px;
+      background: var(--ink); color: var(--paper); font-weight: 600; text-decoration: none;
+    }
+    .skip-link:focus { top: 12px; }
+
+    /* Layout: the landing page's frame, one column of text at the landing page's measure */
+    .wrap { width: min(100% - 48px, 1032px); margin-inline: auto; }
+    @media (max-width: 480px) { .wrap { width: calc(100% - 32px); } }
+    .prose { max-width: 40rem; }
+    .prose > :first-child { margin-top: 0; }
+    .prose > :last-child { margin-bottom: 0; }
+    .guide > section > .wrap { padding-block: 56px; }
+    .guide > section + section > .wrap { border-top: 1px solid var(--rule); }
+    .guide > .intro > .wrap { padding-block: 64px 56px; }
+    @media (max-width: 640px) {
+      .guide > section > .wrap { padding-block: 40px; }
+      .guide > .intro > .wrap { padding-block: 40px; }
+    }
+
+    /* Header */
+    .site-header { border-bottom: 1px solid var(--rule); }
+    .site-header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 56px; }
+    .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font: 700 1.125rem/1 var(--serif); }
+    .brand img { width: 24px; height: 24px; }
+    .site-nav ul { display: flex; gap: 20px; margin: 0; padding: 0; list-style: none; }
+    .site-nav a { color: var(--muted); font-size: .9375rem; text-decoration: none; }
+    .site-nav a:hover { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
+
+    /* Title block */
+    .byline { margin: 0 0 28px; font-size: .875rem; color: var(--muted); }
+    .byline span { white-space: nowrap; }
+    .lead { font-size: 1.1875rem; line-height: 1.5; }
+
+    /* Lists */
+    .points { padding-left: 1.25em; }
+    .points li, .steps li { margin-bottom: 8px; }
+    .points li::marker, .steps li::marker { color: var(--muted); }
+    .steps { padding-left: 1.5em; }
+
+    /* Screenshot: the whole window with a plain shadow */
+    .shot { filter: var(--shot); }
+    .fig-wide { max-width: 540px; margin: 28px 0 32px; }
+    figcaption { margin-top: 12px; font-size: .875rem; color: var(--muted); }
+
+    /* One plain table with hairlines, like the landing page's requirements */
+    .compare { width: 100%; border-collapse: collapse; margin: 0 0 24px; }
+    .compare th, .compare td { padding: 10px 16px 10px 0; border-top: 1px solid var(--rule); vertical-align: top; text-align: left; }
+    .compare thead th { font-weight: 600; }
+    .compare tbody th { font-weight: 400; white-space: nowrap; }
+    .compare tbody th code { overflow-wrap: normal; }
+    .compare tr > :last-child { padding-right: 0; }
+    .compare tbody tr:last-child > * { border-bottom: 1px solid var(--rule); }
+    @media (min-width: 641px) { .compare tbody th { padding-right: 24px; } }
+    @media (max-width: 480px) {
+      .compare { font-size: .9375rem; }
+      .compare th, .compare td { padding-right: 12px; }
+      .compare tr > :last-child { padding-right: 0; }
+    }
+
+    /* Footer */
+    .site-footer .wrap { border-top: 1px solid var(--rule); padding-block: 28px 48px; font-size: .875rem; color: var(--muted); }
+    .site-footer ul { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0 0 10px; padding: 0; list-style: none; }
+    .site-footer p { margin: 0; }
+    .site-footer a { color: inherit; }
+    .site-footer a:hover { color: var(--ink); }
+
+    @media (max-width: 480px) {
+      pre { font-size: 13px; padding: 10px 12px; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/grove/" aria-label="Grove home">
+        <img src="../favicon.png" width="64" height="64" alt="">
+        <span>Grove</span>
+      </a>
+      <nav class="site-nav" aria-label="Main">
+        <ul>
+          <li><a href="/grove/#install">Install</a></li>
+          <li><a href="https://github.com/efim0v/grove">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <article class="guide">
+      <section class="intro" aria-labelledby="title">
+        <div class="wrap">
+          <div class="prose">
+            <h1 id="title">Run Claude Code across multiple repositories</h1>
+            <p class="byline"><span>By <a href="https://github.com/efim0v">Artem Efimov</a></span> · <span>Published <time datetime="2026-10-13">13 October 2026</time></span></p>
+            <p class="lead">Many products are split across repositories: a client, a server, the server’s configuration, an admin panel, a landing page, a handful of microservices. Merging them into one repository isn’t always sensible, if only because of who should have access to what.</p>
+            <p>Claude Code starts in one directory, and by default it has access to the files there. Give it the other repositories and run a few sessions in parallel, and they start tripping over branches: one session checks out a branch in the server repository, and another, working on a different feature, is suddenly looking at the wrong code.</p>
+            <p>There are two ways to give one session several repositories: add them as extra directories, or start the session in a directory that holds a git worktree of each repository, all on the same branch. <a href="/grove/">Grove, a menu-bar app and command-line tool for macOS</a>, builds the second for you, and plain git can too.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="add-dir" aria-labelledby="add-dir-title">
+        <div class="wrap">
+          <div class="prose">
+            <h2 id="add-dir-title">Option 1: one session with extra directories (<code>--add-dir</code>)</h2>
+            <p>Start Claude Code in one repository and add the others with <code>--add-dir</code>:</p>
+            <pre><code>cd ~/code/acme-shop/web-client
+claude --add-dir ../api-server ../server-config</code></pre>
+            <p>In a session that is already running, <code>/add-dir</code> adds a directory:</p>
+            <pre><code>/add-dir ../api-server</code></pre>
+            <p>To add them to every session you start in that repository, list them under <code>permissions.additionalDirectories</code> in its <code>.claude/settings.local.json</code>:</p>
+            <pre><code>{
+  "permissions": {
+    "additionalDirectories": [
+      "../api-server",
+      "../server-config"
+    ]
+  }
+}</code></pre>
+            <p>What this gives the session:</p>
+            <ul class="points">
+              <li><strong>File access.</strong> Claude can read and edit files in the added directories under the same permission rules as in the one you started in.</li>
+              <li><strong>Only some of their configuration.</strong> Claude Code <a href="https://code.claude.com/docs/en/permissions#additional-directories-grant-file-access-not-configuration">doesn’t discover most <code>.claude/</code> configuration</a> in added directories. Skills, commands and subagents load from directories added with <code>--add-dir</code> or <code>/add-dir</code>. Their <code>CLAUDE.md</code> files load only when <code>CLAUDE_CODE_<wbr>ADDITIONAL_<wbr>DIRECTORIES_<wbr>CLAUDE_MD=1</code> is set. Directories in <code>permissions.additionalDirectories</code> give file access and nothing else.</li>
+              <li><strong>No branches of their own.</strong> The added directories are your usual checkouts. When another session checks out a branch in one of them, this session is looking at that branch too.</li>
+            </ul>
+            <p>To have the other repositories’ <code>CLAUDE.md</code> files loaded as well:</p>
+            <pre><code>CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 \
+  claude --add-dir ../api-server ../server-config</code></pre>
+            <p>Starting Claude Code in the folder that holds all the checkouts gives the same file access without flags, and each repository’s <code>CLAUDE.md</code> <a href="https://code.claude.com/docs/en/memory#how-claude-md-files-load">loads once Claude works on files in it</a>. The checkouts are still the ones every other session uses.</p>
+            <pre><code>cd ~/code/acme-shop
+claude</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="workspace" aria-labelledby="workspace-title">
+        <div class="wrap">
+          <div class="prose">
+            <h2 id="workspace-title">Option 2: a workspace of worktrees, one branch across all repositories</h2>
+            <p>A <a href="https://git-scm.com/docs/git-worktree">git worktree</a> is an extra working directory of a repository, with its own files and its own checked-out branch, sharing the repository’s history and remotes. A workspace is a directory for one feature that holds a worktree of each repository you pick, all on the same branch. Claude Code starts in the workspace directory:</p>
+            <pre role="img" aria-label="A workspace directory, Workspaces/acme-shop/loyalty-points, holding worktrees of api-server and web-client, both on the branch feat/loyalty-points. Claude Code starts in the workspace directory."><code><span class="comment"># start Claude Code here:</span>
+~/Workspaces/acme-shop/loyalty-points/
+├── api-server/   <span class="comment">feat/loyalty-points</span>
+└── web-client/   <span class="comment">feat/loyalty-points</span></code></pre>
+            <p>Compared with option 1:</p>
+            <ul class="points">
+              <li><strong>Each workspace has its own checkouts.</strong> A worktree has its own <code>HEAD</code>, so checking out a branch in your usual checkout, or in another workspace, leaves this one alone. git won’t check out <code>feat/loyalty-points</code> in any other worktree while this workspace has it.</li>
+              <li><strong>Claude Code sees the whole product.</strong> Every repository is under the directory it starts in. A <code>CLAUDE.md</code> at the workspace root loads at launch, so it is the place for notes on how the repositories fit together. Each repository’s own <code>CLAUDE.md</code> and <a href="https://code.claude.com/docs/en/skills#discovery-from-parent-and-nested-directories">skills</a> load once Claude works on files in that repository.</li>
+              <li><strong>Project settings come from the workspace directory.</strong> Claude Code <a href="https://code.claude.com/docs/en/settings#where-claude-code-looks-for-each-file">reads <code>.claude/settings.json</code> from the directory it starts in</a>, so hooks and permission rules committed in a repository don’t apply to a session started at the workspace root.</li>
+            </ul>
+
+            <h3 id="in-grove">In Grove</h3>
+            <p>In Grove, a project is the folder that holds your repositories. Add it once: click the tree icon in the menu bar, open Settings, press <strong class="nowrap">Add project…</strong> and pick the folder. Then open the project and, on its <strong>Workspaces</strong> tab, press <strong class="nowrap">+ Workspace</strong>:</p>
+            <ol class="steps">
+              <li>Type a name. The branch comes from the project’s template, <code>feat/{name}</code> by default, and you can change it.</li>
+              <li>Every repository is ticked; untick the ones the feature doesn’t touch. Each starts from its own base branch, detected from <code>origin/HEAD</code> or set in the project’s settings, and the <strong>from</strong> menu next to it picks another. <strong>Fork from</strong> can start them from another workspace’s branches instead.</li>
+              <li>Press <strong>Create</strong>. Grove runs <code>git worktree add</code> in each repository, then links or copies the project’s seed files, such as <code>CLAUDE.md</code>, and runs the post-create hooks you set.</li>
+              <li>Press <strong>New Claude</strong> on the workspace. The launch sheet picks the account, model and effort, and opens Claude Code in the workspace directory, in cmux or Terminal.app.</li>
+            </ol>
+            <figure class="fig-wide">
+              <img class="shot" src="../img/grove-new-workspace.webp" width="1080" height="722" loading="lazy" decoding="async"
+                   alt="The New Workspace form: the name loyalty-points, the branch feat/loyalty-points from the template feat/{name}, Fork from set to base branches, and five repositories ticked, each with its own base branch.">
+              <figcaption>Each repository starts from its own base branch. Screenshots show made-up demo data.</figcaption>
+            </figure>
+
+            <h3 id="with-the-cli">With the <code>grove</code> command-line tool</h3>
+            <p>The <code>grove</code> command-line tool does the same from a terminal or a script. It installs with Homebrew:</p>
+            <pre><code>brew install efim0v/tap/grove-cli</code></pre>
+            <p>Then create the workspace and start Claude Code in it:</p>
+            <pre><code>grove create ~/code/acme-shop loyalty-points \
+  --repos api-server,web-client
+cd ~/Workspaces/acme-shop/loyalty-points
+claude</code></pre>
+            <p><code>grove create</code> takes the folder that holds the repositories and a workspace name. <code>--repos</code> picks repositories by folder name; without it, every repository Grove finds in the folder goes in. <code>--branch</code> sets the branch name, and <code>--from</code> stacks the new workspace on another one. The CLI uses Grove’s default layout, <code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code> on <code>feat/&lt;name&gt;</code>, and none of the app’s per-project settings, so it links no seed files and runs no hooks.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="by-hand" aria-labelledby="by-hand-title">
+        <div class="wrap">
+          <div class="prose">
+            <h2 id="by-hand-title">Doing it by hand with git</h2>
+            <p>A workspace is plain git, so you can build one without Grove. In each repository, fetch, then add a worktree on the feature branch, starting from that repository’s base branch:</p>
+            <pre><code>cd ~/code/acme-shop
+ws=~/Workspaces/acme-shop/loyalty-points
+
+git -C api-server fetch origin
+git -C api-server worktree add \
+  --no-track -b feat/loyalty-points \
+  "$ws/api-server" origin/main
+
+git -C web-client fetch origin
+git -C web-client worktree add \
+  --no-track -b feat/loyalty-points \
+  "$ws/web-client" origin/main
+
+cd "$ws"
+claude</code></pre>
+            <ul class="points">
+              <li><code>git worktree add</code> creates the missing directories, so there is no <code>mkdir</code> step.</li>
+              <li>Put each repository’s own base branch in place of <code>origin/main</code>.</li>
+              <li><code>--no-track</code> keeps git from making <code>origin/main</code> the new branch’s upstream, which it does by default when the start point is a remote-tracking branch. With that upstream, a plain <code>git push</code> refuses and suggests pushing to <code>main</code>.</li>
+              <li><code>git fetch</code> comes first because nothing else here fetches: the worktree starts from <code>origin/main</code> as your clone last saw it. Grove doesn’t fetch either; its git commands never fetch, pull or push.</li>
+            </ul>
+            <p>What Grove adds to these commands:</p>
+            <ul class="points">
+              <li>Branch names from a template, <code>feat/{name}</code> by default.</li>
+              <li>A base branch per repository, detected from <code>origin/HEAD</code> or set by hand, or another workspace’s branches, so workspaces can be stacked.</li>
+              <li>Seed files: <code>CLAUDE.md</code> or any other file in the project folder, linked or copied to the workspace root or into each repository.</li>
+              <li>A post-create hook per repository: a shell command that runs in its new worktree.</li>
+              <li>When a creation fails partway, the app offers to roll back what that run made: its worktrees and the branches it created.</li>
+              <li>Each workspace’s Claude Code sessions, across accounts, shown as running, waiting or closed.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="which" aria-labelledby="which-title">
+        <div class="wrap">
+          <div class="prose">
+            <h2 id="which-title">Which one to use</h2>
+            <table class="compare">
+              <thead>
+                <tr><th scope="col"><span class="visually-hidden">Approach</span></th><th scope="col">Gives the session</th><th scope="col">Use it for</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row"><code>--add-dir</code></th><td>More repositories, on whatever branch each checkout is on</td><td>One session at a time</td></tr>
+                <tr><th scope="row">A workspace</th><td>A worktree of each repository, all on the feature’s branch</td><td>Several features in parallel, each across repositories</td></tr>
+                <tr><th scope="row"><code>--worktree</code></th><td>A worktree of the repository you run it in, on a new branch</td><td>Parallel sessions in a single repository</td></tr>
+              </tbody>
+            </table>
+            <p>Claude Code’s own <a href="https://code.claude.com/docs/en/worktrees"><code>--worktree</code></a> starts a session in a new worktree, by default under <code>.claude/worktrees/&lt;name&gt;/</code> on a branch named <code>worktree-&lt;name&gt;</code>. If your product lives in one repository, that may be all you need:</p>
+            <pre><code>claude --worktree feature-auth</code></pre>
+            <p>For the differences in detail, see <a href="/grove/#vs-worktree">Grove workspaces vs <code>claude --worktree</code></a>.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="questions" aria-labelledby="questions-title">
+        <div class="wrap">
+          <div class="prose">
+            <h2 id="questions-title">Questions</h2>
+
+            <h3>Does every repository need the same base branch?</h3>
+            <p>No. Each repository starts from its own. In Grove it is detected from <code>origin/HEAD</code>, set per repository in the project’s settings, or picked on the New Workspace form. With the CLI, <code>--from-branch</code> sets it for one repository:</p>
+            <pre><code>grove create ~/code/acme-shop loyalty-points \
+  --from-branch api-server=develop</code></pre>
+
+            <h3>What if the feature branch already exists?</h3>
+            <p>Grove checks it out in the new worktree instead of creating it. By hand, leave out <code>-b</code> and <code>--no-track</code>, and name the branch in place of the start point:</p>
+            <pre><code>cd ~/code/acme-shop
+ws=~/Workspaces/acme-shop/loyalty-points
+git -C api-server worktree add \
+  "$ws/api-server" feat/loyalty-points</code></pre>
+            <p>Either way, git refuses if the branch is checked out in another worktree, your usual checkout included.</p>
+
+            <h3>How do I remove a workspace?</h3>
+            <p>Remove each worktree with <code>git worktree remove</code>, then the directory:</p>
+            <pre><code>cd ~/code/acme-shop
+ws=~/Workspaces/acme-shop/loyalty-points
+
+git -C api-server worktree remove "$ws/api-server"
+git -C web-client worktree remove "$ws/web-client"
+rmdir "$ws"</code></pre>
+            <p>git refuses to remove a worktree with modified or untracked files unless you add <code>--force</code>, and <code>rmdir</code> stops if anything else is left, such as a seeded <code>CLAUDE.md</code>. The branches stay until you delete them. Grove has no button for this: a workspace is made of ordinary worktrees and branches in your repositories.</p>
+            <p>If a worktree’s directory was deleted first, <code>git worktree prune</code> clears what git still records about it:</p>
+            <pre><code>git -C ~/code/acme-shop/api-server worktree prune</code></pre>
+
+            <h3>Does this work with agents other than Claude Code?</h3>
+            <p>A workspace is an ordinary directory, so you can start any command-line agent in it yourself. Grove itself starts, lists and moves Claude Code sessions only.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="see-also" aria-labelledby="see-also-title">
+        <div class="wrap">
+          <div class="prose">
+            <h2 id="see-also-title">See also</h2>
+            <ul class="points">
+              <li><a href="/grove/#vs-worktree">Grove workspaces vs <code>claude --worktree</code></a></li>
+              <li><a href="/grove/#cli">The <code>grove</code> CLI: multi-repo worktrees from a terminal or a script</a></li>
+              <li><a href="/grove/move-session-to-another-account/">Continue a Claude Code session on another account</a></li>
+              <li><a href="https://efim0v.github.io/brow/">Brow — Claude Code usage limits in the MacBook notch</a></li>
+            </ul>
+            <p class="small">Claude Code behaviour on this page was checked on 13 October 2026 against Anthropic’s documentation: the <a href="https://code.claude.com/docs/en/cli-reference">CLI reference</a>, <a href="https://code.claude.com/docs/en/permissions#working-directories">working directories</a>, <a href="https://code.claude.com/docs/en/memory#load-from-additional-directories">CLAUDE.md in additional directories</a>, <a href="https://code.claude.com/docs/en/settings-reference#permissions-additionaldirectories"><code>permissions.additionalDirectories</code></a> and <a href="https://code.claude.com/docs/en/worktrees">worktrees</a>. git behaviour is from the <a href="https://git-scm.com/docs/git-worktree"><span class="nowrap">git-worktree</span> manual</a>.</p>
+          </div>
+        </div>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <ul>
+        <li><a href="/grove/">Grove home</a></li>
+        <li><a href="https://github.com/efim0v/grove">Source code</a></li>
+        <li><a href="https://github.com/efim0v/grove/releases">Releases</a></li>
+        <li><a href="https://github.com/efim0v/grove/issues">Issues</a></li>
+        <li><a href="https://github.com/efim0v/grove/blob/main/LICENSE">License: GPL-3.0</a></li>
+        <li><a href="https://efim0v.github.io/brow/">Brow</a></li>
+      </ul>
+      <p>Grove is made by <a href="https://github.com/efim0v">Artem Efimov</a>. It is an independent tool, not affiliated with or endorsed by Anthropic. Screenshots show made-up demo data.</p>
+    </div>
+  </footer>
+</body>
+</html>
