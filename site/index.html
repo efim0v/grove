@@ -367,6 +367,7 @@
           <li class="optional"><a href="#workspaces">Workspaces</a></li>
           <li class="optional"><a href="#sessions">Sessions</a></li>
           <li class="optional"><a href="#compare">Compare</a></li>
+          <li class="optional"><a href="#faq">FAQ</a></li>
           <li><a href="#install">Install</a></li>
           <li class="optional"><a href="#on-your-mac">Privacy</a></li>
           <li><a href="https://github.com/efim0v/grove">GitHub</a></li>
@@ -637,6 +638,64 @@ grove doctor</code></pre>
             <li>A terminal built around agents: cmux, which Grove opens sessions in.</li>
           </ul>
           <p>Grove fits a product split across several repositories, run from the Mac menu bar, with Claude Code sessions across accounts.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" aria-labelledby="faq-title">
+      <div class="wrap">
+        <div class="prose">
+          <h2 id="faq-title">Questions people ask about Grove</h2>
+
+          <h3>How do I run several Claude Code sessions at once without them colliding?</h3>
+          <p>Give each task its own working copy, a git worktree; Anthropic <a href="https://code.claude.com/docs/en/worktrees">documents this</a> for parallel sessions. For a product split across repositories, a Grove workspace holds a worktree of each repository on one branch. Start Claude Code in that directory.</p>
+
+          <h3>Can Claude Code work on multiple repositories at once?</h3>
+          <p><a href="https://code.claude.com/docs/en/cli-reference"><code>--add-dir</code></a> gives a session access to more directories, and <code>permissions.additionalDirectories</code> makes that persistent. It grants file access, and Claude Code doesn’t pick up most <code>.claude/</code> configuration from those directories. A Grove workspace puts every repository, already on the feature’s branch, under the directory Claude Code starts in.</p>
+
+          <h3>How is a Grove workspace different from <code>claude --worktree</code>?</h3>
+          <p>See <a href="#vs-worktree">the table above</a>. In short, <code>--worktree</code> covers one repository, and a workspace covers every repository you pick, on one branch.</p>
+
+          <h3>Can I choose the base branch, branch name and folder for each workspace?</h3>
+          <p>Yes. Each repository has its own base branch, branch names come from a template, and the workspace root is set by a template.</p>
+
+          <h3>How do <code>CLAUDE.md</code> and other shared files get into each workspace?</h3>
+          <p>List them as seed files in the project’s settings. Grove links or copies each one into every new workspace, at its root or into each repository.</p>
+
+          <h3>How do I continue a Claude Code session under another account?</h3>
+          <ul class="points">
+            <li><strong>Resume as…</strong> continues it under another account without copying anything.</li>
+            <li><strong>Migrate to…</strong> makes a full copy.</li>
+            <li><strong>Share</strong> moves it into the shared store.</li>
+          </ul>
+          <p>Grove refuses a move that would give a session two writers.</p>
+
+          <h3>Will I lose session history when I switch accounts?</h3>
+          <p>Linked accounts share their session folders through <code>~/.claude</code>, so a session started under one linked account is visible to the others. Credentials, settings and plugins stay with each account.</p>
+
+          <h3>Why do old Claude Code sessions disappear, and can I keep them?</h3>
+          <p>Claude Code deletes transcripts older than <code>cleanupPeriodDays</code>, 30 days by default. Grove’s <a href="#transcripts">transcript mirror</a> keeps them for up to 90 days and 500&nbsp;MB by default, and you can turn it off.</p>
+
+          <h3>How many Claude Code sessions can I run at once?</h3>
+          <p>Grove sets no limit of its own. Every session counts toward the usage limits of the account it runs under. Grove keeps each session in its workspace and shows which are running or waiting.</p>
+
+          <h3>Do I need cmux?</h3>
+          <p>It’s recommended, not required. The launch sheet can open a session in Terminal.app; the other buttons that start or resume a session, such as <strong>Resume</strong> and <strong>Resume as…</strong>, open it in cmux. A workspace is an ordinary directory, so you can also start Claude Code in it from any terminal.</p>
+
+          <h3>Does Grove work with Codex or other agents?</h3>
+          <p>A workspace is an ordinary directory, so you can start any CLI agent in it yourself. Grove starts, lists and moves Claude Code sessions only.</p>
+
+          <h3>Can I resume a session from another directory?</h3>
+          <p>Yes. Grove lists the sessions of every project and resumes each one with <code>claude --resume</code> in the session’s own directory.</p>
+
+          <h3>Why does macOS block the first launch?</h3>
+          <p>Grove is signed ad hoc and not notarized by Apple. Use <strong>Open Anyway</strong> in System Settings → Privacy &amp; Security once; <a href="#first-launch">First launch</a> has the steps.</p>
+
+          <h3>Which Macs does Grove run on?</h3>
+          <p>Macs with Apple silicon, on macOS 26 or later.</p>
+
+          <h3>Is Grove free and open source?</h3>
+          <p>Yes, under the GNU GPL v3. Version 0.2.0 and earlier were released under the MIT License.</p>
         </div>
       </div>
     </section>
