@@ -157,7 +157,7 @@ brew install --cask efim0v/tap/grove    # the menu-bar app
 brew install efim0v/tap/grove-cli       # the grove command-line tool, if you want it
 ```
 
-Or download **[Grove.zip](https://github.com/efim0v/grove/releases/latest/download/Grove.zip)** from the [latest release](https://github.com/efim0v/grove/releases/latest), unzip it and move `Grove.app` to `/Applications`. The release also has `grove-cli.zip`, the command-line tool, and `SHA256SUMS.txt`; check the downloads with `shasum -a 256 -c SHA256SUMS.txt`.
+Or download **[Grove.zip](https://github.com/efim0v/grove/releases/latest/download/Grove.zip)** from the [latest release](https://github.com/efim0v/grove/releases/latest), unzip it and move `Grove.app` to `/Applications`. The release also has `grove-cli.zip`, the command-line tool, and `SHA256SUMS.txt`; check the downloads with `shasum -a 256 -c --ignore-missing SHA256SUMS.txt`.
 
 Either way, the build is signed ad hoc and is not notarized by Apple, so macOS blocks the first launch. Open **System Settings → Privacy & Security**, find the message about Grove and press **Open Anyway** — or clear the quarantine flag yourself:
 
