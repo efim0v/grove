@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - An Install section in the README for the prebuilt `Grove.zip`. It covers the first launch, which macOS blocks because the build is not notarized, and names the release's other two files: `grove-cli.zip` with the command-line tool, and `SHA256SUMS.txt` for checking the downloads. A download link sits at the top of the README.
 - `grove --version` and `grove version`, which print the version.
+- Homebrew: `brew install --cask efim0v/tap/grove` installs the app and `brew install efim0v/tap/grove-cli` the command-line tool, from the [efim0v/homebrew-tap](https://github.com/efim0v/homebrew-tap) tap. As with the zip, macOS blocks the app's first launch.
+- A section in the README on how Grove's workspaces differ from Claude Code's own `claude --worktree`.
+- An Uninstall section in the README: giving each account its status line back, removing the app and the files and folders Grove creates, and turning linked accounts back into separate folders.
+- The README's "What Grove does on your machine" now also says that transcripts deleted by Claude Code's own `cleanupPeriodDays` cleanup come back from the transcript mirror until they are 90 days old by default, and that the mirror can be turned off; that Grove marks Claude Code's first-run setup as done in account folders other than `~/.claude`; and that your own status line keeps working behind Grove's wrapper.
+- The README in Russian (`README.ru.md`) and Simplified Chinese (`README.zh-CN.md`), with a language switcher at the top of all three READMEs.
+- A landing page at [efim0v.github.io/grove](https://efim0v.github.io/grove/), published from `site/` with GitHub Pages.
+- A contributing guide (`CONTRIBUTING.md`), a code of conduct (the Contributor Covenant 2.1), a security policy (`SECURITY.md`) that explains how to report a vulnerability privately, issue forms for bug reports and feature requests, and a pull request template.
+- Continuous integration: GitHub Actions builds Grove on macOS 26 for every pull request and every push to `main`, and runs the tests in both debug and release builds.
 
 ### Changed
 
@@ -22,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The storage diagram in the README now renders on GitHub. Before, GitHub showed an error in its place: one of the diagram's subgraphs had the id `default`, which is a reserved word in Mermaid.
 - `grove doctor` no longer reports git as found when the `/usr/bin/git` shim has no developer directory to run git from. The shim then exits 1 and prints nothing on stdout, which `doctor` used to show as `✓ git  (version unknown)`. A tool whose `--version` fails now counts as missing.
+- The README no longer says that cmux is the only way to start a session. cmux is recommended; the launch sheet can open a session in Terminal.app instead, and the README says which buttons go through the sheet.
+- `Scripts/test.sh` prints `BUILD FAILED` and exits with status 1 when the build fails. Before, it went on to run the test bundles left from an earlier build and could exit 0.
+- `Scripts/coverage.sh` finds the test bundles that Swift 6.4 builds, under either of SwiftPM's build systems, and prints its coverage report. Before, it stopped right after the tests without printing any numbers.
 
 ## [0.2.0] - 2026-10-05
 
