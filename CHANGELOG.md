@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-14
+
+The first prebuilt Grove since 0.2.0. It also contains everything listed under 0.2.1.
+
+### Fixed
+
+- Grove no longer rewrites a `settings.json` or `.claude.json` that doesn't parse, such as one with a `//` comment or one caught half-written by another program. Before, the file kept only what Grove wrote: `settings.json` lost its permissions, hooks, env and model, and `.claude.json` lost the account's sign-in, MCP servers and project trust. Grove now leaves such a file as it is and shows or logs an error ([#3](https://github.com/efim0v/grove/issues/3), [#4](https://github.com/efim0v/grove/issues/4)).
+- Writing `settings.json` and `.claude.json` now goes through Claude Code's lock file, so a change Claude Code makes at the same moment isn't lost. A symlinked file stays a symlink and its target gets the change, the file keeps its permissions, and `/` is no longer written as `\/` ([#5](https://github.com/efim0v/grove/issues/5)).
+- Resume as… refuses a session that is still running as a plain `claude` (one started without `--resume`), as Share already did. Before, it moved the transcript of the running session, and whatever the session wrote afterwards was lost ([#25](https://github.com/efim0v/grove/issues/25)).
+- A workspace created from a base branch that exists only on `origin`, through `--from-branch` or a base-branch override, left that repository's worktree on a new local copy of the base branch instead of the workspace branch, so commits went to the base branch. Grove now starts from `origin/<branch>`, checks which branch the new worktree is on, and rolls back if it's the wrong one ([#26](https://github.com/efim0v/grove/issues/26)).
+
 ## [0.2.1] - 2026-10-13
 
 A source release: Brow 0.2.1 takes `GroveCore` from this tag. There is no `Grove.zip` or `grove-cli.zip` for 0.2.1; the next prebuilt Grove is 0.2.2.
@@ -54,6 +65,7 @@ First public release: git-worktree workspaces for running parallel Claude Code s
 - The `grove` command-line tool: `scan`, `workspaces`, `sessions`, `create`, `graph` and `doctor`, each with `--json`.
 - Prebuilt downloads for macOS 26 or later on Apple silicon: `Grove.zip` with the app and `grove-cli.zip` with the command-line tool, plus `SHA256SUMS.txt` to verify them. The app is signed ad hoc and not notarized.
 
-[Unreleased]: https://github.com/efim0v/grove/compare/0.2.1...HEAD
+[Unreleased]: https://github.com/efim0v/grove/compare/0.2.2...HEAD
+[0.2.2]: https://github.com/efim0v/grove/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/efim0v/grove/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/efim0v/grove/releases/tag/0.2.0
