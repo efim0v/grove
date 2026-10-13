@@ -289,7 +289,7 @@
     .steps, details ol { padding-left: 1.5em; }
 
     /* Terms: names on the left, what they do on the right */
-    .terms { margin: 24px 0 0; border-bottom: 1px solid var(--rule); }
+    .terms { margin: 24px 0; border-bottom: 1px solid var(--rule); }
     .terms > div {
       display: grid; grid-template-columns: 10rem minmax(0, 1fr); column-gap: 24px;
       padding: 12px 0 13px; border-top: 1px solid var(--rule);
@@ -553,6 +553,7 @@
               <dd>Grove не&nbsp;выполнит перенос, после которого в&nbsp;сессию писали&nbsp;бы два процесса сразу: например, не&nbsp;возобновит под одним аккаунтом сессию, которая ещё запущена под другим.</dd>
             </div>
           </dl>
+          <p>По&nbsp;шагам это описано в&nbsp;руководстве «<a href="/grove/move-session-to-another-account/">Как продолжить сессию Claude Code под другим аккаунтом</a>» (на&nbsp;английском).</p>
         </div>
         <figure class="fig-accounts">
           <img class="shot" src="../img/grove-accounts.webp" width="1120" height="1362" loading="lazy" decoding="async"
@@ -685,7 +686,7 @@ grove doctor</code></pre>
           <p>Дайте каждой задаче свою рабочую копию&nbsp;— git worktree; Anthropic <a href="https://code.claude.com/docs/en/worktrees">описывает этот способ</a> для параллельных сессий. Если продукт разнесён по&nbsp;нескольким репозиториям, рабочее пространство Grove собирает worktree каждого из&nbsp;них на&nbsp;одной ветке. Запустите Claude Code в&nbsp;этом каталоге.</p>
 
           <h3>Может&nbsp;ли Claude Code работать с&nbsp;несколькими репозиториями сразу?</h3>
-          <p>Флаг <a href="https://code.claude.com/docs/en/cli-reference"><code class="nowrap">--add-dir</code></a> даёт сессии доступ к&nbsp;дополнительным каталогам, а&nbsp;<code>permissions.additionalDirectories</code> делает этот доступ постоянным. Так открывается доступ к&nbsp;файлам, но&nbsp;большую часть конфигурации <code>.claude/</code> из&nbsp;этих каталогов Claude Code не&nbsp;подхватывает. Рабочее пространство Grove собирает все репозитории, уже переключённые на&nbsp;ветку фичи, в&nbsp;том каталоге, где запускается Claude Code.</p>
+          <p>Флаг <a href="https://code.claude.com/docs/en/cli-reference"><code class="nowrap">--add-dir</code></a> даёт сессии доступ к&nbsp;дополнительным каталогам, а&nbsp;<code>permissions.additionalDirectories</code> делает этот доступ постоянным. Так открывается доступ к&nbsp;файлам, но&nbsp;большую часть конфигурации <code>.claude/</code> из&nbsp;этих каталогов Claude Code не&nbsp;подхватывает. Рабочее пространство Grove собирает все репозитории, уже переключённые на&nbsp;ветку фичи, в&nbsp;том каталоге, где запускается Claude Code. Подробнее&nbsp;— в&nbsp;руководстве «<a href="/grove/multiple-repositories/">Как запустить Claude Code сразу в&nbsp;нескольких репозиториях</a>» (на&nbsp;английском).</p>
 
           <h3>Чем рабочее пространство Grove отличается от&nbsp;<code class="nowrap">claude --worktree</code>?</h3>
           <p>Смотрите <a href="#vs-worktree">таблицу выше</a>. Если коротко, <code class="nowrap">--worktree</code> работает с&nbsp;одним репозиторием, а&nbsp;рабочее пространство&nbsp;— со&nbsp;всеми выбранными вами репозиториями сразу, на&nbsp;одной ветке.</p>
@@ -702,7 +703,7 @@ grove doctor</code></pre>
             <li><strong>Migrate to…</strong> делает полную копию.</li>
             <li><strong>Share</strong> переносит её в&nbsp;общее хранилище.</li>
           </ul>
-          <p>Grove не&nbsp;выполнит перенос, после которого в&nbsp;одну сессию писали&nbsp;бы два процесса.</p>
+          <p>Grove не&nbsp;выполнит перенос, после которого в&nbsp;одну сессию писали&nbsp;бы два процесса. Подробнее&nbsp;— в&nbsp;руководстве «<a href="/grove/move-session-to-another-account/">Как продолжить сессию Claude Code под другим аккаунтом</a>» (на&nbsp;английском).</p>
 
           <h3>Пропадёт&nbsp;ли история сессий, если сменить аккаунт?</h3>
           <p>Связанные аккаунты пользуются общими папками сессий через <code>~/.claude</code>, поэтому сессия, начатая под одним связанным аккаунтом, видна остальным. Учётные данные, настройки и&nbsp;плагины у&nbsp;каждого аккаунта свои.</p>

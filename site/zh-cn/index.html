@@ -299,7 +299,7 @@
     .steps, details ol { padding-left: 1.5em; }
 
     /* Terms: names on the left, what they do on the right */
-    .terms { margin: 24px 0 0; border-bottom: 1px solid var(--rule); }
+    .terms { margin: 24px 0; border-bottom: 1px solid var(--rule); }
     .terms > div {
       display: grid; grid-template-columns: 10rem minmax(0, 1fr); column-gap: 24px;
       padding: 12px 0 13px; border-top: 1px solid var(--rule);
@@ -573,6 +573,7 @@
               <dd>如果某次迁移会让一个会话同时有两个写入方，例如在一个账号下恢复仍在另一个账号下运行的会话，Grove 会拒绝执行。</dd>
             </div>
           </dl>
+          <p>具体步骤见指南《<a href="/grove/move-session-to-another-account/">切换账号后继续同一个 Claude Code 会话</a>》（英文）。</p>
         </div>
         <figure class="fig-accounts">
           <img class="shot" src="../img/grove-accounts.webp" width="1120" height="1362" loading="lazy" decoding="async"
@@ -705,7 +706,7 @@ grove doctor</code></pre>
           <p>给每个任务一份独立的工作副本，也就是一个 git worktree；Anthropic 在<a href="https://code.claude.com/docs/en/worktrees">文档</a>中为并行会话介绍的就是这种做法。如果产品拆分在多个仓库中，Grove 工作区会为每个仓库各放一个 worktree，全部在同一个分支上。在这个目录中启动 Claude Code 即可。</p>
 
           <h3>Claude Code 能同时处理多个仓库吗？</h3>
-          <p><a href="https://code.claude.com/docs/en/cli-reference"><code>--add-dir</code></a> 能让会话访问更多目录，<code>permissions.additionalDirectories</code> 则让这个设置持久生效。它授予的是文件访问权限，而且 Claude Code 不会读取这些目录中的大部分 <code>.claude/</code> 配置。Grove 工作区则把每个仓库（已经切到该功能的分支）都放在 Claude Code 启动的目录下。</p>
+          <p><a href="https://code.claude.com/docs/en/cli-reference"><code>--add-dir</code></a> 能让会话访问更多目录，<code>permissions.additionalDirectories</code> 则让这个设置持久生效。它授予的是文件访问权限，而且 Claude Code 不会读取这些目录中的大部分 <code>.claude/</code> 配置。Grove 工作区则把每个仓库（已经切到该功能的分支）都放在 Claude Code 启动的目录下。详见指南《<a href="/grove/multiple-repositories/">让 Claude Code 同时处理多个仓库</a>》（英文）。</p>
 
           <h3>Grove 工作区和 <code>claude --worktree</code> 有什么区别？</h3>
           <p>见<a href="#vs-worktree">上面的表格</a>。简单来说，<code>--worktree</code> 只涉及一个仓库，而工作区涵盖你选中的每个仓库，并且都在同一个分支上。</p>
@@ -722,7 +723,7 @@ grove doctor</code></pre>
             <li><strong>Migrate to…</strong> 把会话完整复制过去。</li>
             <li><strong>Share</strong> 把会话移入共享存储。</li>
           </ul>
-          <p>如果某次迁移会让一个会话有两个写入方，Grove 会拒绝执行。</p>
+          <p>如果某次迁移会让一个会话有两个写入方，Grove 会拒绝执行。详见指南《<a href="/grove/move-session-to-another-account/">切换账号后继续同一个 Claude Code 会话</a>》（英文）。</p>
 
           <h3>切换账号会丢失会话历史吗？</h3>
           <p>关联账号通过 <code>~/.claude</code> 共享会话文件夹，所以在一个关联账号下启动的会话，其他关联账号也能看到。凭据、设置和插件仍由各个账号分别保留。</p>
