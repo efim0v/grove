@@ -75,7 +75,7 @@ Claude Code 在这个外层目录中启动。它实际上得到了整个项目�
   <img alt="代码统计" src="docs/screenshots/grove-code-stats.png" width="420" />
 </p>
 
-另外还有命令行工具 `grove`，提供 `scan`、`workspaces`、`sessions`、`create`、`graph` 和 `doctor` 命令，每个命令都支持 `--json`。
+另外还有命令行工具 `grove`，提供 `scan`、`workspaces`、`sessions`、`create`、`graph` 和 `doctor` 命令，每个命令都支持 `--json`。`grove --version` 会打印版本号；`grove doctor` 在无法运行 git 或 `claude` 时以退出码 1 退出。
 
 ## 为什么不用 Claude Code 自带的 worktree？
 

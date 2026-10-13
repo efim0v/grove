@@ -75,7 +75,7 @@ Claude Code запускается в этом общем каталоге. По
   <img alt="Статистика кода" src="docs/screenshots/grove-code-stats.png" width="420" />
 </p>
 
-Есть и утилита командной строки `grove` с командами `scan`, `workspaces`, `sessions`, `create`, `graph` и `doctor`, и у каждой есть флаг `--json`.
+Есть и утилита командной строки `grove` с командами `scan`, `workspaces`, `sessions`, `create`, `graph` и `doctor`, и у каждой есть флаг `--json`. `grove --version` выводит версию утилиты, а `grove doctor` завершается с кодом 1, если не может запустить git или `claude`.
 
 ## Почему не встроенные worktree Claude Code?
 
