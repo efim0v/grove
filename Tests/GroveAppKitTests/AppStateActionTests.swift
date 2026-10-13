@@ -579,6 +579,28 @@ final class AppStateActionTests: XCTestCase {
         XCTAssertTrue(args[commandIndex + 1].contains("--resume 'sess-same-live'"))
     }
 
+    /// The relaunch sheet's account switch is the other way into the same move, so
+    /// a claude running in the session's folder blocks it too (#25).
+    func testConfirmLaunchAccountSwitchBlockedWhenClaudeIsLiveInTheSessionFolder() async throws {
+        let cwd = "/ws/feat-x"
+        let id = "sess-sheet"
+        let fixture = try saveResumeAsFixture("sheet", cwd: cwd, sessionId: id)
+        let runner = ScriptedRunner(responses: ["ping": .ok("PONG")])
+        let state = makeState(runner: runner)
+        state.canonicalDirOverride = fixture.canonicalDir.path
+        state.allLiveProcessesOverride = [LiveProcess(pid: 4246, sessionId: "", cwd: cwd,
+                                                      status: "idle", accountName: "")]
+
+        await state.confirmLaunch(LaunchRequest(sessionId: id, cwd: cwd, title: "feat-x",
+                                                account: fixture.target.name, originAccount: "owner"))
+
+        let error = try XCTUnwrap(state.actionError)
+        XCTAssertTrue(error.lowercased().contains("live"), "got: \(error)")
+        XCTAssertTrue(runner.calls(startingWith: "new-workspace").isEmpty)
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: fixture.ownerProjects.path),
+                     "the owner's folder must not be linked away while a claude writes in it")
+    }
+
     // MARK: - model/effort defaults + relaunch
 
     func testSetProjectModelAndEffortPersist() async throws {
