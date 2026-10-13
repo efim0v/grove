@@ -271,7 +271,7 @@
 
         <h3 id="resume-as">Resume as…</h3>
         <ol class="steps">
-          <li>Exit Claude Code in the session, for example with <code>/exit</code>. Grove won’t resume a session under one account while it runs under another; see <a href="#one-writer">one writer per session</a>.</li>
+          <li>Exit Claude Code in the session, for example with <code>/exit</code>, so that only one process writes it (<a href="#one-writer">one writer per session</a>).</li>
           <li>On the project’s <strong>Claude</strong> tab, open the chevron beside the session’s <strong>Resume</strong> and pick the account.</li>
           <li>Grove links the accounts if they aren’t linked yet, then opens the session in a new cmux workspace, in the session’s directory.</li>
         </ol>
@@ -280,7 +280,7 @@
           <p class="label">In the session’s directory, for the account in <code>~/.claude-accounts/work</code></p>
           <pre><code>CLAUDE_CONFIG_DIR=~/.claude-accounts/work claude --resume &lt;session-id&gt;</code></pre>
         </div>
-        <p>For the default account it leaves <code>CLAUDE_CONFIG_DIR</code> out. It adds <code>--model</code> and <code>--effort</code> when the project or the account has a default, and <code>BROWSER=…</code> when Brow is installed. Before it starts Claude Code in a folder other than <code>~/.claude</code>, it sets <code>hasCompletedOnboarding</code> in that folder’s <code>.claude.json</code>, so the session doesn’t open Claude Code’s first-run setup.</p>
+        <p>For the default account it leaves <code>CLAUDE_CONFIG_DIR</code> out. It adds <code>--model</code> and <code>--effort</code> when the project or the account has a default, <code>--dangerously-skip-permissions</code> when the project has <strong>Skip permissions</strong> on, and <code>BROWSER=…</code> when Brow is installed. Before it starts Claude Code in a folder other than <code>~/.claude</code>, it sets <code>hasCompletedOnboarding</code> in that folder’s <code>.claude.json</code>, so the session doesn’t open Claude Code’s first-run setup.</p>
         <p><strong>Resume as…</strong> opens the session in cmux. For Terminal.app, press the gear beside the session instead: the launch sheet has <strong>Account</strong> and <strong>Open in</strong>, and another account chosen there goes through the same linking.</p>
         <p><strong>Resume as…</strong> needs the default account, <code>~/.claude</code>, among Grove’s accounts, because its folder is the shared store.</p>
 
@@ -329,10 +329,10 @@
         <h2 id="one-writer-title">One writer per session</h2>
         <p>A session is one transcript. Claude Code’s documentation warns that if you resume the same session in two terminals without forking, messages from both interleave into one transcript (<a href="https://code.claude.com/docs/en/sessions#branch-a-session">Branch a session</a>). Grove refuses the moves that could do that across accounts:</p>
         <ul class="points">
-          <li><strong>Resume as…</strong> checks whether the session is running under another account. If it is, Grove starts nothing and asks you to close it first.</li>
+          <li><strong>Resume as…</strong> checks whether the session is running under another account. If it finds it running, Grove starts nothing and asks you to close it first.</li>
           <li><strong>Share</strong> refuses a session that is running, because linking moves its files.</li>
         </ul>
-        <p>So exit Claude Code in the session before you move it.</p>
+        <p>The <strong>Resume as…</strong> check looks for the session’s ID among running Claude Code processes, so it can miss a session that was started as a new one rather than resumed. Exit Claude Code in the session before you move it.</p>
       </section>
 
       <section id="brow" aria-labelledby="brow-title">
