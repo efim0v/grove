@@ -225,7 +225,7 @@
         <h1>Continue a Claude Code session on another account</h1>
         <p class="byline">By <a href="https://github.com/efim0v" rel="author">Artem Efimov</a> · Published <time datetime="2026-10-13">13 October 2026</time></p>
         <p class="lead">When one of your Claude accounts has used up its limit, a Claude Code session can carry on under another account, with its history. Grove has three ways to do it: <strong>Resume as…</strong>, <strong>Migrate to…</strong> and <strong>Share</strong>.</p>
-        <p>Switching models doesn’t help with a session or weekly limit: it covers every model, and Claude Code’s message says when it resets (<a href="https://code.claude.com/docs/en/costs#when-a-developer-asks-about-a-limit">Anthropic on usage limits</a>). This guide shows where Claude Code keeps each account’s sessions, what each of Grove’s moves changes on disk, and what Grove refuses to do.</p>
+        <p>Switching models doesn’t help with a session or weekly limit: it covers every model, and Claude Code’s message says when it resets (<a href="https://code.claude.com/docs/en/costs#when-a-developer-asks-about-a-limit">Anthropic on usage limits</a>).</p>
       </header>
 
       <section id="where-sessions-live" aria-labelledby="where-title">
@@ -245,7 +245,7 @@
           <p class="label">List the work account’s project folders</p>
           <pre><code>ls ~/.claude-accounts/work/projects</code></pre>
         </div>
-        <p>Each folder has its own session history, so another account doesn’t see this session until its files are shared with that account’s folder or copied into it. Grove does one or the other.</p>
+        <p>Each folder has its own session history, so another account doesn’t see a session until its files are shared with that account’s folder or copied into it. Grove does one or the other.</p>
       </section>
 
       <section id="three-ways" aria-labelledby="three-ways-title">
@@ -287,7 +287,7 @@
         <p><strong>Resume as…</strong> needs the default account, <code>~/.claude</code>, among Grove’s accounts, because its folder is the shared store.</p>
 
         <h3 id="migrate-to">Migrate to…</h3>
-        <p><strong>Migrate to…</strong> reads the source account and writes to the target. Into the target account’s folder it copies:</p>
+        <p><strong>Migrate to…</strong> copies into the target account’s folder:</p>
         <ul class="points">
           <li>the transcript, <code>&lt;session-id&gt;.jsonl</code>, and the folder of the same name beside it, if there is one;</li>
           <li>the project’s auto memory, file by file, skipping files the target already has;</li>
@@ -339,7 +339,7 @@
 
       <section id="brow" aria-labelledby="brow-title">
         <h2 id="brow-title">Pair it with Brow</h2>
-        <p>Grove leaves usage limits to Brow. <a href="https://efim0v.github.io/brow/">Brow — Claude Code usage limits in the MacBook notch</a> shows, for each account, the 5-hour limit, the weekly limit and any model-specific weekly limit, with the time until each resets. Brow tells you which account has room; Grove moves the session there.</p>
+        <p>Grove leaves usage limits to its companion app, <a href="https://efim0v.github.io/brow/">Brow — Claude Code usage limits in the MacBook notch</a>. For each account, Brow shows the 5-hour limit, the weekly limit and any model-specific weekly limit, with the time until each resets. Brow tells you which account has room; Grove moves the session there.</p>
         <p>When Brow is installed, Grove passes Brow’s browser router to every session it starts, as <code>BROWSER=…</code>. If a session asks you to sign in again, the page opens in that account’s own browser profile. Separate profiles need Chrome, Chromium, Brave or Edge.</p>
       </section>
 
@@ -366,7 +366,8 @@ find file-history tasks session-env projects -maxdepth 1 -type l |
     rm "$link" &amp;&amp; cp -R "$target" "$link"
   done</code></pre>
         </div>
-        <p>If you keep Grove, it still marks the account <strong>shared</strong>, and the <strong>Accounts</strong> screen reports its folders as not linked. Press <strong>Remove</strong> on the account to clear that: it changes only Grove’s list, and the next time Grove starts, it adds the signed-in folder back as an unlinked account. Look through <code>grove-backup/</code> before you delete it.</p>
+        <p><code>grove-backup/</code> in the account’s folder holds what linking set aside. Look through it before you delete it.</p>
+        <p>If you keep Grove, it still marks the account <strong>shared</strong>, and the <strong>Accounts</strong> screen reports its folders as not linked. Press <strong>Remove</strong> on the account to clear that: it changes only Grove’s list, and the next time Grove starts, it adds the signed-in folder back as an unlinked account.</p>
 
         <p class="small">Grove is free and open source, for macOS 26 or later on Apple silicon: <a href="/grove/#install">install Grove</a>. Everything else it changes in Claude Code’s folders is listed under <a href="/grove/#on-your-mac">What Grove changes on your Mac</a>. For the workspaces themselves, see <a href="/grove/multiple-repositories/">Run Claude Code across multiple repositories</a>.</p>
       </section>
