@@ -1,5 +1,7 @@
 [English](README.md) · Русский · [简体中文](README.zh-CN.md)
 
+Сайт: [efim0v.github.io/grove/ru](https://efim0v.github.io/grove/ru/)
+
 > Это перевод [английского README](README.md). Английская версия основная и может быть новее перевода; если тексты расходятся, ориентируйтесь на неё.
 
 # Grove — рабочие пространства на git worktree для параллельных сессий Claude Code
@@ -193,10 +195,10 @@ xattr -dr com.apple.quarantine /Applications/Grove.app
    - `grove-backup/` в папке аккаунта: то, что Grove отложил при связывании. Просмотрите содержимое, прежде чем удалять.
    - `~/Library/Application Support/Grove/`: `config.json`, скрипты-обёртки в `bin/` и статистика кода в `stats/`. Если продолжаете пользоваться Brow, оставьте `oauth-usage-ledger.json` — это файл Brow. Команда `defaults delete dev.artemefimov.grove3` удаляет настройки Grove.
 
-4. **При желании отвяжите аккаунты.** У связанного аккаунта `file-history`, `tasks` и `session-env`, а также `projects/<workspace>` каждого общего рабочего пространства — это символические ссылки внутрь `~/.claude`, и без Grove они продолжают работать. Чтобы у аккаунта снова были собственные копии, выполните следующее, пока этот аккаунт не использует ни одна сессия Claude Code:
+4. **При желании отвяжите аккаунты.** У связанного аккаунта `file-history`, `tasks` и `session-env`, а также `projects/<workspace>` каждого общего рабочего пространства — это символические ссылки внутрь `~/.claude`, и без Grove они продолжают работать. Чтобы у аккаунта снова были собственные копии, выполните следующее, пока этот аккаунт не использует ни одна сессия Claude Code; вместо `~/.claude-accounts/work` подставьте папку своего аккаунта:
 
    ```sh
-   cd ~/.claude-accounts/work    # the account's folder
+   cd ~/.claude-accounts/work
    find file-history tasks session-env projects -maxdepth 1 -type l | while read -r link; do
      target=$(readlink "$link")
      rm "$link" && cp -R "$target" "$link"

@@ -1,8 +1,10 @@
 [English](README.md) · [Русский](README.ru.md) · 简体中文
 
+网站：[efim0v.github.io/grove/zh-cn](https://efim0v.github.io/grove/zh-cn/)
+
 > 本文是[英文 README](README.md) 的译文。英文版可能比译文更新，两者不一致时以英文版为准。
 
-# Grove：面向并行 Claude Code 会话的 git worktree 工作区
+# Grove：面向并行 Claude Code 会话的多仓库 git worktree 工作区
 
 [![CI](https://github.com/efim0v/grove/actions/workflows/ci.yml/badge.svg)](https://github.com/efim0v/grove/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/efim0v/grove)](https://github.com/efim0v/grove/releases/latest)
@@ -193,10 +195,10 @@ xattr -dr com.apple.quarantine /Applications/Grove.app
    - 账号文件夹中的 `grove-backup/`：关联时被挪开的内容。删除前请先看一遍。
    - `~/Library/Application Support/Grove/`：`config.json`、`bin/` 中的包装脚本，以及 `stats/` 中的代码统计。如果你还要继续用 Brow，请保留 `oauth-usage-ledger.json`，它属于 Brow。`defaults delete dev.artemefimov.grove3` 会删除 Grove 的偏好设置。
 
-4. **如有需要，解除账号关联**。已关联账号的 `file-history`、`tasks`、`session-env`，以及每个共享工作区的 `projects/<workspace>`，都是指向 `~/.claude` 内部的符号链接，没有 Grove 也能继续使用。要让某个账号重新拥有自己的副本，请在没有任何 Claude Code 会话使用该账号时运行：
+4. **如有需要，解除账号关联**。已关联账号的 `file-history`、`tasks`、`session-env`，以及每个共享工作区的 `projects/<workspace>`，都是指向 `~/.claude` 内部的符号链接，没有 Grove 也能继续使用。要让某个账号重新拥有自己的副本，请在没有任何 Claude Code 会话使用该账号时运行以下命令，并把 `~/.claude-accounts/work` 换成该账号的文件夹：
 
    ```sh
-   cd ~/.claude-accounts/work    # the account's folder
+   cd ~/.claude-accounts/work
    find file-history tasks session-env projects -maxdepth 1 -type l | while read -r link; do
      target=$(readlink "$link")
      rm "$link" && cp -R "$target" "$link"

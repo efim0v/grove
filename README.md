@@ -1,6 +1,8 @@
 English · [Русский](README.ru.md) · [简体中文](README.zh-CN.md)
 
-# Grove — git-worktree workspaces for parallel Claude Code sessions
+Website: [efim0v.github.io/grove](https://efim0v.github.io/grove/)
+
+# Grove — multi-repo git-worktree workspaces for parallel Claude Code sessions
 
 [![CI](https://github.com/efim0v/grove/actions/workflows/ci.yml/badge.svg)](https://github.com/efim0v/grove/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/efim0v/grove)](https://github.com/efim0v/grove/releases/latest)
@@ -191,10 +193,10 @@ Deleting `Grove.app` leaves its changes to your Claude Code folders in place. To
    - `grove-backup/` in an account folder: what linking set aside. Look through it before you delete it.
    - `~/Library/Application Support/Grove/`: `config.json`, the wrapper scripts in `bin/` and the code statistics in `stats/`. If you keep using Brow, leave `oauth-usage-ledger.json`, which is Brow's. `defaults delete dev.artemefimov.grove3` removes Grove's preferences.
 
-4. **Unlink accounts, if you want to.** A linked account's `file-history`, `tasks` and `session-env`, and `projects/<workspace>` for each shared workspace, are symbolic links into `~/.claude`, and they keep working without Grove. To give an account its own copies again, run this while no Claude Code session is using that account:
+4. **Unlink accounts, if you want to.** A linked account's `file-history`, `tasks` and `session-env`, and `projects/<workspace>` for each shared workspace, are symbolic links into `~/.claude`, and they keep working without Grove. To give an account its own copies again, run this while no Claude Code session is using that account, with your account's folder in place of `~/.claude-accounts/work`:
 
    ```sh
-   cd ~/.claude-accounts/work    # the account's folder
+   cd ~/.claude-accounts/work
    find file-history tasks session-env projects -maxdepth 1 -type l | while read -r link; do
      target=$(readlink "$link")
      rm "$link" && cp -R "$target" "$link"
