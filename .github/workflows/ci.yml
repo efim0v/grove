@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels its older run. On main, a run that has
+# already started is not cancelled by a newer push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The image's default Xcode is used as is; this prints which one ran.
+      - name: Show versions
+        run: |
+          sw_vers
+          xcode-select --print-path
+          xcodebuild -version
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      # Release builds are optimized (-O). ScanWorktreeCollectionTests covers a
+      # release-only miscompile (see WorkspaceService.collectWorktrees).
+      - name: Test (release)
+        run: swift test -c release
