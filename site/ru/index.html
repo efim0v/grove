@@ -474,7 +474,7 @@
             <tr><th scope="row">Репозитории</th><td data-label="claude --worktree">Репозиторий, в котором запущена команда</td><td data-label="Рабочее пространство Grove">Все выбранные вами, в одном каталоге</td></tr>
             <tr><th scope="row">Расположение</th><td data-label="claude --worktree"><code>.claude/worktrees/&lt;name&gt;/</code> в корне репозитория; в другом месте&nbsp;— через хук <code>WorktreeCreate</code> или самостоятельно, командой <code>git worktree add</code></td><td data-label="Рабочее пространство Grove">По умолчанию <code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code>, задаётся шаблоном</td></tr>
             <tr><th scope="row">Ветка</th><td data-label="claude --worktree"><code>worktree-&lt;name&gt;</code></td><td data-label="Рабочее пространство Grove">По шаблону, по умолчанию <code>feat/{name}</code></td></tr>
-            <tr><th scope="row">Точка старта</th><td data-label="claude --worktree"><code>worktree.baseRef</code>: <code>fresh</code> (ветка по умолчанию в удалённом репозитории) или <code>head</code> (ваш локальный <code>HEAD</code>); указать ветку в нём нельзя. Если передать номер или URL пул-реквеста, worktree создаётся из этого пул-реквеста.</td><td data-label="Рабочее пространство Grove">Своя базовая ветка для каждого репозитория, из <code>origin/HEAD</code> или заданная вручную, либо ветки другого рабочего пространства</td></tr>
+            <tr><th scope="row">Точка старта</th><td data-label="claude --worktree"><code>worktree.baseRef</code>: <code>fresh</code> (ветка по умолчанию в удалённом репозитории) или <code>head</code> (ваш локальный <code>HEAD</code>); указать ветку в нём нельзя. Если передать номер или URL пул-реквеста, worktree создаётся из этого пул-реквеста.</td><td data-label="Рабочее пространство Grove">Своя базовая ветка для каждого репозитория, определённая по <code>origin/HEAD</code> или заданная вручную, либо ветки другого рабочего пространства</td></tr>
             <tr><th scope="row">Файлы вне git</th><td data-label="claude --worktree"><code>.worktreeinclude</code> копирует файлы, которые git игнорирует, например <code>.env</code></td><td data-label="Рабочее пространство Grove">Выбранные вами файлы, например <code>CLAUDE.md</code>, ссылкой или копией в корень рабочего пространства или в каждый репозиторий</td></tr>
             <tr><th scope="row">Подготовка</th><td data-label="claude --worktree">Попросить Claude или выполнить подготовку самостоятельно; хук <code>WorktreeCreate</code> может заменить создание worktree</td><td data-label="Рабочее пространство Grove">Свой хук после создания для каждого репозитория</td></tr>
             <tr><th scope="row">Очистка</th><td data-label="claude --worktree">При выходе удаляет worktree безымянной сессии, если в нём нет изменений, а иначе спрашивает</td><td data-label="Рабочее пространство Grove">Рабочие пространства остаются, пока вы не удалите их командой <code>git worktree remove</code>. Если создание не удалось, приложение предложит откатить всё, что успело создать за эту попытку.</td></tr>
@@ -495,7 +495,7 @@
             <li><strong>Общие файлы в каждом рабочем пространстве.</strong> Файлы вроде <code>CLAUDE.md</code> попадают в каждое новое рабочее пространство ссылкой или копией&nbsp;— в его корень или в каждый репозиторий.</li>
             <li><strong>Хуки после создания.</strong> Каждый репозиторий может выполнить в своём новом worktree собственную команду оболочки.</li>
             <li><strong>Параметры запуска по умолчанию.</strong> У каждого проекта есть аккаунт Claude, модель и уровень effort по умолчанию.</li>
-            <li><strong>Состояние с первого взгляда.</strong> У каждого рабочего пространства видны возраст, незакоммиченные изменения и сессии.</li>
+            <li><strong>Состояние на виду.</strong> У каждого рабочего пространства видны возраст, незакоммиченные изменения и сессии.</li>
           </ul>
         </div>
         <figure class="fig-settings">
@@ -534,7 +534,7 @@
       <div class="wrap split">
         <div class="text">
           <h2 id="accounts-title">Перенос сессии <span class="nowrap">Claude Code</span> на другой аккаунт</h2>
-          <p>Claude Code хранит каждый аккаунт в отдельной папке: <code>~/.claude</code> для аккаунта по умолчанию и <code>~/.claude-accounts/&lt;name&gt;</code> для каждого аккаунта, добавленного в Grove. Сессия не обязана оставаться на том аккаунте, с которого началась. Продолжайте её под другим своим аккаунтом, например когда у одного кончился лимит.</p>
+          <p>Claude Code хранит каждый аккаунт в отдельной папке: <code>~/.claude</code> для аккаунта по умолчанию и <code>~/.claude-accounts/&lt;name&gt;</code> для каждого аккаунта, добавленного в Grove. Сессия не обязана оставаться на том аккаунте, с которого началась. Продолжайте её под другим своим аккаунтом, например, когда у одного из них кончился лимит.</p>
           <dl class="terms">
             <div>
               <dt>Resume as…</dt>
@@ -594,7 +594,7 @@
           </figure>
           <figure>
             <img class="shot" src="../img/grove-code-stats.webp" width="1200" height="1246" loading="lazy" decoding="async"
-                 alt="Вкладка Stats: 137&nbsp;850 строк по всему проекту с разбивкой на код и данные и диаграмма роста числа строк с накоплением по репозиториям.">
+                 alt="Вкладка Stats: 137&nbsp;850 строк по всему проекту с разбивкой на код и данные, а также диаграмма роста числа строк с накоплением по репозиториям.">
             <figcaption>Строки кода в пяти репозиториях.</figcaption>
           </figure>
         </div>
@@ -609,10 +609,10 @@
           <pre><code><span class="comment"># репозитории и их worktree</span>
 grove scan ~/code/acme-shop
 
-<span class="comment"># рабочие пространства проекта деревом</span>
+<span class="comment"># рабочие пространства проекта в виде дерева</span>
 grove workspaces ~/code/acme-shop
 
-<span class="comment"># рабочее пространство на два репозитория</span>
+<span class="comment"># рабочее пространство с двумя репозиториями</span>
 grove create ~/code/acme-shop loyalty-points \
   --repos api-server,web-client
 
@@ -647,7 +647,7 @@ grove doctor</code></pre>
           <tbody>
             <tr><th scope="row"><a href="https://code.claude.com/docs/en/worktrees"><code>claude --worktree</code></a></th><td>Встроен в Claude Code: сессия в новом worktree</td><td data-label="Платформы">Везде, где работает Claude Code</td><td data-label="Репозиториев на задачу">Репозиторий, в котором запущена команда</td><td data-label="Агенты">Claude Code</td><td data-label="Перенос сессии на другой аккаунт">—</td><td data-label="Лицензия">Входит в Claude Code</td></tr>
             <tr><th scope="row"><a href="https://www.conductor.build/">Conductor</a></th><td>Приложение для Mac: <span class="nowrap">ИИ-агенты</span> работают параллельно в изолированных рабочих пространствах; агентов можно запускать и в облачных песочницах</td><td data-label="Платформы">macOS, iOS</td><td data-label="Репозиториев на задачу">Не указано</td><td data-label="Агенты">Claude Code, Codex, Cursor, OpenCode</td><td data-label="Перенос сессии на другой аккаунт">Не указано</td><td data-label="Лицензия">Не указано</td></tr>
-            <tr><th scope="row"><a href="https://github.com/smtg-ai/claude-squad">Claude Squad</a></th><td>Терминальное приложение на tmux и git worktree</td><td data-label="Платформы">Не указано; нужен tmux</td><td data-label="Репозиториев на задачу">Не указано</td><td data-label="Агенты">Claude Code, Codex, Gemini, Aider и другие</td><td data-label="Перенос сессии на другой аккаунт">Не указано</td><td data-label="Лицензия">AGPL-3.0</td></tr>
+            <tr><th scope="row"><a href="https://github.com/smtg-ai/claude-squad">Claude Squad</a></th><td>Терминальное приложение на базе tmux и git worktree</td><td data-label="Платформы">Не указано; нужен tmux</td><td data-label="Репозиториев на задачу">Не указано</td><td data-label="Агенты">Claude Code, Codex, Gemini, Aider и другие</td><td data-label="Перенос сессии на другой аккаунт">Не указано</td><td data-label="Лицензия">AGPL-3.0</td></tr>
             <tr><th scope="row"><a href="https://nimbalyst.com/">Nimbalyst</a></th><td>Визуальная рабочая среда; любой сессии можно выделить свой worktree</td><td data-label="Платформы">macOS, Windows, Linux, iOS</td><td data-label="Репозиториев на задачу">Не указано</td><td data-label="Агенты">Claude Code, Codex; OpenCode и Copilot в альфа-версии</td><td data-label="Перенос сессии на другой аккаунт">Не указано</td><td data-label="Лицензия">MIT</td></tr>
             <tr><th scope="row"><a href="https://superset.sh/">Superset</a></th><td>Запускает много <span class="nowrap">ИИ-агентов</span> параллельно, каждого в своём worktree</td><td data-label="Платформы">macOS, iOS; Linux&nbsp;— экспериментально; Windows пока нет</td><td data-label="Репозиториев на задачу">Не указано</td><td data-label="Агенты">Любой CLI-агент</td><td data-label="Перенос сессии на другой аккаунт">Не указано</td><td data-label="Лицензия">Elastic License 2.0 (код доступен)</td></tr>
             <tr><th scope="row"><a href="https://emdash.com/">Emdash</a></th><td>Среда разработки с <span class="nowrap">ИИ-агентами</span> и открытым кодом; параллельные задачи в отдельных worktree</td><td data-label="Платформы">macOS, Windows, Linux</td><td data-label="Репозиториев на задачу">Не указано</td><td data-label="Агенты">Больше 25 агентов</td><td data-label="Перенос сессии на другой аккаунт">Не указано</td><td data-label="Лицензия">Apache-2.0</td></tr>
@@ -682,7 +682,7 @@ grove doctor</code></pre>
           <h2 id="faq-title">Частые вопросы</h2>
 
           <h3>Как запустить несколько сессий Claude Code параллельно, чтобы они не мешали друг другу?</h3>
-          <p>Дайте каждой задаче свою рабочую копию&nbsp;— git worktree; Anthropic <a href="https://code.claude.com/docs/en/worktrees">описывает этот способ</a> для параллельных сессий. Если продукт разнесён по нескольким репозиториям, рабочее пространство Grove содержит worktree каждого репозитория на одной ветке. Запустите Claude Code в этом каталоге.</p>
+          <p>Дайте каждой задаче свою рабочую копию&nbsp;— git worktree; Anthropic <a href="https://code.claude.com/docs/en/worktrees">описывает этот способ</a> для параллельных сессий. Если продукт разнесён по нескольким репозиториям, рабочее пространство Grove собирает worktree каждого из них на одной ветке. Запустите Claude Code в этом каталоге.</p>
 
           <h3>Может ли Claude Code работать с несколькими репозиториями сразу?</h3>
           <p>Флаг <a href="https://code.claude.com/docs/en/cli-reference"><code class="nowrap">--add-dir</code></a> даёт сессии доступ к дополнительным каталогам, а <code>permissions.additionalDirectories</code> делает этот доступ постоянным. Так открывается доступ к файлам, но большую часть конфигурации <code>.claude/</code> из этих каталогов Claude Code не подхватывает. Рабочее пространство Grove собирает все репозитории, уже переключённые на ветку фичи, в том каталоге, где запускается Claude Code.</p>
@@ -694,7 +694,7 @@ grove doctor</code></pre>
           <p>Да. У каждого репозитория своя базовая ветка, имена веток берутся из шаблона, а корневой каталог рабочего пространства тоже задаётся шаблоном.</p>
 
           <h3>Как <code>CLAUDE.md</code> и другие общие файлы попадают в каждое рабочее пространство?</h3>
-          <p>Укажите их в настройках проекта как общие файлы, в разделе <span class="nowrap">Workspaces &amp; seeds</span>. Grove добавляет их в каждое новое рабочее пространство ссылкой или копией&nbsp;— в его корень или в каждый репозиторий.</p>
+          <p>Укажите их в настройках проекта, в разделе <span class="nowrap">Workspaces &amp; seeds</span>. Grove добавляет их в каждое новое рабочее пространство ссылкой или копией&nbsp;— в его корень или в каждый репозиторий.</p>
 
           <h3>Как продолжить сессию Claude Code под другим аккаунтом?</h3>
           <ul class="points">
@@ -714,7 +714,7 @@ grove doctor</code></pre>
           <p>Собственного ограничения в Grove нет. Каждая сессия расходует лимиты того аккаунта, под которым запущена. Grove показывает сессии по проектам и рабочим пространствам и отмечает, какие запущены, а какие ждут вас.</p>
 
           <h3>Нужен ли cmux?</h3>
-          <p>Он рекомендуется, но не обязателен. Окно запуска умеет открывать сессию в Terminal.app; остальные кнопки, которые запускают или возобновляют сессию, например <strong>Resume</strong> и <strong>Resume as…</strong>, открывают её в cmux. Ещё можно самостоятельно запустить Claude Code в рабочем пространстве из любого терминала.</p>
+          <p>Рекомендуется, но не обязателен. Окно запуска умеет открывать сессию в Terminal.app; остальные кнопки, которые запускают или возобновляют сессию, например <strong>Resume</strong> и <strong>Resume as…</strong>, открывают её в cmux. Кроме того, Claude Code можно самостоятельно запустить в рабочем пространстве из любого терминала.</p>
 
           <h3>Работает ли Grove с Codex и другими агентами?</h3>
           <p>Рабочее пространство&nbsp;— обычный каталог, поэтому любой CLI-агент можно запустить в нём самостоятельно. Сам Grove запускает, показывает и переносит только сессии Claude Code.</p>
@@ -745,7 +745,7 @@ grove doctor</code></pre>
             <tr><th scope="row">macOS 26 или новее на Mac с Apple silicon</th><td></td></tr>
             <tr><th scope="row"><a href="https://claude.com/claude-code">Claude Code</a> и git</th><td></td></tr>
             <tr><th scope="row">cmux (рекомендуется) или Terminal.app</th><td>Для сессий</td></tr>
-            <tr><th scope="row">Вход в аккаунт в стандартной папке <code>~/.claude</code></th><td>Для <strong>Resume as…</strong> между аккаунтами и для зеркала транскриптов</td></tr>
+            <tr><th scope="row">Аккаунт, вход в который выполнен в стандартной папке <code>~/.claude</code></th><td>Для <strong>Resume as…</strong> между аккаунтами и для зеркала транскриптов</td></tr>
             <tr><th scope="row">Необязательно: <a href="https://efim0v.github.io/brow/">Brow&nbsp;— лимиты Claude Code в чёлке MacBook</a></th><td>Если Brow установлен, Grove передаёт его браузерный роутер запускаемым сессиям, и вход в каждый аккаунт открывается в собственном профиле браузера этого аккаунта.</td></tr>
           </tbody>
         </table>
@@ -781,7 +781,7 @@ grove doctor</code></pre>
           </div>
 
           <h3 id="first-launch">Первый запуск</h3>
-          <p>Grove подписан ad hoc и не нотаризован Apple, поэтому macOS блокирует первый запуск. Это касается и установки через Homebrew: Homebrew ставит атрибут карантина macOS на всё, что скачивает для cask.</p>
+          <p>Grove подписан ad hoc и не нотаризован Apple, поэтому macOS блокирует первый запуск. Это касается и установки через Homebrew: он ставит атрибут карантина macOS на скачанные cask-пакеты.</p>
           <ol class="steps">
             <li>Откройте Grove из папки «Программы»&nbsp;— macOS его заблокирует.</li>
             <li>Откройте <strong>Системные настройки → Конфиденциальность и безопасность</strong>, найдите сообщение о Grove, нажмите <strong>Все равно открыть</strong> и подтвердите кнопкой <strong>Открыть</strong>.</li>
@@ -807,7 +807,7 @@ xattr -d com.apple.quarantine grove</code></pre>
           <div>
             <dt>Строка состояния в каждом аккаунте</dt>
             <dd>
-              <p>При запуске Grove направляет <code>statusLine.command</code> в <code>settings.json</code> каждого аккаунта на небольшой скрипт-обёртку в <code>~/Library/Application Support/Grove/bin/</code>. Обёртка сохраняет то, что Claude Code передаёт в строку состояния (модель, контекст, стоимость), в папку аккаунта <code>grove/usage/</code>, а затем запускает вашу прежнюю команду с теми же входными данными, так что ваша строка состояния продолжает работать.</p>
+              <p>При запуске Grove направляет <code>statusLine.command</code> в <code>settings.json</code> каждого аккаунта на небольшой скрипт-обёртку в <code>~/Library/Application Support/Grove/bin/</code>. Обёртка сохраняет то, что Claude Code передаёт в строку состояния (модель, контекст, стоимость), в папку <code>grove/usage/</code> этого аккаунта, а затем запускает вашу прежнюю команду с теми же входными данными, так что ваша строка состояния продолжает работать.</p>
               <p><strong>Stop</strong> рядом с <em>monitoring</em> на экране Accounts возвращает вашу команду на место.</p>
             </dd>
           </div>
@@ -834,7 +834,7 @@ xattr -d com.apple.quarantine grove</code></pre>
           <div>
             <dt>Отметка о первом запуске в других папках аккаунтов</dt>
             <dd>
-              <p>Прежде чем запустить Claude Code в папке аккаунта, отличной от <code>~/.claude</code>, Grove выставляет <code>hasCompletedOnboarding</code> в <code>.claude.json</code> этой папки и копирует вашу тему из <code>~/.claude.json</code>, если в папке её нет. Так сессия не открывает мастер первого запуска Claude Code.</p>
+              <p>Прежде чем запустить Claude Code в папке аккаунта, отличной от <code>~/.claude</code>, Grove выставляет <code>hasCompletedOnboarding</code> в <code>.claude.json</code> этой папки и копирует вашу тему из <code>~/.claude.json</code>, если в папке её нет. Поэтому сессия не открывает мастер первого запуска Claude Code.</p>
             </dd>
           </div>
           <div>
