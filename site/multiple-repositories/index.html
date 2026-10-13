@@ -379,7 +379,7 @@ claude</code></pre>
             <p>Write <code>origin/develop</code> unless the repository has a local <code>develop</code> branch. Given a name that exists only on the remote, <code>git worktree add</code> puts the worktree on that branch and doesn’t create the feature branch.</p>
 
             <h3>What if the feature branch already exists?</h3>
-            <p>Grove checks it out in the new worktree instead of creating it. By hand, leave out <code>-b</code> and <code>--no-track</code>, and name the branch in place of the start point:</p>
+            <p>If a repository already has a local branch of that name, Grove checks it out in the new worktree instead of creating it. Grove doesn’t look at the remote: for a branch that exists only on <code>origin</code>, it creates a new local branch from the base branch, so create the local branch first. By hand, leave out <code class="nowrap">-b</code> and <code class="nowrap">--no-track</code> and name the branch in place of the start point. git checks out the local branch or, if there is none, creates one that tracks the branch on <code>origin</code>:</p>
             <pre><code>cd ~/code/acme-shop
 ws=~/Workspaces/acme-shop/loyalty-points
 git -C api-server worktree add \
