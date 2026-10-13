@@ -266,10 +266,10 @@ final class WorkspaceCreateTests: XCTestCase {
         XCTAssertFalse(try branchExists(clone.url, "feat/forked"))
     }
 
-    /// Whatever made git land elsewhere, a worktree that is not on the workspace
-    /// branch fails creation and is rolled back with the branch the add created.
-    /// The runner fakes HEAD so the test does not depend on how a git version errs.
-    func testWorktreeOnAnotherBranchIsRolledBack() async throws {
+    /// A service whose git reports the worktree at `worktreePath` on `somewhere-else`,
+    /// whatever git really checked out there; every other command runs for real.
+    /// Faking HEAD keeps these tests independent of how a git version errs.
+    private func serviceWithHeadElsewhere(at worktreePath: String) -> WorkspaceService {
         struct HeadElsewhere: CommandRunning {
             let worktreePath: String
             func run(_ executable: String, _ args: [String], cwd: String?, env: [String: String]?,
@@ -280,12 +280,17 @@ final class WorkspaceCreateTests: XCTestCase {
                 return try await ProcessRunner().run(executable, args, cwd: cwd, env: env, timeout: timeout)
             }
         }
-        let worktreePath = workspacesRoot.appendingPathComponent("elsewhere/repo-one").path
-        let service = WorkspaceService(git: GitService(runner: HeadElsewhere(worktreePath: worktreePath)),
-                                       claude: ClaudeService(), cmux: CmuxService(),
-                                       config: GroveConfig.defaultConfig)
+        return WorkspaceService(git: GitService(runner: HeadElsewhere(worktreePath: worktreePath)),
+                                claude: ClaudeService(), cmux: CmuxService(),
+                                config: GroveConfig.defaultConfig)
+    }
 
-        let report = await service.createWorkspace(
+    /// Whatever made git land elsewhere, a worktree that is not on the workspace
+    /// branch fails creation and is rolled back with the branch the add created.
+    func testWorktreeOnAnotherBranchIsRolledBack() async throws {
+        let worktreePath = workspacesRoot.appendingPathComponent("elsewhere/repo-one").path
+
+        let report = await serviceWithHeadElsewhere(at: worktreePath).createWorkspace(
             project: makeProject(), name: "elsewhere", branch: "feat/elsewhere",
             repos: [repo1], forkFrom: nil)
 
@@ -296,6 +301,28 @@ final class WorkspaceCreateTests: XCTestCase {
         XCTAssertFalse(try branchExists(r1, "feat/elsewhere"))
         let worktrees = try await GitService().worktrees(repo: repo1)
         XCTAssertEqual(worktrees.count, 1)
+    }
+
+    /// The same failure on a workspace branch that existed before the run: the
+    /// rollback removes the worktree and leaves the branch where it was.
+    func testWorktreeOnAnotherBranchKeepsABranchThatExisted() async throws {
+        let existing = baseDir.appendingPathComponent("existing-wt")
+        try Fixture.addWorktree(repo: r1, branch: "feat/existing", from: "main", at: existing)
+        try Fixture.commit(repo: existing, file: "existing.txt", content: "e", message: "existing work")
+        let tip = try revParse(existing, "HEAD")
+        // Free the branch so the workspace can check it out.
+        try Fixture.sh("git -C \(shellQuote(r1.path)) worktree remove \(shellQuote(existing.path))")
+        let worktreePath = workspacesRoot.appendingPathComponent("existing/repo-one").path
+
+        let report = await serviceWithHeadElsewhere(at: worktreePath).createWorkspace(
+            project: makeProject(), name: "existing", branch: "feat/existing",
+            repos: [repo1], forkFrom: nil)
+
+        XCTAssertEqual(report.failure,
+                       "worktree add failed in repo-one: git checked out somewhere-else, not feat/existing")
+        XCTAssertTrue(report.artifacts.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreePath))
+        XCTAssertEqual(try revParse(r1, "feat/existing"), tip)
     }
 
     // MARK: - validation, BEFORE any git operation
