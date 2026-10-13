@@ -1332,8 +1332,9 @@ extension AppState {
     /// user — so accounts created before 5A (or an account whose monitoring was never
     /// enabled, e.g. icloud) start capturing usage. Accounts where the user explicitly
     /// ran `disableMonitoring` are skipped (monitoringDisabledByUser=true), so the
-    /// user's intent is respected across launches. Best-effort per account: a
-    /// missing/locked config dir is skipped without surfacing an error.
+    /// user's intent is respected across launches. Best-effort per account: an account
+    /// whose install fails (a settings.json that doesn't parse, a lock that isn't
+    /// released) is logged and stays unmonitored, so the next launch tries again.
     /// File I/O runs off-main to keep launch responsive.
     public func reconcileMonitoring() {
         // Gather accounts needing install on the main actor, then do file I/O off-main.
@@ -1354,7 +1355,9 @@ extension AppState {
                 do {
                     let saved = try installer.install(configDir: dir)
                     installed.append((name: account.name, savedStatusline: saved))
-                } catch { continue }
+                } catch {
+                    GroveLog.menubar.error("statusline not installed for \(account.name, privacy: .public), retrying next launch: \(error.localizedDescription, privacy: .public)")
+                }
             }
             // Hop back to main actor to persist config changes.
             await MainActor.run { [weak self] in

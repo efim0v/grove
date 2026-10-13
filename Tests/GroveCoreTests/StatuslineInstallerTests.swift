@@ -84,6 +84,95 @@ final class StatuslineInstallerTests: XCTestCase {
         XCTAssertNil(try readSettings()["statusLine"], "no original -> statusLine removed")
     }
 
+    // MARK: - settings.json goes through HotJSONFile
+
+    /// Claude Code reports a `//` comment as a Settings Error and leaves the file for the
+    /// user to fix; an editor can leave it half-written. Install and uninstall used to
+    /// read either as `{}` and write back `statusLine` alone (or `{}`), dropping the
+    /// account's permissions, env and model. Now both throw and leave every byte, and a
+    /// refused install leaves the shipped wrapper and the original baked into it alone.
+    func testInstallAndUninstallLeaveSettingsThatDoNotParseByteForByte() throws {
+        let original = "/usr/local/bin/my-statusline"
+        try #"{"statusLine":{"type":"command","command":"\#(original)"}}"#
+            .write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+        _ = try installer.install(configDir: configDir.path)
+        let script = installer.scriptPath(forConfigDir: configDir.path)
+
+        let commented = """
+            {
+              // keep tests fast
+              "permissions": { "allow": ["Bash(npm test *)"], "deny": ["Read(./.env)"] },
+              "env": { "FOO": "bar" },
+              "model": "opus"
+            }
+            """
+        let truncated = #"{"permissions":{"allow":["Bash(npm te"#
+        for text in [commented, truncated] {
+            let bytes = Data(text.utf8)
+            try bytes.write(to: URL(fileURLWithPath: settingsPath()))
+            let calls: [() throws -> Void] = [
+                { _ = try self.installer.install(configDir: self.configDir.path) },
+                { try self.installer.uninstall(configDir: self.configDir.path, savedStatusline: original) },
+                { try self.installer.uninstall(configDir: self.configDir.path, savedStatusline: nil) },
+            ]
+            for call in calls {
+                XCTAssertThrowsError(try call()) { error in
+                    guard case .unparseable? = error as? HotJSONFile.Failure else {
+                        return XCTFail("expected HotJSONFile.Failure.unparseable, got \(error)")
+                    }
+                }
+                XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: settingsPath())), bytes)
+            }
+            XCTAssertEqual(StatuslineInstaller.bakedOriginal(inScriptAt: script), original)
+        }
+    }
+
+    /// A settings.json kept in a dotfiles repo is a symlink. The atomic write used to
+    /// replace the link with a regular file and leave the dotfiles copy stale. Now the
+    /// change lands in the target, which keeps its mode, and `/` is not written as `\/`.
+    func testInstallAndUninstallWriteThroughASymlinkedSettingsFile() throws {
+        let dotfiles = try Fixture.tempDir("statusline-dotfiles")
+        let target = dotfiles.appendingPathComponent("settings.json")
+        try #"{"permissions":{"allow":["Bash(git log *)"]},"apiKeyHelper":"/usr/local/bin/key-helper"}"#
+            .write(to: target, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: target.path)
+        try fm.createSymbolicLink(atPath: settingsPath(), withDestinationPath: target.path)
+
+        _ = try installer.install(configDir: configDir.path)
+
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: settingsPath()), target.path)
+        let text = try String(contentsOf: target, encoding: .utf8)
+        XCTAssertFalse(text.contains(#"\/"#), text)
+        var settings = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual((settings["statusLine"] as? [String: Any])?["command"] as? String,
+                       shellQuote(installer.scriptPath(forConfigDir: configDir.path)))
+        XCTAssertEqual(settings["apiKeyHelper"] as? String, "/usr/local/bin/key-helper")
+        XCTAssertNotNil(settings["permissions"])
+        XCTAssertEqual(try fm.attributesOfItem(atPath: target.path)[.posixPermissions] as? Int, 0o644)
+
+        try installer.uninstall(configDir: configDir.path, savedStatusline: nil)
+
+        XCTAssertEqual(try fm.destinationOfSymbolicLink(atPath: settingsPath()), target.path)
+        settings = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: target)) as? [String: Any])
+        XCTAssertNil(settings["statusLine"])
+        XCTAssertEqual(settings["apiKeyHelper"] as? String, "/usr/local/bin/key-helper")
+        XCTAssertEqual(try fm.attributesOfItem(atPath: target.path)[.posixPermissions] as? Int, 0o644)
+    }
+
+    /// A re-install that changes nothing doesn't write settings.json at all.
+    func testReinstallLeavesUnchangedSettingsUntouched() throws {
+        try #"{"model":"opus"}"#
+            .write(to: URL(fileURLWithPath: settingsPath()), atomically: true, encoding: .utf8)
+        _ = try installer.install(configDir: configDir.path)
+        let before = try fm.attributesOfItem(atPath: settingsPath())
+
+        _ = try installer.install(configDir: configDir.path)
+
+        let after = try fm.attributesOfItem(atPath: settingsPath())
+        XCTAssertEqual(before[.systemFileNumber] as? Int, after[.systemFileNumber] as? Int)
+        XCTAssertEqual(before[.modificationDate] as? Date, after[.modificationDate] as? Date)
+    }
+
     // MARK: - the wrapper SCRIPT writes a snapshot then calls through (end-to-end)
 
     func testWrapperScriptTeesStdinToUsageSnapshotThenExecsOriginal() throws {

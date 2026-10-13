@@ -27,13 +27,14 @@ public struct StatuslineInstaller: Sendable {
     /// and repoints `statusLine.command` at the wrapper. Returns the saved original
     /// for `AccountConfig.savedStatusline`. Re-install never clobbers the saved
     /// original with the wrapper path.
+    ///
+    /// `settings.json` is merged through `HotJSONFile`: under Claude Code's lock,
+    /// through a symlink, keeping the file's mode, and not written at all when nothing
+    /// changes. A file that exists but doesn't parse (a `//` comment, a half-written
+    /// save) is left as it is and the install throws: writing back `statusLine` alone
+    /// would drop the account's permissions, hooks and env.
     @discardableResult
     public func install(configDir: String) throws -> String? {
-        // Determine the true original command BEFORE we overwrite anything. On a
-        // re-install the existing `statusLine.command` is already our (bare) wrapper
-        // path; the real original is baked into the previously-shipped script as
-        // `GROVE_ORIG='…'`. On first install the existing command itself is the
-        // original.
         let settingsPath = configDir + "/settings.json"
         let scriptPath = self.scriptPath(forConfigDir: configDir)
         // The command MUST be shell-quoted: Claude Code runs statusLine.command via
@@ -42,68 +43,64 @@ public struct StatuslineInstaller: Sendable {
         // exit 127) so the wrapper never runs and no usage/limit snapshot is ever
         // written — the cause of all-zero limits in the app.
         let quotedCommand = shellQuote(scriptPath)
-        var settings = StatuslineInstaller.readSettings(at: settingsPath)
-        let currentCommand = (settings["statusLine"] as? [String: Any])?["command"] as? String
-
-        let original: String?
-        if let current = currentCommand {
-            // Already our wrapper? Accept the quoted form AND the legacy bare path
-            // written before the quoting fix (so a re-install migrates it cleanly).
-            if current == quotedCommand || current == scriptPath {
-                // Recover the real original baked into the previously-shipped script.
-                original = StatuslineInstaller.bakedOriginal(inScriptAt: scriptPath)
-            } else {
-                original = current
-            }
-        } else {
-            original = nil
-        }
-
-        // Ship the wrapper script with this account's usage dir + original baked in
-        // (idempotent, chmod +x). The env defaults live in the per-account script so
-        // `statusLine.command` can stay the bare script path.
         try? FileManager.default.createDirectory(
             atPath: scriptDir, withIntermediateDirectories: true)
         let usageDir = configDir + "/grove/usage"
-        let script = StatuslineInstaller.scriptSource(usageDir: usageDir, original: original)
-        try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o755], ofItemAtPath: scriptPath)
 
-        // Repoint settings at the shell-quoted wrapper path (handles the space).
-        settings["statusLine"] = ["type": "command", "command": quotedCommand]
-        try StatuslineInstaller.writeSettings(settings, to: settingsPath)
+        var original: String?
+        try HotJSONFile.update(path: settingsPath) { existing in
+            // Determine the true original command BEFORE we overwrite anything. On a
+            // re-install the existing `statusLine.command` is already our (bare) wrapper
+            // path; the real original is baked into the previously-shipped script as
+            // `GROVE_ORIG='…'`. On first install the existing command itself is the
+            // original.
+            let currentCommand = (existing["statusLine"] as? [String: Any])?["command"] as? String
+            if let current = currentCommand {
+                // Already our wrapper? Accept the quoted form AND the legacy bare path
+                // written before the quoting fix (so a re-install migrates it cleanly).
+                if current == quotedCommand || current == scriptPath {
+                    // Recover the real original baked into the previously-shipped script.
+                    original = StatuslineInstaller.bakedOriginal(inScriptAt: scriptPath)
+                } else {
+                    original = current
+                }
+            } else {
+                original = nil
+            }
+
+            // Ship the wrapper script with this account's usage dir + original baked in
+            // (idempotent, chmod +x) before settings.json points at it. Only reached with a
+            // settings.json that parsed, so a refused install leaves a wrapper already in
+            // use, and the original baked into it, as they are. The env defaults live in
+            // the per-account script so `statusLine.command` can stay the bare script path.
+            let script = StatuslineInstaller.scriptSource(usageDir: usageDir, original: original)
+            try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+
+            // Repoint settings at the shell-quoted wrapper path (handles the space).
+            var settings = existing
+            settings["statusLine"] = ["type": "command", "command": quotedCommand]
+            return settings
+        }
         return original
     }
 
     /// Restores `statusLine.command` to `savedStatusline`, or REMOVES the statusLine
-    /// key when nil. Leaves the shipped script in place (harmless).
+    /// key when nil. Leaves the shipped script in place (harmless). Merged through
+    /// `HotJSONFile` like `install`: a settings.json that doesn't parse is left as it
+    /// is and this throws.
     public func uninstall(configDir: String, savedStatusline: String?) throws {
         let settingsPath = configDir + "/settings.json"
-        var settings = StatuslineInstaller.readSettings(at: settingsPath)
-        if let saved = savedStatusline {
-            settings["statusLine"] = ["type": "command", "command": saved]
-        } else {
-            settings.removeValue(forKey: "statusLine")
+        try HotJSONFile.update(path: settingsPath) { existing in
+            var settings = existing
+            if let saved = savedStatusline {
+                settings["statusLine"] = ["type": "command", "command": saved]
+            } else {
+                settings.removeValue(forKey: "statusLine")
+            }
+            return settings
         }
-        try StatuslineInstaller.writeSettings(settings, to: settingsPath)
-    }
-
-    // MARK: - settings.json IO
-
-    /// Reads `settings.json` as a mutable dictionary; empty `{}` when absent or unparseable.
-    private static func readSettings(at path: String) -> [String: Any] {
-        guard let data = FileManager.default.contents(atPath: path),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let dict = obj as? [String: Any]
-        else { return [:] }
-        return dict
-    }
-
-    private static func writeSettings(_ settings: [String: Any], to path: String) throws {
-        let data = try JSONSerialization.data(
-            withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
     // MARK: - wrapper script (per-account env baked in)

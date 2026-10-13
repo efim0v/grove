@@ -234,6 +234,70 @@ final class AppStateGapTests: XCTestCase {
         XCTAssertFalse(s.config.accounts[0].monitoring)
     }
 
+    /// A settings.json that doesn't parse is left alone: the Monitoring toggle says so in
+    /// actionError, in both directions, and changes neither the file nor the account.
+    func testMonitoringToggleReportsSettingsThatDoNotParse() throws {
+        let s = state()
+        s.statuslineScriptDirOverride = root.appendingPathComponent("bin-unparseable").path
+        let dir = root.appendingPathComponent("acct-unparseable")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let settings = dir.appendingPathComponent("settings.json")
+        let bytes = Data("{\n  // mine\n  \"model\": \"opus\"\n}\n".utf8)
+        try bytes.write(to: settings)
+        s.config.accounts = [AccountConfig(name: "work", configDir: dir.path)]
+
+        s.installMonitoring(s.config.accounts[0])
+        XCTAssertTrue(s.actionError?.contains("not valid JSON") == true, s.actionError ?? "no actionError")
+        XCTAssertFalse(s.config.accounts[0].monitoring)
+
+        s.actionError = nil
+        s.config.accounts[0].monitoring = true
+        s.config.accounts[0].savedStatusline = "/bin/echo mine"
+        s.disableMonitoring(s.config.accounts[0])
+        XCTAssertTrue(s.actionError?.contains("not valid JSON") == true, s.actionError ?? "no actionError")
+        XCTAssertTrue(s.config.accounts[0].monitoring)
+        XCTAssertEqual(s.config.accounts[0].savedStatusline, "/bin/echo mine")
+        XCTAssertEqual(try Data(contentsOf: settings), bytes)
+    }
+
+    /// The launch reconcile skips an account whose settings.json doesn't parse, leaving
+    /// the file alone and the account unmonitored, and still installs the others. Once
+    /// the file parses again, the next launch installs it.
+    func testReconcileMonitoringRetriesSettingsThatDoNotParseNextLaunch() async throws {
+        let s = state()
+        s.statuslineScriptDirOverride = root.appendingPathComponent("reconcile-bin-3").path
+        let bad = root.appendingPathComponent("recon-unparseable")
+        let good = root.appendingPathComponent("recon-ok")
+        try FileManager.default.createDirectory(at: bad, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: good, withIntermediateDirectories: true)
+        let badSettings = bad.appendingPathComponent("settings.json")
+        let bytes = Data(#"{"permissions":{"allow":["Bash(npm te"#.utf8)
+        try bytes.write(to: badSettings)
+        s.config.accounts = [AccountConfig(name: "bad", configDir: bad.path),
+                             AccountConfig(name: "good", configDir: good.path)]
+
+        func reconcile(until name: String) async {
+            s.reconcileMonitoring()
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                await Task.yield()
+                if s.config.accounts.first(where: { $0.name == name })?.monitoring == true { break }
+            }
+        }
+
+        await reconcile(until: "good")
+        XCTAssertEqual(s.config.accounts.first { $0.name == "good" }?.monitoring, true)
+        XCTAssertEqual(s.config.accounts.first { $0.name == "bad" }?.monitoring, false)
+        XCTAssertEqual(try Data(contentsOf: badSettings), bytes)
+
+        try Data(#"{"model":"opus"}"#.utf8).write(to: badSettings)
+        await reconcile(until: "bad")
+        XCTAssertEqual(s.config.accounts.first { $0.name == "bad" }?.monitoring, true)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: badSettings)) as? [String: Any])
+        XCTAssertEqual(obj["model"] as? String, "opus")
+        XCTAssertNotNil(obj["statusLine"])
+    }
+
     /// FIX 1: reconcileMonitoring must NOT re-enable an explicitly-disabled account.
     /// An account with monitoring=false AND monitoringDisabledByUser=true is skipped.
     /// An account with monitoring=false AND monitoringDisabledByUser=false (never monitored) IS installed.
