@@ -187,6 +187,50 @@ final class GitWorktreeTests: XCTestCase {
         XCTAssertFalse(no)
     }
 
+    // MARK: - resolveStartPoint / checkedOutBranch
+
+    /// Issue #26: a branch only origin has becomes origin/<name>, anything git resolves
+    /// stays as typed, and a name nothing has is nil.
+    func testResolveStartPoint() async throws {
+        let dir = try Fixture.tempDir("start-point")
+        let upstream = try Fixture.makeRepo(in: dir, name: "upstream")
+        try Fixture.sh("git -C \(shellQuote(upstream.path)) branch release-2")
+        let clone = dir.appendingPathComponent("clone")
+        try Fixture.sh("git clone -q \(shellQuote(upstream.path)) \(shellQuote(clone.path))")
+        try Fixture.sh("git -C \(shellQuote(clone.path)) tag v1")
+        let sha = try Fixture.sh("git -C \(shellQuote(clone.path)) rev-parse HEAD")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let remoteOnly = await git.resolveStartPoint(repoPath: clone.path, "release-2")
+        XCTAssertEqual(remoteOnly, "origin/release-2")
+        // `main` exists locally AND on origin: the local branch is what was asked for.
+        for name in ["main", "origin/release-2", "v1", sha] {
+            let resolved = await git.resolveStartPoint(repoPath: clone.path, name)
+            XCTAssertEqual(resolved, name)
+        }
+        let unknown = await git.resolveStartPoint(repoPath: clone.path, "no-such-branch")
+        XCTAssertNil(unknown)
+    }
+
+    /// The branch comes from the full ref, so a tag of the same name (which makes
+    /// `symbolic-ref --short` answer `heads/feat/x`) changes nothing. Detached: nil.
+    func testCheckedOutBranch() async throws {
+        let dir = try Fixture.tempDir("checked-out")
+        let repo = try Fixture.makeRepo(in: dir, name: "alpha")
+        try Fixture.sh("git -C \(shellQuote(repo.path)) tag feat/x")
+        let wt = dir.appendingPathComponent("wt")
+        try Fixture.addWorktree(repo: repo, branch: "feat/x", from: "main", at: wt)
+        let branch = await git.checkedOutBranch(at: wt.path)
+        XCTAssertEqual(branch, "feat/x")
+        let main = await git.checkedOutBranch(at: repo.path)
+        XCTAssertEqual(main, "main")
+
+        let detached = dir.appendingPathComponent("detached")
+        try Fixture.sh("git -C \(shellQuote(repo.path)) worktree add --detach \(shellQuote(detached.path)) main")
+        let none = await git.checkedOutBranch(at: detached.path)
+        XCTAssertNil(none)
+    }
+
     // MARK: - addWorktree / removeWorktree / deleteBranch
 
     func testAddWorktreeCreateBranchThenDoubleCheckoutFails() async throws {

@@ -172,6 +172,132 @@ final class WorkspaceCreateTests: XCTestCase {
         XCTAssertEqual(report.artifacts.count, 2)
     }
 
+    // MARK: - start point that is only a remote branch (issue #26)
+
+    /// An upstream whose release-2 is one commit ahead of main, cloned into the
+    /// project as `cloned`: the clone has release-2 only as origin/release-2.
+    private func makeClone() throws -> (url: URL, repo: RepoInfo, releaseTip: String) {
+        let upstream = try Fixture.makeRepo(in: baseDir, name: "upstream")
+        try Fixture.sh("git -C \(shellQuote(upstream.path)) checkout -q -b release-2")
+        try Fixture.commit(repo: upstream, file: "release.txt", content: "r", message: "release work")
+        try Fixture.sh("git -C \(shellQuote(upstream.path)) checkout -q main")
+        let clone = projectDir.appendingPathComponent("cloned")
+        try Fixture.sh("git clone -q \(shellQuote(upstream.path)) \(shellQuote(clone.path))")
+        return (clone, RepoInfo(path: clone.path, dirName: "cloned"), try revParse(upstream, "release-2"))
+    }
+
+    func testStartPointOnlyOnOriginForksTheWorkspaceBranch() async throws {
+        let clone = try makeClone()
+        XCTAssertFalse(try branchExists(clone.url, "release-2"), "prerequisite: release-2 is only on origin")
+
+        let report = await makeService().createWorkspace(
+            project: makeProject(), name: "rel", branch: "feat/rel",
+            repos: [clone.repo], forkFrom: nil, startPointOverrides: ["cloned": "release-2"])
+
+        XCTAssertNil(report.failure, "\(report.logLines)")
+        let wt = workspacesRoot.appendingPathComponent("rel/cloned")
+        XCTAssertEqual(try revParse(wt, "--abbrev-ref HEAD"), "feat/rel")
+        XCTAssertEqual(try revParse(clone.url, "feat/rel"), clone.releaseTip)
+        // git did not make up a local release-2 (tracking origin) and check that out.
+        XCTAssertFalse(try branchExists(clone.url, "release-2"))
+        XCTAssertTrue(report.logLines.contains { $0.contains("from origin/release-2") },
+                      "log lines must name the start point used: \(report.logLines)")
+    }
+
+    func testBaseBranchOverrideOnlyOnOriginForksTheWorkspaceBranch() async throws {
+        let clone = try makeClone()
+        let project = ProjectConfig(name: "proj", path: projectDir.path,
+                                    workspacesRoot: workspacesRoot.path,
+                                    baseBranchOverrides: ["cloned": "release-2"])
+
+        let report = await makeService().createWorkspace(
+            project: project, name: "rel-base", branch: "feat/rel-base",
+            repos: [clone.repo], forkFrom: nil)
+
+        XCTAssertNil(report.failure, "\(report.logLines)")
+        let wt = workspacesRoot.appendingPathComponent("rel-base/cloned")
+        XCTAssertEqual(try revParse(wt, "--abbrev-ref HEAD"), "feat/rel-base")
+        XCTAssertEqual(try revParse(clone.url, "feat/rel-base"), clone.releaseTip)
+        XCTAssertFalse(try branchExists(clone.url, "release-2"))
+    }
+
+    func testLocalBranchStartPointWinsOverOrigin() async throws {
+        let clone = try makeClone()
+        // A local release-2 that is not origin's: it sits on main, a commit behind.
+        try Fixture.sh("git -C \(shellQuote(clone.url.path)) branch --no-track release-2 origin/main")
+        let localTip = try revParse(clone.url, "release-2")
+        XCTAssertNotEqual(localTip, clone.releaseTip, "prerequisite: local and origin release-2 differ")
+
+        let report = await makeService().createWorkspace(
+            project: makeProject(), name: "rel-local", branch: "feat/rel-local",
+            repos: [clone.repo], forkFrom: nil, startPointOverrides: ["cloned": "release-2"])
+
+        XCTAssertNil(report.failure, "\(report.logLines)")
+        let wt = workspacesRoot.appendingPathComponent("rel-local/cloned")
+        XCTAssertEqual(try revParse(wt, "--abbrev-ref HEAD"), "feat/rel-local")
+        XCTAssertEqual(try revParse(clone.url, "feat/rel-local"), localTip)
+    }
+
+    /// A branch only a remote other than origin has is handed to git as typed. git
+    /// 2.54 then makes up a local branch of that name and checks it out instead of the
+    /// workspace branch, exit 0; a git that rejects the name fails the add. Either way
+    /// creation stops with nothing of that repo left: no worktree, no made-up branch.
+    func testStartPointOnlyOnAnotherRemoteLeavesNothingBehind() async throws {
+        let clone = try makeClone()
+        let fork = baseDir.appendingPathComponent("fork")
+        try Fixture.sh("git clone -q \(shellQuote(clone.url.path)) \(shellQuote(fork.path))")
+        try Fixture.sh("git -C \(shellQuote(fork.path)) branch fork-only")
+        try Fixture.sh("git -C \(shellQuote(clone.url.path)) remote add fork \(shellQuote(fork.path))")
+        try Fixture.sh("git -C \(shellQuote(clone.url.path)) fetch -q fork")
+
+        let report = await makeService().createWorkspace(
+            project: makeProject(), name: "forked", branch: "feat/forked",
+            repos: [repo1, clone.repo], forkFrom: nil, startPointOverrides: ["cloned": "fork-only"])
+
+        XCTAssertNotNil(report.failure)
+        // repo-one went first: its worktree stays, an artifact for the user's rollback.
+        XCTAssertEqual(report.artifacts.map(\.repoPath), [r1.path])
+        XCTAssertTrue(isDirectory(workspacesRoot.appendingPathComponent("forked/repo-one").path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspacesRoot.appendingPathComponent("forked/cloned").path))
+        let worktrees = try await GitService().worktrees(repo: clone.repo)
+        XCTAssertEqual(worktrees.count, 1, "only the clone's main worktree is left")
+        XCTAssertFalse(try branchExists(clone.url, "fork-only"))
+        XCTAssertFalse(try branchExists(clone.url, "feat/forked"))
+    }
+
+    /// Whatever made git land elsewhere, a worktree that is not on the workspace
+    /// branch fails creation and is rolled back with the branch the add created.
+    /// The runner fakes HEAD so the test does not depend on how a git version errs.
+    func testWorktreeOnAnotherBranchIsRolledBack() async throws {
+        struct HeadElsewhere: CommandRunning {
+            let worktreePath: String
+            func run(_ executable: String, _ args: [String], cwd: String?, env: [String: String]?,
+                     timeout: TimeInterval) async throws -> ProcessResult {
+                if args == ["-C", worktreePath, "symbolic-ref", "HEAD"] {
+                    return ProcessResult(exitCode: 0, stdout: "refs/heads/somewhere-else\n", stderr: "")
+                }
+                return try await ProcessRunner().run(executable, args, cwd: cwd, env: env, timeout: timeout)
+            }
+        }
+        let worktreePath = workspacesRoot.appendingPathComponent("elsewhere/repo-one").path
+        let service = WorkspaceService(git: GitService(runner: HeadElsewhere(worktreePath: worktreePath)),
+                                       claude: ClaudeService(), cmux: CmuxService(),
+                                       config: GroveConfig.defaultConfig)
+
+        let report = await service.createWorkspace(
+            project: makeProject(), name: "elsewhere", branch: "feat/elsewhere",
+            repos: [repo1], forkFrom: nil)
+
+        XCTAssertEqual(report.failure,
+                       "worktree add failed in repo-one: git checked out somewhere-else, not feat/elsewhere")
+        XCTAssertTrue(report.artifacts.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreePath))
+        XCTAssertFalse(try branchExists(r1, "feat/elsewhere"))
+        let worktrees = try await GitService().worktrees(repo: repo1)
+        XCTAssertEqual(worktrees.count, 1)
+    }
+
     // MARK: - validation, BEFORE any git operation
 
     func testInvalidNamesFailBeforeAnyGitOperation() async throws {

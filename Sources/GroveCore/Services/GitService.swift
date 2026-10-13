@@ -220,6 +220,21 @@ public struct GitService: Sendable {
         return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// The branch checked out at `path` (a repo or one of its worktrees), read from
+    /// the full ref HEAD names. Exact where `currentBranch` is not: with a tag of the
+    /// same name, `--short` answers `heads/<name>`. nil when HEAD is detached or git
+    /// fails.
+    public func checkedOutBranch(at path: String) async -> String? {
+        guard let result = try? await runner.run(
+            "git", ["-C", path, "symbolic-ref", "HEAD"],
+            cwd: nil, env: nil, timeout: 10
+        ), result.exitCode == 0 else { return nil }
+        let ref = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "refs/heads/"
+        guard ref.hasPrefix(prefix), ref.count > prefix.count else { return nil }
+        return String(ref.dropFirst(prefix.count))
+    }
+
     /// Lists all local branches, sorted alphabetically.
     /// Uses `git for-each-ref refs/heads --format=%(refname:short)`.
     /// Returns an empty array on any git failure (degrades gracefully, never throws).
@@ -256,8 +271,27 @@ public struct GitService: Sendable {
         return result.exitCode == 0
     }
 
+    /// The start point to hand `git worktree add -b`, or nil when `startPoint` names
+    /// nothing git can resolve here and no branch on origin. Given a name it cannot
+    /// resolve that exactly one remote has as a branch, git 2.54 ignores `-b`: it
+    /// checks out a new local branch named after the start point instead of the
+    /// requested one, and exits 0 (issue #26). So a branch that is only origin's
+    /// here — `release-2`, never checked out — goes in as `origin/release-2`, and
+    /// anything git resolves (a local branch, a tag, a sha, `origin/<name>`) as is.
+    public func resolveStartPoint(repoPath: String, _ startPoint: String) async -> String? {
+        if await refExists(repoPath: repoPath, "\(startPoint)^{commit}") {
+            return startPoint
+        }
+        if await refExists(repoPath: repoPath, "refs/remotes/origin/\(startPoint)") {
+            return "origin/\(startPoint)"
+        }
+        return nil
+    }
+
     // MARK: - Worktree mutations
 
+    /// With `createBranch`, pass a `startPoint` from `resolveStartPoint`: given a bare
+    /// name only a remote has, git checks out a branch of that name instead (issue #26).
     public func addWorktree(repoPath: String, branch: String, startPoint: String, at path: String, createBranch: Bool) async throws {
         var args = ["-C", repoPath, "worktree", "add"]
         if createBranch {

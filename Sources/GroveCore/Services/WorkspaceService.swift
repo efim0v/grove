@@ -448,9 +448,36 @@ public struct WorkspaceService {
             let worktreePath = (umbrella as NSString).appendingPathComponent(repo.dirName)
             let exists = await git.branchExists(repoPath: repo.path, branch)
             let createBranch = !exists
+            // A start point git cannot resolve goes in as origin/<name> when origin has
+            // that branch (see resolveStartPoint), otherwise as typed: git then rejects
+            // it, or makes up a local branch of that name from another remote.
+            var unresolvedStartPoint: String?
+            if createBranch {
+                if let resolved = await git.resolveStartPoint(repoPath: repo.path, startPoint) {
+                    startPoint = resolved
+                } else {
+                    unresolvedStartPoint = startPoint
+                }
+            }
             do {
                 try await git.addWorktree(repoPath: repo.path, branch: branch, startPoint: startPoint,
                                           at: worktreePath, createBranch: createBranch)
+                // Exit 0 does not prove the worktree is on `branch` (issue #26). If it is
+                // not, the checkout is this run's own: roll it back and stop, as for a
+                // failed add.
+                let checkedOut = await git.checkedOutBranch(at: worktreePath)
+                guard checkedOut == branch else {
+                    let problem = "git checked out \(checkedOut ?? "a detached HEAD"), not \(branch)"
+                    logLines.append("[\(repo.dirName)] worktree add failed: \(problem)")
+                    // The branch the add created goes too: one git made up, named after the
+                    // start point nothing resolved, or else `branch` when it was new.
+                    let madeUp = unresolvedStartPoint.flatMap { $0 == checkedOut ? $0 : nil }
+                    logLines += await rollback([CreatedArtifact(
+                        repoPath: repo.path, worktreePath: worktreePath,
+                        branch: madeUp ?? branch, branchWasCreated: madeUp != nil || createBranch)])
+                    return CreationReport(artifacts: artifacts, logLines: logLines,
+                                          failure: "worktree add failed in \(repo.dirName): \(problem)")
+                }
                 artifacts.append(CreatedArtifact(repoPath: repo.path, worktreePath: worktreePath,
                                                  branch: branch, branchWasCreated: createBranch))
                 logLines.append("[\(repo.dirName)] worktree \(worktreePath) on \(branch) from \(startPoint)")
