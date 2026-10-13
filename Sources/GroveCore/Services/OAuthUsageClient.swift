@@ -8,11 +8,67 @@ public protocol UsageFetching: Sendable {
 
 /// Default production fetcher over URLSession (the ONLY place a real request is made).
 public struct URLSessionUsageFetcher: UsageFetching {
-    public init() {}
+    /// Every usage and profile request goes through this one session, and it keeps
+    /// nothing about them: no URL cache, cookies or credentials, on disk or in memory.
+    /// A static, so every fetcher shares its connections.
+    static let session = URLSession(configuration: configuration())
+
+    /// The session's settings, applied to `base`: ephemeral, no URL cache, cookie or
+    /// credential storage, and never an answer from a cache. `base` is a seam for tests,
+    /// which hand in a configuration that does have a cache and check nothing reaches it.
+    static func configuration(from base: URLSessionConfiguration = .ephemeral) -> URLSessionConfiguration {
+        base.urlCache = nil
+        base.requestCachePolicy = .reloadIgnoringLocalCacheData
+        base.httpCookieStorage = nil
+        base.urlCredentialStorage = nil
+        return base
+    }
+
+    /// Builds before this one sent these requests through `URLSession.shared`, so the
+    /// app's shared URL cache (`~/Library/Caches/<bundle id>/Cache.db`) may still hold
+    /// them. The first request of each launch empties it: neither Grove nor Brow uses
+    /// that cache for anything else, and emptying an empty cache costs next to nothing.
+    /// All of it rather than the two URLs — a removed entry stays behind in the cache's
+    /// SQLite write-ahead log, an emptied cache does not.
+    static let sharedCachePurge = CachePurge { URLCache.shared }
+
+    let session: URLSession
+    let purge: CachePurge?
+
+    public init() {
+        self.init(session: Self.session, purge: Self.sharedCachePurge)
+    }
+
+    /// Tests: a session that answers in-process, and a purge of a cache of their own.
+    init(session: URLSession, purge: CachePurge?) {
+        self.session = session
+        self.purge = purge
+    }
+
     public func fetch(_ request: URLRequest) async throws -> (Data, Int) {
-        let (data, response) = try await URLSession.shared.data(for: request)
+        purge?.runOnce()
+        let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return (data, status)
+    }
+
+    /// Empties a URL cache the first time it runs and never again. Every default
+    /// fetcher shares one (`sharedCachePurge`), which makes it once per launch.
+    final class CachePurge: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cache: (@Sendable () -> URLCache)?
+
+        /// `cache` is not called until the first `runOnce`.
+        init(_ cache: @escaping @Sendable () -> URLCache) { self.cache = cache }
+
+        func runOnce() {
+            let pending: (@Sendable () -> URLCache)? = lock.withLock {
+                let pending = cache
+                cache = nil
+                return pending
+            }
+            pending?().removeAllCachedResponses()
+        }
     }
 }
 
