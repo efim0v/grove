@@ -441,7 +441,7 @@
             <tr><th scope="row">Repositories</th><td data-label="claude --worktree">The repository you run it in</td><td data-label="Grove workspace">Every repository you pick, under one directory</td></tr>
             <tr><th scope="row">Location</th><td data-label="claude --worktree"><code>.claude/worktrees/&lt;name&gt;/</code> at the repository root; elsewhere through a <code>WorktreeCreate</code> hook, or with <code>git worktree add</code> yourself</td><td data-label="Grove workspace"><code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code> by default, set by a template</td></tr>
             <tr><th scope="row">Branch</th><td data-label="claude --worktree"><code>worktree-&lt;name&gt;</code></td><td data-label="Grove workspace">From a template, <code>feat/{name}</code> by default</td></tr>
-            <tr><th scope="row">Start point</th><td data-label="claude --worktree"><code>worktree.baseRef</code>: <code>fresh</code> (the remote default branch) or <code>head</code>; it can’t name a branch. Given a pull request number or URL, the worktree starts from that pull request.</td><td data-label="Grove workspace">A base branch per repository, from <code>origin/HEAD</code> or set by hand, or another workspace’s branches</td></tr>
+            <tr><th scope="row">Start point</th><td data-label="claude --worktree"><code>worktree.baseRef</code>: <code>fresh</code> (the remote default branch) or <code>head</code> (your local <code>HEAD</code>); it can’t name a branch. Given a pull request number or URL, the worktree starts from that pull request.</td><td data-label="Grove workspace">A base branch per repository, from <code>origin/HEAD</code> or set by hand, or another workspace’s branches</td></tr>
             <tr><th scope="row">Files outside git</th><td data-label="claude --worktree"><code>.worktreeinclude</code> copies gitignored files such as <code>.env</code></td><td data-label="Grove workspace">Files you choose, such as <code>CLAUDE.md</code>, linked or copied to the workspace root or into each repository</td></tr>
             <tr><th scope="row">Setup</th><td data-label="claude --worktree">Ask Claude, or run your setup yourself; a <code>WorktreeCreate</code> hook can replace creation</td><td data-label="Grove workspace">A post-create hook per repository</td></tr>
             <tr><th scope="row">Cleanup</th><td data-label="claude --worktree">On exit, removes the worktree of an unnamed session if it is clean, and asks otherwise</td><td data-label="Grove workspace">Workspaces stay until you remove them with <code>git worktree remove</code>. If creating one fails, the app offers to roll back what that run created.</td></tr>
@@ -638,7 +638,7 @@ grove doctor</code></pre>
             <li>Automatic account switching before a limit: claude-swap.</li>
             <li>A terminal built around agents: cmux, which Grove opens sessions in.</li>
           </ul>
-          <p>Grove fits a product split across several repositories, run from the Mac menu bar, with Claude Code sessions across accounts.</p>
+          <p>Grove fits a product split across several repositories that you work on with Claude Code on a Mac, under one account or several.</p>
         </div>
       </div>
     </section>
@@ -678,10 +678,10 @@ grove doctor</code></pre>
           <p>Claude Code deletes transcripts older than <code>cleanupPeriodDays</code>, 30 days by default. Grove’s <a href="#transcripts">transcript mirror</a> keeps them for up to 90 days and 500&nbsp;MB by default, and you can turn it off.</p>
 
           <h3>How many Claude Code sessions can I run at once?</h3>
-          <p>Grove sets no limit of its own. Every session counts toward the usage limits of the account it runs under. Grove keeps each session in its workspace and shows which are running or waiting.</p>
+          <p>Grove sets no limit of its own. Every session counts toward the usage limits of the account it runs under. Grove lists the sessions by project and workspace and shows which are running and which are waiting for you.</p>
 
           <h3>Do I need cmux?</h3>
-          <p>It’s recommended, not required. The launch sheet can open a session in Terminal.app; the other buttons that start or resume a session, such as <strong>Resume</strong> and <strong>Resume as…</strong>, open it in cmux. A workspace is an ordinary directory, so you can also start Claude Code in it from any terminal.</p>
+          <p>It’s recommended, not required. The launch sheet can open a session in Terminal.app; the other buttons that start or resume a session, such as <strong>Resume</strong> and <strong>Resume as…</strong>, open it in cmux. You can also start Claude Code in a workspace yourself, from any terminal.</p>
 
           <h3>Does Grove work with Codex or other agents?</h3>
           <p>A workspace is an ordinary directory, so you can start any CLI agent in it yourself. Grove starts, lists and moves Claude Code sessions only.</p>
@@ -794,7 +794,7 @@ xattr -d com.apple.quarantine grove</code></pre>
           <div>
             <dt>The transcript mirror outlasts Claude Code’s cleanup</dt>
             <dd>
-              <p>Grove keeps a hard link to every session transcript in <code>~/.claude/grove/transcripts/</code> and restores a transcript that disappears from an account, including one you deleted yourself. A hard link takes no extra disk space while the original file exists. <a href="#transcripts">Transcripts</a> above says how long the mirror keeps them.</p>
+              <p>Grove keeps a hard link to every session transcript in <code>~/.claude/grove/transcripts/</code> and restores a transcript that disappears from an account, including one you deleted yourself. A hard link takes no extra disk space while the original file exists. By default the mirror keeps transcripts for up to 90 days and 500&nbsp;MB.</p>
               <p><strong>Purge</strong> on the Sessions screen deletes a transcript for good. To leave retention to Claude Code, turn off <em>Keep a backup of every session</em> in Settings → Transcript safety-net, then delete <code>~/.claude/grove/transcripts/</code>.</p>
             </dd>
           </div>
@@ -830,7 +830,7 @@ xattr -d com.apple.quarantine grove</code></pre>
       <div class="wrap">
         <div class="prose">
           <h2 id="brow-title" class="companion"><img src="brow-mark.svg" width="20" height="20" alt=""><span>Brow shows which account has room</span></h2>
-          <p>Brow lives in the MacBook notch and shows the rate limits of every Claude account you have. Grove moves work between accounts; Brow tells you which account has room. Each runs on its own, and they are built to be used together.</p>
+          <p>Brow lives in the MacBook notch and shows the usage limits of every Claude account you have. Grove moves work between accounts; Brow tells you which account has room. Each runs on its own, and they are built to be used together.</p>
           <p><a href="https://efim0v.github.io/brow/">Brow — Claude Code usage limits in the MacBook notch</a> · <a href="https://github.com/efim0v/brow">Brow on GitHub</a></p>
         </div>
       </div>
