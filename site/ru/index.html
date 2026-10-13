@@ -440,7 +440,7 @@
       <div class="wrap">
         <div class="split">
           <div class="text">
-            <h2 id="workspaces-title">Рабочее пространство на каждую фичу: <span class="nowrap">git worktree</span> каждого репозитория на одной ветке</h2>
+            <h2 id="workspaces-title">Рабочее пространство <span class="nowrap">на каждую</span> фичу: <span class="nowrap">git worktree</span> каждого репозитория <span class="nowrap">на одной</span> ветке</h2>
             <p>Claude Code лучше всего работает, когда видит весь продукт в&nbsp;одном каталоге. Если продукт разнесён по&nbsp;нескольким репозиториям, параллельные сессии начинают спотыкаться о&nbsp;ветки: одна переключает ветку в&nbsp;репозитории сервера&nbsp;— и&nbsp;вторая, занятая другой фичей, вдруг видит не&nbsp;тот код.</p>
             <p>Рабочее пространство Grove&nbsp;— это каталог для одной фичи, в&nbsp;котором лежит git worktree каждого выбранного вами репозитория, и&nbsp;все они на&nbsp;одной ветке. Claude Code запускается в&nbsp;этом каталоге с&nbsp;собственной рабочей копией всего продукта, и&nbsp;ничто из&nbsp;того, что делает другая сессия, не&nbsp;может сменить ветку у&nbsp;него под ногами.</p>
             <pre role="img" aria-label="Каталог рабочего пространства Workspaces/acme-shop/checkout-redesign, в нём worktree репозиториев web-client, api-server и server-config, каждый на ветке feat/checkout-redesign. Claude Code запускается в каталоге рабочего пространства."><code><span class="comment"># запускайте Claude Code здесь:</span>
@@ -508,7 +508,7 @@
     <section id="sessions" aria-labelledby="sessions-title">
       <div class="wrap">
         <div class="prose">
-          <h2 id="sessions-title">Все сессии <span class="nowrap">Claude Code</span> <span class="nowrap">перед глазами —</span> по проектам и аккаунтам</h2>
+          <h2 id="sessions-title">Все сессии <span class="nowrap">Claude Code</span> <span class="nowrap">перед глазами —</span> <span class="nowrap">по проектам</span> <span class="nowrap">и аккаунтам</span></h2>
           <p>Grove находит сессии Claude Code каждого проекта и&nbsp;рабочего пространства во&nbsp;всех ваших аккаунтах. Он показывает, какие сессии запущены, какие ждут вас, а&nbsp;какие закрыты. На&nbsp;экране Projects один клик переводит вас к&nbsp;запущенной сессии&nbsp;— в&nbsp;cmux или Terminal.app.</p>
           <ul class="points">
             <li><strong>Новые и&nbsp;возобновлённые.</strong> В&nbsp;окне запуска выбираются аккаунт, модель и&nbsp;уровень effort, и&nbsp;сессия открывается в&nbsp;cmux или Terminal.app.</li>
@@ -533,7 +533,7 @@
     <section id="accounts" aria-labelledby="accounts-title">
       <div class="wrap split">
         <div class="text">
-          <h2 id="accounts-title">Перенос сессии <span class="nowrap">Claude Code</span> на другой аккаунт</h2>
+          <h2 id="accounts-title">Перенос сессии <span class="nowrap">Claude Code</span> <span class="nowrap">на другой</span> аккаунт</h2>
           <p>Claude Code хранит каждый аккаунт в&nbsp;отдельной папке: <code>~/.claude</code> для аккаунта по&nbsp;умолчанию и&nbsp;<code>~/.claude-accounts/&lt;name&gt;</code> для каждого аккаунта, добавленного в&nbsp;Grove. Сессия не&nbsp;обязана оставаться на&nbsp;том аккаунте, с&nbsp;которого началась. Продолжайте её под другим своим аккаунтом, например, когда у&nbsp;одного из&nbsp;них кончился лимит.</p>
           <dl class="terms">
             <div>
@@ -574,7 +574,7 @@
     <section id="graph" aria-labelledby="graph-title">
       <div class="wrap">
         <div class="prose">
-          <h2 id="graph-title">Граф коммитов и статистика кода по репозиториям</h2>
+          <h2 id="graph-title">Граф коммитов <span class="nowrap">и статистика</span> кода <span class="nowrap">по репозиториям</span></h2>
           <dl class="terms">
             <div>
               <dt>Graph</dt>
@@ -604,7 +604,7 @@
     <section id="cli" aria-labelledby="cli-title">
       <div class="wrap">
         <div class="prose">
-          <h2 id="cli-title">CLI <code>grove</code>: worktree нескольких репозиториев из терминала или скрипта</h2>
+          <h2 id="cli-title">CLI <code>grove</code>: worktree нескольких репозиториев <span class="nowrap">из терминала</span> или скрипта</h2>
           <p>Утилита командной строки <code>grove</code> работает с&nbsp;теми&nbsp;же рабочими пространствами. Команды: <code>scan</code>, <code>workspaces</code>, <code>sessions</code>, <code>create</code>, <code>graph</code> и&nbsp;<code>doctor</code>; каждая принимает флаг <code class="nowrap">--json</code>.</p>
           <pre><code><span class="comment"># репозитории и их worktree</span>
 grove scan ~/code/acme-shop
@@ -629,7 +629,7 @@ grove doctor</code></pre>
     <section id="compare" aria-labelledby="compare-title">
       <div class="wrap">
         <div class="prose">
-          <h2 id="compare-title">Чем Grove отличается от других инструментов</h2>
+          <h2 id="compare-title">Чем Grove отличается <span class="nowrap">от других</span> инструментов</h2>
           <p>Запускать Claude Code параллельно умеют многие инструменты. Сведения ниже взяты с&nbsp;сайта или из&nbsp;README каждого инструмента.</p>
         </div>
         <table class="ruled tools">
@@ -799,7 +799,7 @@ xattr -d com.apple.quarantine grove</code></pre>
     <section id="on-your-mac" aria-labelledby="privacy-title">
       <div class="wrap">
         <div class="prose">
-          <h2 id="privacy-title">Что Grove меняет на вашем Mac</h2>
+          <h2 id="privacy-title">Что Grove меняет <span class="nowrap">на вашем</span> Mac</h2>
           <p>Grove работает внутри собственных папок Claude Code. Здесь перечислено всё, что он там меняет, и&nbsp;как это откатить.</p>
           <p><strong>Чего Grove не&nbsp;делает.</strong> Он не&nbsp;читает учётные данные Claude Code: вход в&nbsp;аккаунты и&nbsp;лимиты&nbsp;— забота Brow. В&nbsp;нём нет телеметрии, собственных сетевых запросов он не&nbsp;делает, а&nbsp;его команды git никогда не&nbsp;выполняют fetch, pull или push.</p>
         </div>
@@ -862,7 +862,7 @@ xattr -d com.apple.quarantine grove</code></pre>
     <section id="brow" aria-labelledby="brow-title">
       <div class="wrap">
         <div class="prose">
-          <h2 id="brow-title" class="companion"><img src="../brow-mark.svg" width="20" height="20" alt=""><span>Brow показывает, у какого аккаунта есть запас</span></h2>
+          <h2 id="brow-title" class="companion"><img src="../brow-mark.svg" width="20" height="20" alt=""><span>Brow показывает, <span class="nowrap">у какого</span> аккаунта есть запас</span></h2>
           <p>Brow живёт в&nbsp;чёлке MacBook и&nbsp;показывает лимиты всех ваших аккаунтов Claude. Grove переносит работу между аккаунтами, а&nbsp;Brow подсказывает, у&nbsp;какого аккаунта есть запас. Каждое приложение работает и&nbsp;само по&nbsp;себе, но&nbsp;задуманы они как пара.</p>
           <p><a href="https://efim0v.github.io/brow/">Brow&nbsp;— лимиты Claude Code в&nbsp;чёлке MacBook</a> · <a href="https://github.com/efim0v/brow">Brow на&nbsp;GitHub</a></p>
         </div>
