@@ -281,7 +281,7 @@ claude</code></pre>
             </ul>
 
             <h3 id="in-grove">In Grove</h3>
-            <p>In Grove, a project is the folder that holds your repositories. Add it once: click the tree icon in the menu bar, open Settings, press <strong class="nowrap">Add project…</strong> and pick the folder. Then open the project and, on its <strong>Workspaces</strong> tab, press <strong class="nowrap">+ Workspace</strong>:</p>
+            <p>A Grove project is the folder that holds your repositories. Add it once: click the tree icon in the menu bar, open Settings, press <strong class="nowrap">Add project…</strong> and pick the folder. Then open the project and, on its <strong>Workspaces</strong> tab, press <strong class="nowrap">+ Workspace</strong>:</p>
             <ol class="steps">
               <li>Type a name. The branch comes from the project’s template, <code>feat/{name}</code> by default, and you can change it.</li>
               <li>Every repository is ticked; untick the ones the feature doesn’t touch. Each starts from its own base branch, detected from <code>origin/HEAD</code> or set in the project’s settings, and the <strong>from</strong> menu next to it picks another. <strong>Fork from</strong> can start them from another workspace’s branches instead.</li>
@@ -295,7 +295,7 @@ claude</code></pre>
             </figure>
 
             <h3 id="with-the-cli">With the <code>grove</code> command-line tool</h3>
-            <p>The <code>grove</code> command-line tool does the same from a terminal or a script. It installs with Homebrew:</p>
+            <p>The CLI does the same from a terminal or a script, and installs with Homebrew:</p>
             <pre><code>brew install efim0v/tap/grove-cli</code></pre>
             <p>Then create the workspace and start Claude Code in it:</p>
             <pre><code>grove create ~/code/acme-shop loyalty-points \
@@ -333,7 +333,7 @@ claude</code></pre>
               <li><code class="nowrap">--no-track</code> keeps git from making <code>origin/main</code> the new branch’s upstream, which it does by default when the start point is a remote-tracking branch. With that upstream, <code>git status</code> compares the branch with <code>origin/main</code>, and a plain <code>git push</code> refuses by default because the names differ. A branch Grove creates from <code>origin/main</code> does get that upstream: Grove doesn’t pass <code class="nowrap">--no-track</code>. Either way, the first push is <code>git push -u origin feat/loyalty-points</code>.</li>
               <li><code>git fetch</code> comes first because nothing else here fetches: the worktree starts from <code>origin/main</code> as your clone last saw it. Grove doesn’t fetch either; its git commands never fetch, pull or push.</li>
             </ul>
-            <p>What Grove adds to these commands:</p>
+            <p>What Grove adds:</p>
             <ul class="points">
               <li>Branch names from a template, <code>feat/{name}</code> by default.</li>
               <li>A base branch per repository, detected from <code>origin/HEAD</code> or set by hand, or another workspace’s branches, so workspaces can be stacked.</li>
@@ -376,10 +376,11 @@ claude</code></pre>
             <p>No. Each repository starts from its own. In Grove it is detected from <code>origin/HEAD</code>, set per repository in the project’s settings, or picked on the New Workspace form. With the CLI, <code class="nowrap">--from-branch</code> sets it for one repository, and you can repeat it:</p>
             <pre><code>grove create ~/code/acme-shop loyalty-points \
   --from-branch api-server=origin/develop</code></pre>
-            <p>Write <code>origin/develop</code> unless the repository has a local <code>develop</code> branch. Given a name that exists only on the remote, <code>git worktree add</code> puts the worktree on that branch and doesn’t create the feature branch.</p>
+            <p>Use <code>origin/develop</code> unless the repository has a local <code>develop</code> branch. Given a name that exists only on the remote, <code>git worktree add</code> puts the worktree on that branch and doesn’t create the feature branch.</p>
 
             <h3>What if the feature branch already exists?</h3>
-            <p>If a repository already has a local branch of that name, Grove checks it out in the new worktree instead of creating it. Grove doesn’t look at the remote: for a branch that exists only on <code>origin</code>, it creates a new local branch from the base branch, so create the local branch first. By hand, leave out <code class="nowrap">-b</code> and <code class="nowrap">--no-track</code> and name the branch in place of the start point. git checks out the local branch or, if there is none, creates one that tracks the branch on <code>origin</code>:</p>
+            <p>If a repository already has a local branch of that name, Grove checks it out in the new worktree instead of creating it. Grove doesn’t look at the remote: when the branch exists only on <code>origin</code>, it creates a new local branch from the base branch, so create the local branch first.</p>
+            <p>By hand, leave out <code class="nowrap">-b</code> and <code class="nowrap">--no-track</code> and name the branch in place of the start point. git checks out the local branch or, if there is none, creates one that tracks the branch on <code>origin</code>:</p>
             <pre><code>cd ~/code/acme-shop
 ws=~/Workspaces/acme-shop/loyalty-points
 git -C api-server worktree add \
@@ -414,7 +415,7 @@ rmdir "$ws"</code></pre>
               <li><a href="/grove/move-session-to-another-account/">Continue a Claude Code session on another account</a></li>
               <li><a href="https://efim0v.github.io/brow/">Brow — Claude Code usage limits in the MacBook notch</a></li>
             </ul>
-            <p class="small">Claude Code behaviour on this page was checked on 13 October 2026 against Anthropic’s documentation: the <a href="https://code.claude.com/docs/en/cli-reference">CLI reference</a>, <a href="https://code.claude.com/docs/en/permissions#working-directories">working directories</a>, <a href="https://code.claude.com/docs/en/memory#load-from-additional-directories">CLAUDE.md in additional directories</a>, <a href="https://code.claude.com/docs/en/settings-reference#permissions-additionaldirectories"><code>permissions.additionalDirectories</code></a> and <a href="https://code.claude.com/docs/en/worktrees">worktrees</a>. git behaviour is from the <a href="https://git-scm.com/docs/git-worktree"><span class="nowrap">git-worktree</span> manual</a>.</p>
+            <p class="small">Claude Code behavior on this page was checked on 13 October 2026 against Anthropic’s documentation: the <a href="https://code.claude.com/docs/en/cli-reference">CLI reference</a>, <a href="https://code.claude.com/docs/en/permissions#working-directories">working directories</a>, <a href="https://code.claude.com/docs/en/memory#load-from-additional-directories">CLAUDE.md in additional directories</a>, <a href="https://code.claude.com/docs/en/settings-reference#permissions-additionaldirectories"><code>permissions.additionalDirectories</code></a> and <a href="https://code.claude.com/docs/en/worktrees">worktrees</a>. git behavior is from the <a href="https://git-scm.com/docs/git-worktree"><span class="nowrap">git-worktree</span> manual</a> and was tried with git 2.54.</p>
           </div>
         </div>
       </section>
