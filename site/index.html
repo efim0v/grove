@@ -275,21 +275,41 @@
     .terms dd { margin: 0; }
     @media (max-width: 640px) { .terms > div { grid-template-columns: minmax(0, 1fr); row-gap: 2px; } }
 
+    /* Tables: a hairline above each row and one under the last, nothing else */
+    .ruled { border-collapse: collapse; margin: 0 0 36px; }
+    .ruled th, .ruled td { padding: 10px 16px 10px 0; border-top: 1px solid var(--rule); vertical-align: top; text-align: left; }
+    .ruled th { font-weight: 600; }
+    .ruled tr > :last-child { padding-right: 0; }
+    .ruled tbody tr:last-child > * { border-bottom: 1px solid var(--rule); }
+    @media (max-width: 480px) {
+      .ruled { font-size: .9375rem; }
+      .ruled th, .ruled td { padding-right: 12px; }
+      .ruled tr > :last-child { padding-right: 0; }
+    }
+
     /* Requirements: one real table, as wide as the privacy list */
-    .needs { width: min(100%, 46rem); border-collapse: collapse; margin: 0 0 36px; }
-    .needs th, .needs td { padding: 10px 16px 10px 0; border-top: 1px solid var(--rule); vertical-align: top; text-align: left; }
-    .needs thead th { font-weight: 600; }
+    .needs { width: min(100%, 46rem); }
     .needs tbody th { font-weight: 400; }
     /* The Brow link may wrap; the requirements themselves stay on one line */
     .needs tbody th a { white-space: normal; }
-    .needs tr > :last-child { padding-right: 0; }
-    .needs tbody tr:last-child > * { border-bottom: 1px solid var(--rule); }
     @media (min-width: 760px) { .needs tbody th { white-space: nowrap; padding-right: 32px; } }
     @media (max-width: 759px) { .needs thead th:first-child { width: 50%; } }
-    @media (max-width: 480px) {
-      .needs { font-size: .9375rem; }
-      .needs th, .needs td { padding-right: 12px; }
-      .needs tr > :last-child { padding-right: 0; }
+
+    /* Grove workspaces vs claude --worktree: row names on the left */
+    .versus { width: min(100%, 46rem); margin: 24px 0 16px; }
+    @media (min-width: 760px) { .versus tbody th { white-space: nowrap; padding-right: 32px; } }
+
+    /* Where the columns don't fit, each row becomes a block: its name, then
+       each value after its column name, the way the term lists stack */
+    @media (max-width: 640px) {
+      .versus thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .versus, .versus tbody, .versus tr, .versus th, .versus td { display: block; }
+      .versus tr { padding: 12px 0 13px; border-top: 1px solid var(--rule); }
+      .versus tbody tr:last-child { border-bottom: 1px solid var(--rule); }
+      .versus tr > *, .versus tbody tr:last-child > * { padding: 0; border: 0; }
+      .versus th { margin-bottom: 4px; }
+      .versus td + td { margin-top: 4px; }
+      .versus td::before { content: attr(data-label) ": "; color: var(--muted); }
     }
 
     /* What changes on your Mac */
@@ -378,7 +398,6 @@
 ├── web-client/     <span class="comment">feat/checkout-redesign</span>
 ├── api-server/     <span class="comment">feat/checkout-redesign</span>
 └── server-config/  <span class="comment">feat/checkout-redesign</span></code></pre>
-            <p class="small">Claude Code’s own <code>--worktree</code> flag starts a session in a new worktree of the one repository you run it in. A Grove workspace spans all the repositories of a product, under one directory.</p>
             <h3>What is a git worktree?</h3>
             <p>A <a href="https://git-scm.com/docs/git-worktree">git worktree</a> is an extra working directory of a repository, with its own files and its own checked-out branch, sharing the repository’s history and remotes. Running each Claude Code session in its own worktree lets one session build a feature while another fixes a bug. A Grove workspace does this for every repository of a product at once, under one directory.</p>
           </div>
@@ -388,6 +407,31 @@
             <figcaption>A name and a click: Grove runs <code>git worktree add</code> in each repository.</figcaption>
           </figure>
         </div>
+      </div>
+    </section>
+
+    <section id="vs-worktree" aria-labelledby="vs-worktree-title">
+      <div class="wrap">
+        <div class="prose">
+          <h2 id="vs-worktree-title">Grove workspaces vs <code>claude --worktree</code></h2>
+          <p>Claude Code’s own <code>--worktree</code> starts a session in a new worktree of the repository you run it in. If your product lives in one repository, that may be all you need. For a product split across repositories:</p>
+        </div>
+        <table class="ruled versus">
+          <thead>
+            <tr><td></td><th scope="col"><code>claude --worktree</code></th><th scope="col">Grove workspace</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Repositories</th><td data-label="claude --worktree">The repository you run it in</td><td data-label="Grove workspace">Every repository you pick, under one directory</td></tr>
+            <tr><th scope="row">Location</th><td data-label="claude --worktree"><code>.claude/worktrees/&lt;name&gt;/</code> at the repository root; elsewhere through a <code>WorktreeCreate</code> hook, or with <code>git worktree add</code> yourself</td><td data-label="Grove workspace"><code>~/Workspaces/&lt;project&gt;/&lt;name&gt;</code> by default, set by a template</td></tr>
+            <tr><th scope="row">Branch</th><td data-label="claude --worktree"><code>worktree-&lt;name&gt;</code></td><td data-label="Grove workspace">From a template, <code>feat/{name}</code> by default</td></tr>
+            <tr><th scope="row">Start point</th><td data-label="claude --worktree"><code>worktree.baseRef</code>: <code>fresh</code> (the remote default branch) or <code>head</code>; it can’t name a branch. Given a pull request number or URL, the worktree starts from that pull request.</td><td data-label="Grove workspace">A base branch per repository, from <code>origin/HEAD</code> or set by hand, or another workspace’s branches</td></tr>
+            <tr><th scope="row">Files outside git</th><td data-label="claude --worktree"><code>.worktreeinclude</code> copies gitignored files such as <code>.env</code></td><td data-label="Grove workspace">Files you choose, such as <code>CLAUDE.md</code>, linked or copied to the workspace root or into each repository</td></tr>
+            <tr><th scope="row">Setup</th><td data-label="claude --worktree">Ask Claude, or run your setup yourself; a <code>WorktreeCreate</code> hook can replace creation</td><td data-label="Grove workspace">A post-create hook per repository</td></tr>
+            <tr><th scope="row">Cleanup</th><td data-label="claude --worktree">On exit, removes the worktree of an unnamed session if it is clean, and asks otherwise</td><td data-label="Grove workspace">Workspaces stay until you remove them with <code>git worktree remove</code>. If creating one fails, the app offers to roll back what that run created.</td></tr>
+            <tr><th scope="row">Accounts</th><td data-label="claude --worktree">—</td><td data-label="Grove workspace"><strong>Resume as…</strong>, <strong>Migrate to…</strong>, <strong>Share</strong></td></tr>
+          </tbody>
+        </table>
+        <p class="small">Claude Code facts from its <a href="https://code.claude.com/docs/en/worktrees">worktree documentation</a>, checked on 13 October 2026.</p>
       </div>
     </section>
 
@@ -535,7 +579,7 @@ grove doctor</code></pre>
     <section id="requirements" aria-labelledby="requirements-title">
       <div class="wrap">
         <h2 id="requirements-title">What you need</h2>
-        <table class="needs">
+        <table class="ruled needs">
           <thead>
             <tr><th scope="col">You need</th><th scope="col">Notes</th></tr>
           </thead>
