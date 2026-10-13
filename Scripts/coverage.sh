@@ -9,14 +9,25 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 swift test --enable-code-coverage
-PROF=$(find .build -name default.profdata -path '*debug*' | head -1)
-BIN=$(find .build -name GrovePackageTests -path '*debug*xctest*' -type f | head -1)
+# With either SwiftPM build system .build/debug links to the debug products. The classic
+# one makes a single GrovePackageTests bundle (plus a .dSYM folder next to its binary,
+# hence plain files only); the newer one, the default in Swift 6.4, makes one bundle per
+# test target. llvm-cov reads them all and counts code linked into several bundles once.
+PROF=.build/debug/codecov/default.profdata
+OBJECTS=()
+for bin in .build/debug/*.xctest/Contents/MacOS/*(.N); do
+    OBJECTS+=(-object "$bin")
+done
+if [[ ! -f "$PROF" || ${#OBJECTS[@]} -eq 0 ]]; then
+    echo "no coverage profile or test bundle under .build/debug" >&2
+    exit 1
+fi
 
 # Excluded from the logic gate (validated by other means, not unit coverage).
 GATE_IGNORE='Tests|\.build|GroveAppKit/Views/|GroveMenuBarApp|DesignSystem|GroveLog|Snapshot/SnapshotMode|Services/Cmux|Diagnostics/CmuxProbe'
 
 cover() {
-    xcrun llvm-cov report "$BIN" -instr-profile="$PROF" \
+    xcrun llvm-cov report "${OBJECTS[@]}" -instr-profile="$PROF" \
         -ignore-filename-regex="$1" --show-region-summary=false 2>/dev/null \
         | grep TOTAL | awk '{n=NF; v=$(n-3); gsub("%","",v); print v}'
 }
