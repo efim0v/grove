@@ -14,7 +14,7 @@ Fixes ship in a new release. Please check that the problem still happens on the 
 
 Please do not report a security problem in a public issue, discussion or pull request.
 
-Use GitHub's private reporting instead: **[Report a vulnerability](https://github.com/efim0v/grove/security/advisories/new)**. The report stays private between you and the maintainer until an advisory is published. If you can't use GitHub, email artem.efimov.k@gmail.com.
+Use GitHub's private reporting instead: **[Report a vulnerability](https://github.com/efim0v/grove/security/advisories/new)**. The report stays private between you and the maintainer until an advisory is published. If you can't use GitHub, email a.efimov@mizzle.studio.
 
 A useful report says:
 
