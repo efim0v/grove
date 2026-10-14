@@ -1,6 +1,6 @@
 English · [Русский](README.ru.md) · [简体中文](README.zh-CN.md)
 
-Website: [efim0v.github.io/grove](https://efim0v.github.io/grove/)
+Website: [efimov.page/grove](https://efimov.page/grove/)
 
 # Grove — multi-repo git-worktree workspaces for parallel Claude Code sessions
 

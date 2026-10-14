@@ -35,4 +35,4 @@ jobs:
           persist-credentials: false
 
       - name: Check tags, JSON-LD and the sitemap
-        run: python3 Scripts/check_seo.py site https://efim0v.github.io/grove/
+        run: python3 Scripts/check_seo.py site https://efimov.page/grove/

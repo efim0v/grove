@@ -6,11 +6,11 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'none'">
   <title>Grove：Claude Code 并行会话与多仓库 git worktree 工作区（macOS）</title>
   <meta name="description" content="在多仓库项目上并行运行 Claude Code：每个功能一个工作区（workspace），内含各仓库同一分支的 git worktree；还能跨账号迁移会话。免费开源 macOS 应用与 CLI。">
-  <link rel="canonical" href="https://efim0v.github.io/grove/zh-cn/">
-  <link rel="alternate" hreflang="en" href="https://efim0v.github.io/grove/">
-  <link rel="alternate" hreflang="ru" href="https://efim0v.github.io/grove/ru/">
-  <link rel="alternate" hreflang="zh-Hans" href="https://efim0v.github.io/grove/zh-cn/">
-  <link rel="alternate" hreflang="x-default" href="https://efim0v.github.io/grove/">
+  <link rel="canonical" href="https://efimov.page/grove/zh-cn/">
+  <link rel="alternate" hreflang="en" href="https://efimov.page/grove/">
+  <link rel="alternate" hreflang="ru" href="https://efimov.page/grove/ru/">
+  <link rel="alternate" hreflang="zh-Hans" href="https://efimov.page/grove/zh-cn/">
+  <link rel="alternate" hreflang="x-default" href="https://efimov.page/grove/">
   <meta name="robots" content="max-image-preview:large">
   <meta name="author" content="Artem Efimov">
   <meta name="color-scheme" content="light dark">
@@ -23,8 +23,8 @@
   <meta property="og:site_name" content="Grove">
   <meta property="og:title" content="Grove：Claude Code 并行会话与多仓库 git worktree 工作区（macOS）">
   <meta property="og:description" content="macOS 菜单栏应用与 CLI：每个功能一个目录，内含你每个仓库的 git worktree；跨账号管理 Claude Code 会话，还能把会话从一个账号迁移到另一个账号。">
-  <meta property="og:url" content="https://efim0v.github.io/grove/zh-cn/">
-  <meta property="og:image" content="https://efim0v.github.io/grove/og.png">
+  <meta property="og:url" content="https://efimov.page/grove/zh-cn/">
+  <meta property="og:image" content="https://efimov.page/grove/og.png">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1280">
   <meta property="og:image:height" content="640">
@@ -35,7 +35,7 @@
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Grove：Claude Code 并行会话与多仓库 git worktree 工作区（macOS）">
   <meta name="twitter:description" content="macOS 菜单栏应用与 CLI：每个功能一个目录，内含你每个仓库的 git worktree；跨账号管理 Claude Code 会话，还能把会话从一个账号迁移到另一个账号。">
-  <meta name="twitter:image" content="https://efim0v.github.io/grove/og.png">
+  <meta name="twitter:image" content="https://efimov.page/grove/og.png">
   <meta name="twitter:image:alt" content="Grove：面向并行 Claude Code 会话的 git worktree 工作区，旁边是它的 Workspaces 界面截图。">
 
   <script type="application/ld+json">
@@ -44,10 +44,10 @@
     "@graph": [
       {
         "@type": "SoftwareApplication",
-        "@id": "https://efim0v.github.io/grove/#app",
+        "@id": "https://efimov.page/grove/#app",
         "name": "Grove",
         "description": "一款 macOS 菜单栏应用和命令行工具，用于在多个仓库上并行运行 Claude Code 会话：多仓库项目的每个功能都有自己的工作区（workspace），即一个目录，里面放着你选中的每个仓库的 git worktree，全部处于同一个分支。它还会集中显示各个项目、各个账号下的 Claude Code 会话，并能把会话从一个 Claude 账号迁移到另一个账号。",
-        "url": "https://efim0v.github.io/grove/",
+        "url": "https://efimov.page/grove/",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "macOS 26 或更高版本",
         "processorRequirements": "Apple 芯片（arm64）",
@@ -59,13 +59,13 @@
         "isAccessibleForFree": true,
         "license": "https://www.gnu.org/licenses/gpl-3.0.html",
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-        "image": "https://efim0v.github.io/grove/img/grove-workspaces.webp",
+        "image": "https://efimov.page/grove/img/grove-workspaces.webp",
         "screenshot": [
-          { "@type": "ImageObject", "url": "https://efim0v.github.io/grove/img/grove-workspaces.webp", "width": 1200, "height": 1520,
+          { "@type": "ImageObject", "url": "https://efimov.page/grove/img/grove-workspaces.webp", "width": 1200, "height": 1520,
             "caption": "Grove 的 Workspaces 界面，项目名为 acme-shop：五个工作区排成一棵树，其中一个已展开，显示 web-client 和 api-server 在 feat/checkout-redesign 分支上的 worktree，以及其中的两个 Claude Code 会话" },
-          { "@type": "ImageObject", "url": "https://efim0v.github.io/grove/img/grove-new-workspace.webp", "width": 1080, "height": 722,
+          { "@type": "ImageObject", "url": "https://efimov.page/grove/img/grove-new-workspace.webp", "width": 1080, "height": 722,
             "caption": "New Workspace 表单：分支 feat/loyalty-points 由模板 feat/{name} 生成，勾选了五个仓库，每个仓库都有自己的基础分支" },
-          { "@type": "ImageObject", "url": "https://efim0v.github.io/grove/img/grove-accounts.webp", "width": 1120, "height": 1362,
+          { "@type": "ImageObject", "url": "https://efimov.page/grove/img/grove-accounts.webp", "width": 1120, "height": 1362,
             "caption": "Accounts 界面：personal 账号标记为 canonical，下面是它的会话；再往下是 work 账号，标记为 shared" }
         ],
         "featureList": [
@@ -77,34 +77,34 @@
           "跨仓库的提交图与代码统计",
           "grove 命令行工具：scan、workspaces、sessions、create、graph 和 doctor，每个命令都支持 --json"
         ],
-        "author": { "@id": "https://efim0v.github.io/#person" },
+        "author": { "@id": "https://efimov.page/#person" },
         "sameAs": ["https://github.com/efim0v/grove"]
       },
       {
         "@type": "SoftwareSourceCode",
-        "@id": "https://efim0v.github.io/grove/#source",
+        "@id": "https://efimov.page/grove/#source",
         "name": "Grove 源代码",
         "codeRepository": "https://github.com/efim0v/grove",
         "programmingLanguage": "Swift",
         "license": "https://www.gnu.org/licenses/gpl-3.0.html",
-        "author": { "@id": "https://efim0v.github.io/#person" },
-        "targetProduct": { "@id": "https://efim0v.github.io/grove/#app" }
+        "author": { "@id": "https://efimov.page/#person" },
+        "targetProduct": { "@id": "https://efimov.page/grove/#app" }
       },
       {
         "@type": "Person",
-        "@id": "https://efim0v.github.io/#person",
+        "@id": "https://efimov.page/#person",
         "name": "Artem Efimov",
         "url": "https://github.com/efim0v",
         "sameAs": ["https://github.com/efim0v"]
       },
       {
         "@type": "WebPage",
-        "@id": "https://efim0v.github.io/grove/zh-cn/#webpage",
-        "url": "https://efim0v.github.io/grove/zh-cn/",
+        "@id": "https://efimov.page/grove/zh-cn/#webpage",
+        "url": "https://efimov.page/grove/zh-cn/",
         "name": "Grove：Claude Code 并行会话与多仓库 git worktree 工作区（macOS）",
         "description": "在多仓库项目上并行运行 Claude Code：每个功能一个工作区（workspace），内含各仓库同一分支的 git worktree；还能跨账号迁移会话。免费开源 macOS 应用与 CLI。",
         "inLanguage": "zh-Hans",
-        "about": { "@id": "https://efim0v.github.io/grove/#app" }
+        "about": { "@id": "https://efimov.page/grove/#app" }
       }
     ]
   }
@@ -767,7 +767,7 @@ grove doctor</code></pre>
             <tr><th scope="row"><a href="https://claude.com/claude-code">Claude Code</a> 和 git</th><td></td></tr>
             <tr><th scope="row">cmux（推荐）或 Terminal.app</th><td>用于运行会话</td></tr>
             <tr><th scope="row">在默认的 <code>~/.claude</code> 中登录一个账号</th><td>用于跨账号的 <strong>Resume as…</strong> 和会话记录镜像</td></tr>
-            <tr><th scope="row"><a href="https://efim0v.github.io/brow/zh-cn/">Brow：在 MacBook 刘海中查看 Claude Code 额度</a>（可选）</th><td>安装了 Brow 时，Grove 会把 Brow 的浏览器路由脚本传给它启动的会话，这样登录页面会在该账号自己的浏览器配置文件中打开。</td></tr>
+            <tr><th scope="row"><a href="https://efimov.page/brow/zh-cn/">Brow：在 MacBook 刘海中查看 Claude Code 额度</a>（可选）</th><td>安装了 Brow 时，Grove 会把 Brow 的浏览器路由脚本传给它启动的会话，这样登录页面会在该账号自己的浏览器配置文件中打开。</td></tr>
           </tbody>
         </table>
         <div class="prose">
@@ -885,7 +885,7 @@ xattr -d com.apple.quarantine grove</code></pre>
         <div class="prose">
           <h2 id="brow-title" class="companion"><img src="../brow-mark.svg" width="20" height="20" alt=""><span>Brow 显示哪个账号还有余量</span></h2>
           <p>Brow 常驻在 MacBook 的刘海里，显示你所有 Claude 账号的用量限额。Grove 负责在账号之间转移工作，Brow 告诉你哪个账号还有余量。两者都可以单独运行，同时也是专为搭配使用而设计的。Brow 的指南（英文）介绍了如何<a href="/brow/multiple-claude-accounts/">在一台 Mac 上使用多个 Claude Code 账号</a>。</p>
-          <p><a href="https://efim0v.github.io/brow/zh-cn/">Brow：在 MacBook 刘海中查看 Claude Code 额度</a> · <a href="https://github.com/efim0v/brow">GitHub 上的 Brow</a></p>
+          <p><a href="https://efimov.page/brow/zh-cn/">Brow：在 MacBook 刘海中查看 Claude Code 额度</a> · <a href="https://github.com/efim0v/brow">GitHub 上的 Brow</a></p>
         </div>
       </div>
     </section>
@@ -900,7 +900,7 @@ xattr -d com.apple.quarantine grove</code></pre>
         <li><a href="https://github.com/efim0v/grove/issues">问题反馈</a></li>
         <li><a href="https://github.com/efim0v/grove/discussions">讨论区</a></li>
         <li><a href="https://github.com/efim0v/grove/blob/main/LICENSE">许可证：GPL-3.0</a></li>
-        <li><a href="https://efim0v.github.io/brow/zh-cn/">Brow</a></li>
+        <li><a href="https://efimov.page/brow/zh-cn/">Brow</a></li>
       </ul>
       <nav class="lang" aria-label="语言">
         <a href="/grove/" hreflang="en" lang="en">English</a>

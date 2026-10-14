@@ -2,7 +2,7 @@
 """Check the SEO head of every page in site/ (stdlib only).
 
 Usage: python3 check_seo.py <site-dir> <base-url>
-Example: python3 check_seo.py site https://efim0v.github.io/brow/
+Example: python3 check_seo.py site https://efimov.page/brow/
 """
 import json
 import pathlib

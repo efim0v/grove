@@ -1,6 +1,6 @@
 [English](README.md) · Русский · [简体中文](README.zh-CN.md)
 
-Сайт: [efim0v.github.io/grove/ru](https://efim0v.github.io/grove/ru/)
+Сайт: [efimov.page/grove/ru](https://efimov.page/grove/ru/)
 
 > Это перевод [английского README](README.md). Английская версия основная и может быть новее перевода; если тексты расходятся, ориентируйтесь на неё.
 
