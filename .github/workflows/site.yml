@@ -1,7 +1,10 @@
 name: Site
 
-# Checks the head of every page in site/: canonical, og:url, lang, description,
-# robots, JSON-LD, hreflang, and that sitemap.xml lists every page with a lastmod.
+# Grove is now part of Brow, so every page in site/, 404.html included, must
+# send its visitor to the same path under efimov.page/brow/: a 0-second refresh,
+# a canonical and a location.replace (keeping the #fragment) to that target, a
+# link to it on the page, lang, no robots directive against it, no hreflang, and
+# no sitemap entry. Scripts/check_seo.py still checks a real page in full.
 on:
   push:
     branches: [main]
@@ -34,5 +37,5 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check tags, JSON-LD and the sitemap
-        run: python3 Scripts/check_seo.py site https://efimov.page/grove/
+      - name: Check that every page leads to its Brow counterpart
+        run: python3 Scripts/check_seo.py site https://efimov.page/grove/ https://efimov.page/brow/
