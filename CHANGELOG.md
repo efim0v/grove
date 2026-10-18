@@ -1,11 +1,9 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+Grove continues as Workspaces in [Brow 0.4.0](https://github.com/efim0v/brow/releases/tag/0.4.0), which carries Grove's code and its history. Its changes from there on are in [Brow's changelog](https://github.com/efim0v/brow/blob/main/CHANGELOG.md), and [Coming from Grove](https://github.com/efim0v/brow#coming-from-grove) says what changes for a Grove setup. 0.2.2 is Grove's last release as an app of its own.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
 
 ## [0.2.2] - 2026-10-14
 
@@ -65,7 +63,6 @@ First public release: git-worktree workspaces for running parallel Claude Code s
 - The `grove` command-line tool: `scan`, `workspaces`, `sessions`, `create`, `graph` and `doctor`, each with `--json`.
 - Prebuilt downloads for macOS 26 or later on Apple silicon: `Grove.zip` with the app and `grove-cli.zip` with the command-line tool, plus `SHA256SUMS.txt` to verify them. The app is signed ad hoc and not notarized.
 
-[Unreleased]: https://github.com/efim0v/grove/compare/0.2.2...HEAD
 [0.2.2]: https://github.com/efim0v/grove/compare/0.2.1...0.2.2
 [0.2.1]: https://github.com/efim0v/grove/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/efim0v/grove/releases/tag/0.2.0
